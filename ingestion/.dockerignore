@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+# Never bake local secrets into the image; configuration comes from the
+# environment (docker-compose) at runtime.
+.env
+.tiktoken_cache/

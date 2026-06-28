@@ -1,0 +1,104 @@
+"""FastAPI application exposing the conversation ingestion endpoints.
+
+The API is connector-agnostic: connectors (WhatsApp, Teams, Slack, ...) are
+responsible for producing the canonical :class:`Conversation` format and posting
+it to ``/ingest/conversation``.
+"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+from uuid import uuid4
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from answerer import generate_answer
+from database import close_pools
+from models import Conversation, JobStatus, QueryRequest, QueryResponse
+from pipeline import run_ingestion_background
+from retrieval import retrieve
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# In-memory job state (v1 — not durable across restarts).
+job_store: dict[str, JobStatus] = {}
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Manage shared connection pools for the app lifecycle."""
+
+    logger.info("Company Brain ingestion service starting up")
+    try:
+        yield
+    finally:
+        await close_pools()
+        logger.info("Company Brain ingestion service shut down")
+
+
+app = FastAPI(title="Company Brain — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
+
+# Allow the static frontend (opened via file:// or served on any local port) to
+# call this API from the browser. Permissive by design for the local demo.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.post("/ingest/conversation")
+async def ingest_conversation(
+    background_tasks: BackgroundTasks,
+    conversation: Conversation,
+) -> dict[str, str]:
+    """Ingest a canonical conversation produced by any connector.
+
+    Performs a shallow presence check (at least one participant and message)
+    before enqueuing a background ingestion job; deeper validation happens in
+    the pipeline.
+    """
+
+    if not conversation.participants:
+        raise HTTPException(status_code=400, detail="Conversation must have at least one participant.")
+    if not conversation.messages:
+        raise HTTPException(status_code=400, detail="Conversation must have at least one message.")
+
+    job_id = str(uuid4())
+    job_store[job_id] = JobStatus(
+        job_id=job_id,
+        status="queued",
+        conversation_id=conversation.conversation_id,
+        progress="Queued",
+    )
+    background_tasks.add_task(run_ingestion_background, job_id, conversation, job_store)
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/ingest/status/{job_id}", response_model=JobStatus)
+async def get_job_status(job_id: str) -> JobStatus:
+    """Return the current status of an ingestion job, or 404 if unknown."""
+
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No job found with id '{job_id}'.")
+    return job
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query(request: QueryRequest) -> QueryResponse:
+    """Answer a natural-language question from the knowledge base."""
+
+    try:
+        retrieval = await retrieve(request.question)
+        response = await generate_answer(request.question, retrieval)
+        return response
+    except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
+        raise HTTPException(status_code=500, detail=str(e))

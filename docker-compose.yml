@@ -1,0 +1,100 @@
+# Company Brain — full local stack.
+#
+# Usage:
+#   1. cp .env.example .env   and fill in the credentials (see that file).
+#   2. docker compose up --build
+#   3. Open the frontend at http://localhost:5500
+#      API docs at http://localhost:8000/docs
+#
+# Services: postgres (pgvector), neo4j, neo4j-init (one-shot constraints),
+#           api (FastAPI), frontend (static file server).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: companybrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-companybrain}
+      POSTGRES_DB: companybrain
+    ports:
+      # Host port 5433 to avoid clashing with a Postgres already running on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs automatically only on first init of an empty data volume.
+      - ./ingestion/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U companybrain -d companybrain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.26
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+    ports:
+      - "7474:7474"   # Neo4j Browser UI
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"${NEO4J_PASSWORD}\" 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+
+  # One-shot job that applies the uniqueness constraints, then exits.
+  neo4j-init:
+    image: neo4j:5
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+    entrypoint:
+      - bash
+      - -c
+      - 'cypher-shell -a bolt://neo4j:7687 -u neo4j -p "$$NEO4J_PASSWORD" -f /constraints.cypher'
+    volumes:
+      - ./ingestion/db/neo4j_constraints.cypher:/constraints.cypher:ro
+    restart: "no"
+
+  api:
+    build: ./ingestion
+    environment:
+      # --- the only secret you must provide ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      # --- wired to the compose service network (do not need editing) ---
+      POSTGRES_URL: postgresql+asyncpg://companybrain:${POSTGRES_PASSWORD:-companybrain}@postgres:5432/companybrain
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      # --- tunables (optional) ---
+      CHUNK_GAP_MINUTES: ${CHUNK_GAP_MINUTES:-30}
+      CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-800}
+      SPEAKER_SIMILARITY_THRESHOLD: ${SPEAKER_SIMILARITY_THRESHOLD:-85}
+      RETRIEVAL_SIMILARITY_THRESHOLD: ${RETRIEVAL_SIMILARITY_THRESHOLD:-0.3}
+      RETRIEVAL_CHUNK_LIMIT: ${RETRIEVAL_CHUNK_LIMIT:-5}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  frontend:
+    image: python:3.11-slim-bookworm
+    working_dir: /srv
+    command: ["python", "-m", "http.server", "5500"]
+    volumes:
+      - ./frontend:/srv:ro
+    ports:
+      - "5500:5500"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  neo4jdata:

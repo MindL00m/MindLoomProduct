@@ -18,7 +18,15 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from database import get_neo4j_driver, get_session_factory
 from embedder import EMBEDDING_DIMENSIONS
-from models import Chunk, ChunkMetadata, DirectoryIngestResult, DirectoryPerson
+from models import (
+    Chunk,
+    ChunkMetadata,
+    DirectoryIngestResult,
+    DirectoryPerson,
+    OrgEdge,
+    OrgGraphResponse,
+    OrgPerson,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -515,3 +523,49 @@ async def upsert_directory(
         groups=groups,
         reporting_links=reporting_links,
     )
+
+
+# Public-facing org graph: directory people (those with an email) and their
+# REPORTS_TO edges. Internal fields (user_id, source_ids, ...) are not selected.
+_ORG_GRAPH_CYPHER = """
+MATCH (p:Person)
+WHERE p.canonical_email IS NOT NULL
+OPTIONAL MATCH (p)-[:REPORTS_TO]->(m:Person)
+RETURN p.person_id AS id,
+       p.name AS name,
+       p.preferred_name AS preferred_name,
+       p.email AS email,
+       p.title AS title,
+       p.department AS department,
+       p.business_unit AS business_unit,
+       p.photo_url AS photo_url,
+       p.location AS location,
+       p.city AS city,
+       p.country AS country,
+       coalesce(p.groups, []) AS groups,
+       p.status AS status,
+       p.start_date AS start_date,
+       m.person_id AS manager_id
+ORDER BY name
+"""
+
+
+async def fetch_org_graph() -> OrgGraphResponse:
+    """Return the org chart: public person profiles + REPORTS_TO edges."""
+
+    async def _read(tx) -> list[dict]:  # type: ignore[no-untyped-def]
+        result = await tx.run(_ORG_GRAPH_CYPHER)
+        return [record.data() async for record in result]
+
+    driver = get_neo4j_driver()
+    async with driver.session() as session:
+        records = await session.execute_read(_read)
+
+    people = [OrgPerson(**record) for record in records]
+    edges = [
+        OrgEdge(source=record["id"], target=record["manager_id"])
+        for record in records
+        if record.get("manager_id")
+    ]
+    logger.info("Org graph: %d people, %d reporting edges", len(people), len(edges))
+    return OrgGraphResponse(people=people, edges=edges)

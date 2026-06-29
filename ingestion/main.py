@@ -22,12 +22,13 @@ from models import (
     DirectoryIngestRequest,
     DirectoryIngestResult,
     JobStatus,
+    OrgGraphResponse,
     QueryRequest,
     QueryResponse,
 )
 from pipeline import run_ingestion_background
 from retrieval import retrieve
-from storage import upsert_directory
+from storage import fetch_org_graph, upsert_directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -104,6 +105,16 @@ async def ingest_directory(request: DirectoryIngestRequest) -> DirectoryIngestRe
 
     try:
         return await upsert_directory(request.people, source=request.source)
+    except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/org/graph", response_model=OrgGraphResponse)
+async def get_org_graph() -> OrgGraphResponse:
+    """Return the organization graph (people + reporting edges) for the UI."""
+
+    try:
+        return await fetch_org_graph()
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
         raise HTTPException(status_code=500, detail=str(e))
 

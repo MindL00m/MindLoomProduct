@@ -16,21 +16,27 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { GoogleIcon } from "@/components/icons";
+import OrganizationView from "@/pages/OrganizationView";
 import { useOnboarding } from "@/store/onboarding";
 import { cn } from "@/lib/utils";
 
-const NAV = [
-  { label: "Overview", icon: LayoutDashboard, active: true },
-  { label: "People", icon: Users, active: false },
-  { label: "Knowledge Graph", icon: Network, active: false },
-  { label: "Sources", icon: Plug, active: false },
-  { label: "Settings", icon: Settings, active: false },
+type ViewId = "overview" | "organization" | "graph" | "sources" | "settings";
+
+const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "organization", label: "Organization", icon: Users },
+  { id: "graph", label: "Knowledge Graph", icon: Network },
+  { id: "sources", label: "Sources", icon: Plug },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 export default function Dashboard() {
   const { organizationName, summary, selectedProvider, csvFileName } =
     useOnboarding();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [view, setView] = useState<ViewId>("overview");
+
+  const activeLabel = NAV.find((n) => n.id === view)?.label ?? "Overview";
 
   const isCsv = selectedProvider === "csv";
   const sourceName = isCsv ? "CSV Upload" : "Google Workspace";
@@ -64,20 +70,24 @@ export default function Dashboard() {
         </div>
         <nav className="flex-1 space-y-1 px-3 py-2" aria-label="Primary">
           {NAV.map((item) => (
-            <a
-              key={item.label}
-              href="#"
-              aria-current={item.active ? "page" : undefined}
+            <button
+              key={item.id}
+              type="button"
+              aria-current={view === item.id ? "page" : undefined}
+              onClick={() => {
+                setView(item.id);
+                setMobileNavOpen(false);
+              }}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                item.active
+                "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                view === item.id
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-secondary hover:text-foreground",
               )}
             >
               <item.icon className="size-4" aria-hidden="true" />
               {item.label}
-            </a>
+            </button>
           ))}
         </nav>
         <div className="border-t border-border p-4">
@@ -105,7 +115,7 @@ export default function Dashboard() {
           >
             <Menu className="size-5" />
           </button>
-          <h1 className="text-sm font-semibold text-foreground">Overview</h1>
+          <h1 className="text-sm font-semibold text-foreground">{activeLabel}</h1>
           <Link
             to="/setup"
             className="ml-auto text-sm text-muted-foreground hover:text-foreground"
@@ -114,63 +124,80 @@ export default function Dashboard() {
           </Link>
         </header>
 
-        <main className="mx-auto w-full max-w-5xl flex-1 space-y-8 p-4 lg:p-8">
-          <div>
-            <h2 className="text-2xl font-semibold tracking-tight">
-              Welcome to Company Brain
-            </h2>
-            <p className="mt-1 text-muted-foreground">
-              Your organization graph is live. Connect more sources to enrich it.
-            </p>
-          </div>
+        {view === "overview" && (
+          <main className="mx-auto w-full max-w-5xl flex-1 space-y-8 p-4 lg:p-8">
+            <div>
+              <h2 className="text-2xl font-semibold tracking-tight">
+                Welcome to Company Brain
+              </h2>
+              <p className="mt-1 text-muted-foreground">
+                Your organization graph is live. Connect more sources to enrich
+                it.
+              </p>
+            </div>
 
-          {/* Stat tiles */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            {[
-              { label: "People", value: summary?.people ?? 127 },
-              { label: "Departments", value: summary?.departments ?? 8 },
-              { label: "Groups", value: summary?.groups ?? 24 },
-              { label: "Sources", value: 1 },
-            ].map((s) => (
-              <Card key={s.label}>
-                <CardContent className="p-4">
-                  <p className="text-sm text-muted-foreground">{s.label}</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums">
-                    {s.value}
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+            {/* Stat tiles */}
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              {[
+                { label: "People", value: summary?.people ?? 127 },
+                { label: "Departments", value: summary?.departments ?? 8 },
+                { label: "Groups", value: summary?.groups ?? 24 },
+                { label: "Sources", value: 1 },
+              ].map((s) => (
+                <Card key={s.label}>
+                  <CardContent className="p-4">
+                    <p className="text-sm text-muted-foreground">{s.label}</p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {s.value}
+                    </p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
 
-          {/* Connected sources */}
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>Connected Sources</CardTitle>
-              {/* Disabled per spec — single source connected in this demo. */}
-              <SecondaryButton size="sm" disabled>
-                <Plus />
-                Connect Another Source
-              </SecondaryButton>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-4 rounded-md border border-border p-4">
-                <span className="flex size-10 items-center justify-center rounded-md border border-border bg-background">
-                  {sourceIcon}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{sourceName}</p>
-                  <p className="truncate text-sm text-muted-foreground">
-                    {sourceSub}
-                  </p>
+            {/* Connected sources */}
+            <Card>
+              <CardHeader className="flex-row items-center justify-between">
+                <CardTitle>Connected Sources</CardTitle>
+                {/* Disabled per spec — single source connected in this demo. */}
+                <SecondaryButton size="sm" disabled>
+                  <Plus />
+                  Connect Another Source
+                </SecondaryButton>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-4 rounded-md border border-border p-4">
+                  <span className="flex size-10 items-center justify-center rounded-md border border-border bg-background">
+                    {sourceIcon}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium">{sourceName}</p>
+                    <p className="truncate text-sm text-muted-foreground">
+                      {sourceSub}
+                    </p>
+                  </div>
+                  <StatusBadge tone="healthy" dot>
+                    Healthy
+                  </StatusBadge>
                 </div>
-                <StatusBadge tone="healthy" dot>
-                  Healthy
-                </StatusBadge>
-              </div>
-            </CardContent>
-          </Card>
-        </main>
+              </CardContent>
+            </Card>
+          </main>
+        )}
+
+        {view === "organization" && (
+          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
+            <OrganizationView />
+          </main>
+        )}
+
+        {view !== "overview" && view !== "organization" && (
+          <main className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              {activeLabel} is coming soon.
+            </p>
+          </main>
+        )}
       </div>
     </div>
   );

@@ -159,6 +159,44 @@ class DirectoryIngestResult(BaseModel):
     reporting_links: int = Field(description="REPORTS_TO relationships created/confirmed.")
 
 
+class OrgPerson(BaseModel):
+    """Public-facing profile of a person for the org-chart visualization.
+
+    Deliberately excludes internal/system fields (user_id, source_ids,
+    employee_type, desk_location) — only directory-public attributes are shown.
+    """
+
+    id: str = Field(description="Stable person_id (used as the graph node key).")
+    name: str = Field(description="Full display name.")
+    preferred_name: Optional[str] = Field(default=None)
+    email: Optional[str] = Field(default=None)
+    title: Optional[str] = Field(default=None)
+    department: Optional[str] = Field(default=None)
+    business_unit: Optional[str] = Field(default=None)
+    photo_url: Optional[str] = Field(default=None)
+    location: Optional[str] = Field(default=None)
+    city: Optional[str] = Field(default=None)
+    country: Optional[str] = Field(default=None)
+    groups: list[str] = Field(default_factory=list)
+    status: Optional[str] = Field(default=None)
+    start_date: Optional[str] = Field(default=None)
+    manager_id: Optional[str] = Field(default=None, description="person_id of this person's manager.")
+
+
+class OrgEdge(BaseModel):
+    """A reporting relationship: ``source`` reports to ``target``."""
+
+    source: str = Field(description="person_id of the report.")
+    target: str = Field(description="person_id of the manager.")
+
+
+class OrgGraphResponse(BaseModel):
+    """The organization graph: people plus their reporting relationships."""
+
+    people: list[OrgPerson] = Field(description="All directory people (public fields).")
+    edges: list[OrgEdge] = Field(description="REPORTS_TO relationships between people.")
+
+
 class JobStatus(BaseModel):
     """State of an asynchronous ingestion job."""
 

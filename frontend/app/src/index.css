@@ -1,0 +1,67 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Frozen mist — light theme tokens (HSL channels, no hsl() wrapper). */
+    --background: 0 0% 100%;
+    --foreground: 60 3% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 60 3% 15%;
+
+    --muted: 220 14% 97%;
+    --muted-foreground: 70 4% 47%; /* mist-700 */
+
+    --border: 60 5% 89%;
+    --input: 60 5% 89%;
+    --ring: 29 91% 45%; /* brand */
+
+    --primary: 29 91% 45%; /* #DD700B */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 60 9% 96%;
+    --secondary-foreground: 60 3% 15%;
+
+    --accent: 53 78% 92%; /* cream #FCF8D8 */
+    --accent-foreground: 60 3% 15%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 55% 36%;
+    --success-foreground: 0 0% 100%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Visible, brand-coloured focus ring for keyboard users. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image: radial-gradient(
+      hsl(var(--border)) 1px,
+      transparent 1px
+    );
+    background-size: 22px 22px;
+  }
+}

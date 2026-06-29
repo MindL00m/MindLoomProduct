@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+PersonStatus = Literal["active", "inactive"]
+
 KnowledgeType = Literal["decision", "question_answer", "problem_report", "status_update", "noise"]
 SignalType = Literal["asked", "answered", "owns", "mentioned"]
 Confidence = Literal["high", "medium", "low"]
@@ -101,6 +103,60 @@ class Conversation(BaseModel):
     messages: list[IncomingMessage] = Field(
         description="All messages ordered by timestamp ascending"
     )
+
+
+class DirectoryPerson(BaseModel):
+    """A single person row from an org-directory import (CSV, Google, ...).
+
+    Mirrors the importable subset of the Neo4j ``Person`` node. System-managed
+    fields (``person_id``, ``canonical_email``, ``canonical_name``,
+    ``manager_id``, ``created_at``, ``updated_at``, ``source_ids``) are derived
+    by the storage layer and are intentionally absent here.
+    """
+
+    # Identity
+    email: str = Field(description="Primary email; lower-cased to canonical_email for de-dup.")
+    name: str = Field(description="Full display name.")
+    user_id: Optional[str] = Field(default=None, description="External IdP id (Google/Slack/...).")
+    preferred_name: Optional[str] = Field(default=None, description="Preferred / nickname.")
+    photo_url: Optional[str] = Field(default=None, description="Profile photo URL.")
+
+    # Employment
+    title: Optional[str] = Field(default=None, description="Job title, e.g. Staff Engineer.")
+    department: Optional[str] = Field(default=None, description="Department, e.g. Engineering.")
+    business_unit: Optional[str] = Field(default=None, description="Business unit, e.g. Platform.")
+    employee_type: Optional[str] = Field(default=None, description="Employee, Contractor, ...")
+    status: PersonStatus = Field(default="active", description="active / inactive.")
+
+    # Organization
+    manager_email: Optional[str] = Field(default=None, description="Manager's email (REPORTS_TO).")
+    groups: list[str] = Field(default_factory=list, description="Team/group memberships.")
+    org_unit: Optional[str] = Field(default=None, description="Org unit path.")
+
+    # Location
+    location: Optional[str] = Field(default=None, description="Location label, e.g. London HQ.")
+    city: Optional[str] = Field(default=None, description="City.")
+    country: Optional[str] = Field(default=None, description="Country.")
+    desk_location: Optional[str] = Field(default=None, description="Desk / seat location.")
+
+    # Dates
+    start_date: Optional[str] = Field(default=None, description="Employment start date (ISO 8601).")
+
+
+class DirectoryIngestRequest(BaseModel):
+    """Payload for the directory ingestion endpoint."""
+
+    people: list[DirectoryPerson] = Field(description="People to upsert into the graph.")
+    source: str = Field(default="csv", description="Origin of the directory, e.g. csv, google.")
+
+
+class DirectoryIngestResult(BaseModel):
+    """Summary returned after a directory import."""
+
+    people_upserted: int = Field(description="Number of Person nodes created or updated.")
+    departments: int = Field(description="Distinct departments seen in the import.")
+    groups: int = Field(description="Distinct team/group names seen in the import.")
+    reporting_links: int = Field(description="REPORTS_TO relationships created/confirmed.")
 
 
 class JobStatus(BaseModel):

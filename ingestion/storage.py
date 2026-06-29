@@ -7,6 +7,7 @@ shared, pooled connections from :mod:`database`.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -17,7 +18,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from database import get_neo4j_driver, get_session_factory
 from embedder import EMBEDDING_DIMENSIONS
-from models import Chunk, ChunkMetadata
+from models import Chunk, ChunkMetadata, DirectoryIngestResult, DirectoryPerson
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +114,21 @@ _ANSWERED_SIGNAL_TYPE = "explicit"  # LLM-extracted answers are treated as expli
 # Each statement guards against empty input lists, because an UNWIND over an
 # empty list collapses the row stream and would silently skip later clauses.
 
-# People are de-duplicated on canonical_name; a stable person_id is minted once.
+# Chat-derived people are de-duplicated on canonical_name (display name) since
+# conversations carry no email; a stable person_id is minted once. New-schema
+# fields get sensible defaults on create so every Person is shape-consistent.
 _PEOPLE_CYPHER = """
 UNWIND $people AS name
 MERGE (p:Person {canonical_name: name})
 ON CREATE SET p.person_id = randomUUID(),
               p.name = name,
               p.is_system_user = false,
-              p.groups = []
-SET p.last_active = CASE
+              p.status = 'active',
+              p.groups = [],
+              p.source_ids = '{}',
+              p.created_at = $ts
+SET p.updated_at = $ts,
+    p.last_active = CASE
         WHEN p.last_active IS NULL OR p.last_active < $ts THEN $ts
         ELSE p.last_active
     END
@@ -355,3 +362,156 @@ async def save_to_neo4j(
         await session.execute_write(_write)
 
     logger.info("Saved chunk %s relationships to Neo4j", chunk.chunk_id)
+
+
+# --- Directory (org setup) --------------------------------------------------
+
+# Upsert Person nodes from a directory import, keyed on canonical_email. Every
+# field from the expanded Person schema is set; identity/audit fields are minted
+# on create only. ``source_ids`` is stored as a JSON string because Neo4j node
+# properties cannot hold maps.
+_DIRECTORY_UPSERT_CYPHER = """
+UNWIND $people AS p
+MERGE (person:Person {canonical_email: p.canonical_email})
+ON CREATE SET person.person_id = randomUUID(),
+              person.created_at = $now,
+              person.is_system_user = false
+SET person.email = p.email,
+    person.user_id = coalesce(p.user_id, person.user_id),
+    person.name = p.name,
+    person.canonical_name = p.canonical_name,
+    person.preferred_name = p.preferred_name,
+    person.photo_url = p.photo_url,
+    person.title = p.title,
+    person.department = p.department,
+    person.business_unit = p.business_unit,
+    person.employee_type = p.employee_type,
+    person.status = coalesce(p.status, 'active'),
+    person.manager_email = p.manager_email,
+    person.groups = p.groups,
+    person.org_unit = p.org_unit,
+    person.location = p.location,
+    person.city = p.city,
+    person.country = p.country,
+    person.desk_location = p.desk_location,
+    person.start_date = p.start_date,
+    person.source_ids = p.source_ids,
+    person.updated_at = $now
+"""
+
+# Wire reporting relationships. Rows whose manager isn't in the graph yield no
+# match and are silently skipped (the person still imports, just unlinked).
+_DIRECTORY_REPORTS_TO_CYPHER = """
+UNWIND $links AS link
+MATCH (p:Person {canonical_email: link.canonical_email})
+MATCH (m:Person {canonical_email: link.manager_email})
+MERGE (p)-[:REPORTS_TO]->(m)
+SET p.manager_id = m.person_id
+RETURN count(*) AS linked
+"""
+
+
+def _canonical(value: str | None) -> str | None:
+    """Lower-case + strip a value for use as a canonical key, or None."""
+
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    return cleaned or None
+
+
+async def upsert_directory(
+    people: list[DirectoryPerson],
+    source: str = "csv",
+) -> DirectoryIngestResult:
+    """Upsert directory people into Neo4j and wire their reporting hierarchy.
+
+    People are de-duplicated on ``canonical_email``. ``manager_email`` values are
+    resolved to ``REPORTS_TO`` edges (and ``manager_id``) in a second pass once
+    all nodes exist, so manager order within the file doesn't matter.
+
+    Args:
+        people: Parsed directory rows to upsert.
+        source: Origin label recorded in ``source_ids`` (e.g. csv, google).
+
+    Returns:
+        A :class:`DirectoryIngestResult` with upsert and linkage counts.
+    """
+
+    now = datetime.now(timezone.utc)
+
+    rows: list[dict] = []
+    known_emails: set[str] = set()
+    for person in people:
+        canonical_email = _canonical(person.email)
+        if not canonical_email:
+            continue
+        known_emails.add(canonical_email)
+        # source_ids maps a source system to its id (external id, else email).
+        source_ids = {source: person.user_id or person.email}
+        rows.append(
+            {
+                "canonical_email": canonical_email,
+                "email": person.email.strip(),
+                "user_id": person.user_id,
+                "name": person.name.strip(),
+                "canonical_name": _canonical(person.name),
+                "preferred_name": person.preferred_name,
+                "photo_url": person.photo_url,
+                "title": person.title,
+                "department": person.department,
+                "business_unit": person.business_unit,
+                "employee_type": person.employee_type,
+                "status": person.status,
+                "manager_email": _canonical(person.manager_email),
+                "groups": person.groups,
+                "org_unit": person.org_unit,
+                "location": person.location,
+                "city": person.city,
+                "country": person.country,
+                "desk_location": person.desk_location,
+                "start_date": person.start_date,
+                "source_ids": json.dumps(source_ids),
+            }
+        )
+
+    # Only attempt links where both endpoints are present in this import.
+    links = [
+        {"canonical_email": row["canonical_email"], "manager_email": row["manager_email"]}
+        for row in rows
+        if row["manager_email"] and row["manager_email"] in known_emails
+        and row["manager_email"] != row["canonical_email"]
+    ]
+
+    reporting_links = 0
+
+    async def _write(tx) -> int:  # type: ignore[no-untyped-def]
+        linked = 0
+        if rows:
+            await tx.run(_DIRECTORY_UPSERT_CYPHER, people=rows, now=now)
+        if links:
+            result = await tx.run(_DIRECTORY_REPORTS_TO_CYPHER, links=links)
+            record = await result.single()
+            linked = record["linked"] if record else 0
+        return linked
+
+    driver = get_neo4j_driver()
+    async with driver.session() as session:
+        reporting_links = await session.execute_write(_write)
+
+    departments = len({p.department.strip().lower() for p in people if p.department})
+    groups = len({g.strip().lower() for p in people for g in p.groups if g})
+
+    logger.info(
+        "Directory import (%s): upserted %d people, %d reporting links",
+        source,
+        len(rows),
+        reporting_links,
+    )
+
+    return DirectoryIngestResult(
+        people_upserted=len(rows),
+        departments=departments,
+        groups=groups,
+        reporting_links=reporting_links,
+    )

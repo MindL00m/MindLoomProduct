@@ -17,9 +17,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from answerer import generate_answer
 from database import close_pools
-from models import Conversation, JobStatus, QueryRequest, QueryResponse
+from models import (
+    Conversation,
+    DirectoryIngestRequest,
+    DirectoryIngestResult,
+    JobStatus,
+    QueryRequest,
+    QueryResponse,
+)
 from pipeline import run_ingestion_background
 from retrieval import retrieve
+from storage import upsert_directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -80,6 +88,24 @@ async def ingest_conversation(
     background_tasks.add_task(run_ingestion_background, job_id, conversation, job_store)
 
     return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/ingest/directory", response_model=DirectoryIngestResult)
+async def ingest_directory(request: DirectoryIngestRequest) -> DirectoryIngestResult:
+    """Upsert an org-directory import (CSV / Google / ...) into the graph.
+
+    People are de-duplicated on email and their reporting hierarchy is wired via
+    ``REPORTS_TO``. This is synchronous: directory imports are small relative to
+    conversation ingestion and the caller wants the resulting counts.
+    """
+
+    if not request.people:
+        raise HTTPException(status_code=400, detail="Directory import contains no people.")
+
+    try:
+        return await upsert_directory(request.people, source=request.source)
+    except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/ingest/status/{job_id}", response_model=JobStatus)

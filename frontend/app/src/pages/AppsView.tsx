@@ -1,25 +1,40 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   CalendarDays,
   ExternalLink,
+  FileText,
+  Inbox,
   Loader2,
   MapPin,
+  RefreshCw,
+  MessageSquare,
   Unplug,
 } from "lucide-react";
 import { GoogleIcon } from "@/components/icons";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { StatusBadge } from "@/components/StatusBadge";
 import {
   connectGoogleCalendarDev,
+  connectGoogleWorkspaceDev,
+  connectMicrosoftTeamsDev,
   disconnectGoogleCalendar,
   fetchCalendarEvents,
   formatEventTime,
   listIntegrations,
+  startGoogleWorkspaceOAuth,
   startGoogleCalendarOAuth,
+  startMicrosoftTeamsOAuth,
+  syncDriveNow,
+  syncGmailNow,
+  syncMicrosoftTeamsNow,
   type CalendarEvent,
   type IntegrationInfo,
+  watchMicrosoftTeams,
+  watchDrive,
+  watchGmail,
 } from "@/services/integrations";
 import { cn } from "@/lib/utils";
 
@@ -37,16 +52,25 @@ export default function AppsView({
 }: AppsViewProps) {
   const [integrations, setIntegrations] = useState<IntegrationInfo[]>([]);
   const [oauthEnabled, setOauthEnabled] = useState(false);
+  const [microsoftOauthEnabled, setMicrosoftOauthEnabled] = useState(false);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [accountEmail, setAccountEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState<string | null>(null);
+  const [teamsBusy, setTeamsBusy] = useState<string | null>(null);
+  const [teamId, setTeamId] = useState("");
+  const [channelId, setChannelId] = useState("");
   const [eventsLoading, setEventsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
   const calendar = integrations.find((i) => i.provider === "google_calendar");
+  const workspace = integrations.find((i) => i.provider === "google_workspace");
+  const teams = integrations.find((i) => i.provider === "microsoft_teams");
   const isConnected = calendar?.connected ?? false;
+  const workspaceConnected = workspace?.connected ?? false;
+  const teamsConnected = teams?.connected ?? false;
 
   const loadIntegrations = useCallback(async () => {
     setLoading(true);
@@ -55,6 +79,7 @@ export default function AppsView({
       const data = await listIntegrations();
       setIntegrations(data.integrations);
       setOauthEnabled(data.oauth_enabled);
+      setMicrosoftOauthEnabled(data.microsoft_oauth_enabled);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load apps.");
     } finally {
@@ -130,6 +155,106 @@ export default function AppsView({
       setError(err instanceof Error ? err.message : "Disconnect failed.");
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function handleWorkspaceConnect() {
+    setWorkspaceBusy("connect");
+    setError(null);
+    setBanner(null);
+    try {
+      if (oauthEnabled) {
+        const url = await startGoogleWorkspaceOAuth();
+        window.location.href = url;
+        return;
+      }
+      await connectGoogleWorkspaceDev();
+      await loadIntegrations();
+      setBanner("Google Workspace connected (development mode).");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Workspace connection failed.");
+    } finally {
+      setWorkspaceBusy(null);
+    }
+  }
+
+  async function handleWorkspaceAction(action: "gmail-watch" | "drive-watch" | "gmail-sync" | "drive-sync") {
+    setWorkspaceBusy(action);
+    setError(null);
+    setBanner(null);
+    try {
+      if (action === "gmail-watch") {
+        await watchGmail();
+        setBanner("Gmail inbox watch started.");
+      } else if (action === "drive-watch") {
+        await watchDrive();
+        setBanner("Drive changes watch started.");
+      } else if (action === "gmail-sync") {
+        const job = await syncGmailNow();
+        setBanner(`Gmail sync queued (${job.job_id}).`);
+      } else {
+        const job = await syncDriveNow();
+        setBanner(`Drive sync queued (${job.job_id}).`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Workspace action failed.");
+    } finally {
+      setWorkspaceBusy(null);
+    }
+  }
+
+  async function handleTeamsConnect() {
+    setTeamsBusy("connect");
+    setError(null);
+    setBanner(null);
+    try {
+      if (microsoftOauthEnabled) {
+        const url = await startMicrosoftTeamsOAuth();
+        window.location.href = url;
+        return;
+      }
+      await connectMicrosoftTeamsDev();
+      await loadIntegrations();
+      setBanner("Microsoft Teams connected (development mode).");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Teams connection failed.");
+    } finally {
+      setTeamsBusy(null);
+    }
+  }
+
+  async function handleTeamsWatch() {
+    if (!teamId.trim() || !channelId.trim()) {
+      setError("Enter both a Team ID and Channel ID first.");
+      return;
+    }
+    setTeamsBusy("watch");
+    setError(null);
+    setBanner(null);
+    try {
+      const result = await watchMicrosoftTeams({
+        team_id: teamId.trim(),
+        channel_id: channelId.trim(),
+      });
+      setBanner(`Teams watch started for ${result.resource}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Teams watch failed.");
+    } finally {
+      setTeamsBusy(null);
+    }
+  }
+
+  async function handleTeamsSync() {
+    setTeamsBusy("sync");
+    setError(null);
+    setBanner(null);
+    try {
+      const job = await syncMicrosoftTeamsNow();
+      setBanner(`Teams sync queued (${job.job_id}).`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Teams sync failed.");
+    } finally {
+      setTeamsBusy(null);
     }
   }
 
@@ -247,10 +372,183 @@ export default function AppsView({
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+          <div className="flex items-start gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+              <MessageSquare className="size-6" />
+            </span>
+            <div>
+              <CardTitle className="text-lg">Microsoft Teams</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Connect Teams, sync recent channel messages, and subscribe to one
+                channel at a time for push updates.
+              </p>
+            </div>
+          </div>
+          <StatusBadge tone={teamsConnected ? "healthy" : "neutral"} dot>
+            {teamsConnected ? "Connected" : "Not connected"}
+          </StatusBadge>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {teamsConnected && (
+            <p className="text-sm text-muted-foreground">
+              Signed in as{" "}
+              <span className="font-medium text-foreground">
+                {teams?.account_email ?? "Microsoft account"}
+              </span>
+            </p>
+          )}
+
+          {!teamsConnected ? (
+            <PrimaryButton onClick={() => void handleTeamsConnect()} disabled={teamsBusy === "connect"}>
+              {teamsBusy === "connect" ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <MessageSquare className="size-4" />
+              )}
+              {microsoftOauthEnabled ? "Connect Teams" : "Connect Teams (dev)"}
+            </PrimaryButton>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input
+                  value={teamId}
+                  onChange={(e) => setTeamId(e.target.value)}
+                  placeholder="Team ID"
+                />
+                <Input
+                  value={channelId}
+                  onChange={(e) => setChannelId(e.target.value)}
+                  placeholder="Channel ID"
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <WorkspaceAction
+                  icon={<RefreshCw className="size-4" />}
+                  label="Sync Teams Now"
+                  busy={teamsBusy === "sync"}
+                  onClick={() => void handleTeamsSync()}
+                />
+                <WorkspaceAction
+                  icon={<MessageSquare className="size-4" />}
+                  label="Watch Channel"
+                  busy={teamsBusy === "watch"}
+                  onClick={() => void handleTeamsWatch()}
+                />
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+          <div className="flex items-start gap-3">
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+              <GoogleIcon className="size-6" />
+            </span>
+            <div>
+              <CardTitle className="text-lg">Google Workspace</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Sync Gmail inbox updates and Drive Docs, Sheets, and Slides into
+                the knowledge graph.
+              </p>
+            </div>
+          </div>
+          <StatusBadge tone={workspaceConnected ? "healthy" : "neutral"} dot>
+            {workspaceConnected ? "Connected" : "Not connected"}
+          </StatusBadge>
+        </CardHeader>
+
+        <CardContent className="space-y-4">
+          {workspaceConnected && (
+            <p className="text-sm text-muted-foreground">
+              Signed in as{" "}
+              <span className="font-medium text-foreground">
+                {workspace?.account_email ?? "Google account"}
+              </span>
+            </p>
+          )}
+
+          {!workspaceConnected ? (
+            <PrimaryButton
+              onClick={() => void handleWorkspaceConnect()}
+              disabled={workspaceBusy === "connect"}
+            >
+              {workspaceBusy === "connect" ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <GoogleIcon className="size-4" />
+              )}
+              {oauthEnabled ? "Connect Workspace" : "Connect Workspace (dev)"}
+            </PrimaryButton>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <WorkspaceAction
+                icon={<Inbox className="size-4" />}
+                label="Start Gmail Watch"
+                busy={workspaceBusy === "gmail-watch"}
+                onClick={() => void handleWorkspaceAction("gmail-watch")}
+              />
+              <WorkspaceAction
+                icon={<FileText className="size-4" />}
+                label="Start Drive Watch"
+                busy={workspaceBusy === "drive-watch"}
+                onClick={() => void handleWorkspaceAction("drive-watch")}
+              />
+              <WorkspaceAction
+                icon={<RefreshCw className="size-4" />}
+                label="Sync Gmail Now"
+                busy={workspaceBusy === "gmail-sync"}
+                onClick={() => void handleWorkspaceAction("gmail-sync")}
+              />
+              <WorkspaceAction
+                icon={<RefreshCw className="size-4" />}
+                label="Sync Drive Now"
+                busy={workspaceBusy === "drive-sync"}
+                onClick={() => void handleWorkspaceAction("drive-sync")}
+              />
+            </div>
+          )}
+
+          {!oauthEnabled && !workspaceConnected && (
+            <p className="text-xs text-muted-foreground">
+              Dev mode records the connection but does not call Gmail or Drive.
+            </p>
+          )}
+          {!microsoftOauthEnabled && !teamsConnected && (
+            <p className="text-xs text-muted-foreground">
+              Dev mode records the connection but does not call Microsoft Graph.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       <p className="text-center text-xs text-muted-foreground">
         More integrations coming soon — Slack, Notion, and others.
       </p>
     </div>
+  );
+}
+
+function WorkspaceAction({
+  icon,
+  label,
+  busy,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  busy: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <SecondaryButton onClick={onClick} disabled={busy}>
+      {busy ? <Loader2 className="size-4 animate-spin" /> : icon}
+      {label}
+    </SecondaryButton>
   );
 }
 

@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 PROVIDER_GOOGLE_CALENDAR = "google_calendar"
+PROVIDER_GOOGLE_WORKSPACE = "google_workspace"
+PROVIDER_MICROSOFT_TEAMS = "microsoft_teams"
 CALENDAR_SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "openid",
@@ -331,6 +333,8 @@ async def _fetch_calendar_events(access_token: str) -> list[CalendarEvent]:
 async def list_integrations(org_id: str, user_id: str) -> IntegrationsListResponse:
     settings = get_settings()
     row = await _get_connection(org_id, user_id, PROVIDER_GOOGLE_CALENDAR)
+    workspace_row = await _get_connection(org_id, user_id, PROVIDER_GOOGLE_WORKSPACE)
+    teams_row = await _get_connection(org_id, user_id, PROVIDER_MICROSOFT_TEAMS)
     calendar = IntegrationInfo(
         provider=PROVIDER_GOOGLE_CALENDAR,
         label="Google Calendar",
@@ -338,9 +342,24 @@ async def list_integrations(org_id: str, user_id: str) -> IntegrationsListRespon
         account_email=row.account_email if row else None,
         connected_at=row.created_at.isoformat() if row else None,
     )
+    workspace = IntegrationInfo(
+        provider=PROVIDER_GOOGLE_WORKSPACE,
+        label="Google Workspace",
+        connected=workspace_row is not None,
+        account_email=workspace_row.account_email if workspace_row else None,
+        connected_at=workspace_row.created_at.isoformat() if workspace_row else None,
+    )
+    teams = IntegrationInfo(
+        provider=PROVIDER_MICROSOFT_TEAMS,
+        label="Microsoft Teams",
+        connected=teams_row is not None,
+        account_email=teams_row.account_email if teams_row else None,
+        connected_at=teams_row.created_at.isoformat() if teams_row else None,
+    )
     return IntegrationsListResponse(
-        integrations=[calendar],
+        integrations=[calendar, workspace, teams],
         oauth_enabled=settings.google_oauth_enabled,
+        microsoft_oauth_enabled=settings.microsoft_oauth_enabled,
     )
 
 

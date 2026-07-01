@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS app_connections (
 
 CREATE INDEX IF NOT EXISTS idx_app_connections_org_user ON app_connections (org_id, user_id);
 
+-- --- Incremental Google Workspace sync cursors ----------------------------
+
+CREATE TABLE IF NOT EXISTS sync_cursors (
+    cursor_id        TEXT PRIMARY KEY,
+    org_id           TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id          TEXT        NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    provider         TEXT        NOT NULL,
+    account_email    TEXT        NOT NULL,
+    cursor_value     TEXT,
+    watch_resource   TEXT,
+    watch_expiration TIMESTAMPTZ,
+    status           TEXT        NOT NULL DEFAULT 'active',
+    last_synced_at   TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, user_id, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_cursors_org_provider ON sync_cursors (org_id, provider);
+
 -- --- Chunks (org-scoped) -------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS chunks (

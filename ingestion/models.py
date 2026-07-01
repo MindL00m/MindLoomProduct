@@ -535,6 +535,10 @@ class IntegrationsListResponse(BaseModel):
     oauth_enabled: bool = Field(
         description="True when real Google OAuth credentials are configured on the server."
     )
+    microsoft_oauth_enabled: bool = Field(
+        default=False,
+        description="True when real Microsoft OAuth credentials are configured on the server.",
+    )
 
 
 class OAuthAuthorizeResponse(BaseModel):
@@ -560,3 +564,78 @@ class CalendarEventsResponse(BaseModel):
 
     account_email: Optional[str] = None
     events: list[CalendarEvent]
+
+
+# --- Google Workspace sync --------------------------------------------------
+
+
+class WorkspaceSyncStartResponse(BaseModel):
+    """Returned when a Gmail/Drive sync is queued."""
+
+    job_id: str
+    status: Literal["queued"]
+    source: Literal["gmail", "drive"]
+
+
+class WorkspaceWatchResponse(BaseModel):
+    """Stored watch/cursor state for a Google Workspace source."""
+
+    provider: Literal["gmail", "drive"]
+    account_email: str
+    cursor: Optional[str] = None
+    expiration: Optional[datetime] = None
+    status: str = "active"
+
+
+class GooglePubSubEnvelope(BaseModel):
+    """Cloud Pub/Sub push envelope.
+
+    ``message.data`` is base64url-encoded by Pub/Sub. The decoded payload is
+    provider-specific; Gmail sends ``emailAddress`` and ``historyId``.
+    """
+
+    message: dict[str, object]
+    subscription: Optional[str] = None
+
+
+class GoogleWebhookResponse(BaseModel):
+    """Acknowledgement returned to Pub/Sub push delivery."""
+
+    accepted: bool
+    provider: Optional[str] = None
+    queued: bool = False
+    job_id: Optional[str] = None
+
+
+# --- Microsoft Teams sync ---------------------------------------------------
+
+
+class TeamsSyncStartResponse(BaseModel):
+    """Returned when a Microsoft Teams sync is queued."""
+
+    job_id: str
+    status: Literal["queued"]
+    source: Literal["teams"]
+
+
+class TeamsWatchRequest(BaseModel):
+    """Request to create a Microsoft Graph subscription for one channel."""
+
+    team_id: str = Field(description="Microsoft Graph team id")
+    channel_id: str = Field(description="Microsoft Graph channel id")
+
+
+class TeamsWatchResponse(BaseModel):
+    """Stored Teams subscription/cursor state."""
+
+    provider: Literal["teams"]
+    resource: str
+    subscription_id: Optional[str] = None
+    expiration: Optional[datetime] = None
+    status: str = "active"
+
+
+class MicrosoftGraphWebhookPayload(BaseModel):
+    """Microsoft Graph change notification payload."""
+
+    value: list[dict[str, object]] = Field(default_factory=list)

@@ -88,9 +88,51 @@ class Settings(BaseSettings):
         default="http://localhost:8000/integrations/google/calendar/callback",
         description="OAuth redirect URI registered in Google Cloud Console.",
     )
+    google_workspace_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/integrations/google/workspace/callback",
+        description="OAuth redirect URI for Gmail/Drive Workspace sync consent.",
+    )
+    google_pubsub_topic: str = Field(
+        default="",
+        description=(
+            "Cloud Pub/Sub topic used for Gmail/Drive push notifications, e.g. "
+            "projects/my-project/topics/companybrain-google-workspace."
+        ),
+    )
+    google_drive_webhook_url: str = Field(
+        default="",
+        description=(
+            "Public HTTPS callback URL used for Drive changes.watch. Gmail push "
+            "uses Pub/Sub and does not call this URL directly."
+        ),
+    )
     frontend_url: str = Field(
         default="http://localhost:5173",
         description="Frontend origin used for OAuth success/error redirects.",
+    )
+    microsoft_client_id: str = Field(
+        default="",
+        description="Microsoft Entra app client ID for Teams sync.",
+    )
+    microsoft_client_secret: str = Field(
+        default="",
+        description="Microsoft Entra app client secret for Teams sync.",
+    )
+    microsoft_tenant_id: str = Field(
+        default="common",
+        description="Microsoft tenant id, or 'common' for multi-tenant delegated OAuth.",
+    )
+    microsoft_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/integrations/microsoft/teams/callback",
+        description="OAuth redirect URI registered for Microsoft Teams sync.",
+    )
+    microsoft_graph_webhook_url: str = Field(
+        default="",
+        description="Public HTTPS callback URL for Microsoft Graph Teams subscriptions.",
+    )
+    microsoft_graph_client_state: str = Field(
+        default="dev-client-state",
+        description="Shared secret used to validate Microsoft Graph subscription callbacks.",
     )
 
     @property
@@ -98,6 +140,12 @@ class Settings(BaseSettings):
         """True when Google OAuth credentials are configured."""
 
         return bool(self.google_client_id.strip() and self.google_client_secret.strip())
+
+    @property
+    def microsoft_oauth_enabled(self) -> bool:
+        """True when Microsoft OAuth credentials are configured."""
+
+        return bool(self.microsoft_client_id.strip() and self.microsoft_client_secret.strip())
 
 
 @lru_cache(maxsize=1)

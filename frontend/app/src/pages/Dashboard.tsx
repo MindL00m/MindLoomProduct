@@ -254,7 +254,9 @@ export default function Dashboard() {
           <main className="flex-1 p-4 lg:p-8">
             <AppsView
               oauthStatus={
-                connectedParam === "google_calendar"
+                connectedParam === "google_calendar" ||
+                connectedParam === "google_workspace" ||
+                connectedParam === "microsoft_teams"
                   ? "connected"
                   : errorParam
                     ? "error"

@@ -10,12 +10,29 @@ export interface Turn {
   error?: string;
 }
 
+export type AttachmentScope = "chat" | "graph";
+export type AttachmentStatus = "processing" | "ready" | "error";
+
+/** A file uploaded into a conversation — either chat-only or ingested to the graph. */
+export interface ChatAttachment {
+  id: string;
+  filename: string;
+  scope: AttachmentScope;
+  status: AttachmentStatus;
+  /** Extracted text for chat-only attachments. */
+  text?: string;
+  error?: string;
+  /** Chunk count after graph ingestion completes. */
+  ingestedChunks?: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
   createdAt: number;
   updatedAt: number;
   turns: Turn[];
+  attachments: ChatAttachment[];
 }
 
 interface ChatState {
@@ -31,6 +48,13 @@ interface ChatState {
 
   addTurn: (conversationId: string, turn: Turn) => void;
   updateTurn: (conversationId: string, turnId: string, patch: Partial<Turn>) => void;
+  addAttachment: (conversationId: string, attachment: ChatAttachment) => void;
+  updateAttachment: (
+    conversationId: string,
+    attachmentId: string,
+    patch: Partial<ChatAttachment>,
+  ) => void;
+  removeAttachment: (conversationId: string, attachmentId: string) => void;
 }
 
 function makeConversation(): Conversation {
@@ -41,6 +65,7 @@ function makeConversation(): Conversation {
     createdAt: now,
     updatedAt: now,
     turns: [],
+    attachments: [],
   };
 }
 
@@ -117,6 +142,52 @@ export const useChat = create<ChatState>()(
               : c,
           ),
         })),
+
+      addAttachment: (conversationId, attachment) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  updatedAt: Date.now(),
+                  attachments: [...(c.attachments ?? []), attachment],
+                  title:
+                    c.turns.length === 0 && c.attachments.length === 0
+                      ? attachment.filename
+                      : c.title,
+                }
+              : c,
+          ),
+        })),
+
+      updateAttachment: (conversationId, attachmentId, patch) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  updatedAt: Date.now(),
+                  attachments: (c.attachments ?? []).map((a) =>
+                    a.id === attachmentId ? { ...a, ...patch } : a,
+                  ),
+                }
+              : c,
+          ),
+        })),
+
+      removeAttachment: (conversationId, attachmentId) =>
+        set((state) => ({
+          conversations: state.conversations.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  attachments: (c.attachments ?? []).filter(
+                    (a) => a.id !== attachmentId,
+                  ),
+                }
+              : c,
+          ),
+        })),
     }),
     {
       name: "company-brain-chat",
@@ -126,6 +197,7 @@ export const useChat = create<ChatState>()(
         if (!state) return;
         state.conversations = state.conversations.map((c) => ({
           ...c,
+          attachments: c.attachments ?? [],
           turns: c.turns.map((t) =>
             t.status === "pending"
               ? { ...t, status: "error" as const, error: "Interrupted." }

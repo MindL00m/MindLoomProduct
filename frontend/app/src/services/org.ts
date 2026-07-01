@@ -2,7 +2,7 @@
  *  to the directory parsed during onboarding so the chart still renders if the
  *  API isn't reachable. */
 
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import type { OrgChartPerson } from "@/lib/orgChart";
 import type { DirectoryPerson } from "@/lib/directory";
 
@@ -76,7 +76,7 @@ export function directoryToChart(people: DirectoryPerson[]): OrgChartPerson[] {
 /** Fetch the org graph from the backend. Throws on any network/HTTP error so
  *  the caller can decide whether to fall back. */
 export async function getOrgGraph(): Promise<OrgChartPerson[]> {
-  const res = await fetch(`${API_BASE}/org/graph`);
+  const res = await apiFetch("/org/graph");
   if (!res.ok) throw new Error(`org graph request failed: ${res.status}`);
   const data = (await res.json()) as ApiOrgGraph;
   return data.people.map(fromApi);

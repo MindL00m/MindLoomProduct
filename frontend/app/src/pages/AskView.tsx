@@ -1,23 +1,32 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp,
+  Database,
   FileText,
   Loader2,
+  MessageSquare,
   MessageSquarePlus,
   MessageSquareText,
+  Paperclip,
   Sparkles,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 import {
   askQuestion,
   citationText,
+  extractFileForChat,
   type ChatMessage,
+  type EphemeralDocument,
   type QueryResponse,
   type Source,
 } from "@/services/ask";
-import { useChat, type Conversation, type Turn } from "@/store/chat";
+import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
+import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
+
+const FILE_ACCEPT = ".pdf,.json,.txt,application/pdf,application/json,text/plain";
 
 const EXAMPLES = [
   "What did we decide about the pricing model?",
@@ -25,17 +34,17 @@ const EXAMPLES = [
   "Summarize the latest status on the migration.",
 ];
 
-const SOURCE_RE = /\[SOURCE:\s*([^\]]+?)\]/gi;
+const CITE_RE = /\[(?:SOURCE|EPHEMERAL):\s*([^\]]+?)\]/gi;
 
-/** Render an answer, converting [SOURCE: chunk_id] markers into numbered refs. */
+/** Render an answer, converting citation markers into numbered refs. */
 function renderAnswer(answer: string, sources: Source[]): ReactNode[] {
   const index = new Map(sources.map((s, i) => [s.chunk_id, i + 1]));
   const nodes: ReactNode[] = [];
   let last = 0;
   let key = 0;
   let match: RegExpExecArray | null;
-  SOURCE_RE.lastIndex = 0;
-  while ((match = SOURCE_RE.exec(answer)) !== null) {
+  CITE_RE.lastIndex = 0;
+  while ((match = CITE_RE.exec(answer)) !== null) {
     if (match.index > last) nodes.push(answer.slice(last, match.index));
     const n = index.get(match[1].trim());
     if (n) {
@@ -48,10 +57,21 @@ function renderAnswer(answer: string, sources: Source[]): ReactNode[] {
         </sup>,
       );
     }
-    last = SOURCE_RE.lastIndex;
+    last = CITE_RE.lastIndex;
   }
   if (last < answer.length) nodes.push(answer.slice(last));
   return nodes;
+}
+
+function ephemeralFrom(conversation: Conversation | undefined): EphemeralDocument[] {
+  if (!conversation?.attachments) return [];
+  return conversation.attachments
+    .filter((a) => a.scope === "chat" && a.status === "ready" && a.text)
+    .map((a) => ({
+      document_id: a.id,
+      filename: a.filename,
+      text: a.text!,
+    }));
 }
 
 /** Flatten completed turns into the chat history sent to the backend. */
@@ -85,10 +105,15 @@ export default function AskView() {
   const deleteConversation = useChat((s) => s.deleteConversation);
   const addTurn = useChat((s) => s.addTurn);
   const updateTurn = useChat((s) => s.updateTurn);
+  const addAttachment = useChat((s) => s.addAttachment);
+  const updateAttachment = useChat((s) => s.updateAttachment);
+  const removeAttachment = useChat((s) => s.removeAttachment);
 
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     ensureActive();
@@ -96,6 +121,8 @@ export default function AskView() {
 
   const active = conversations.find((c) => c.id === activeId);
   const turns = active?.turns ?? [];
+  const attachments = active?.attachments ?? [];
+  const hasChatFiles = attachments.some((a) => a.scope === "chat" && a.status === "ready");
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -105,14 +132,16 @@ export default function AskView() {
     const q = question.trim();
     if (!q || busy) return;
     const convId = ensureActive();
-    const history = historyFrom(useChat.getState().conversations.find((c) => c.id === convId));
+    const conv = useChat.getState().conversations.find((c) => c.id === convId);
+    const history = historyFrom(conv);
+    const ephemeral = ephemeralFrom(conv);
 
     const turnId = crypto.randomUUID();
     setInput("");
     setBusy(true);
     addTurn(convId, { id: turnId, question: q, status: "pending" });
     try {
-      const response = await askQuestion(q, history);
+      const response = await askQuestion(q, history, ephemeral);
       updateTurn(convId, turnId, { status: "done", response });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -121,6 +150,77 @@ export default function AskView() {
       });
     } finally {
       setBusy(false);
+    }
+  }
+
+  function handleFilePick(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    if (!isPdf(file) && !isJson(file) && !file.name.toLowerCase().endsWith(".txt")) {
+      alert("Supported files: PDF, JSON conversation exports, or plain text.");
+      return;
+    }
+    setPendingFile(file);
+  }
+
+  async function saveToKnowledgeGraph(file: File) {
+    const convId = ensureActive();
+    const attId = crypto.randomUUID();
+    setPendingFile(null);
+    addAttachment(convId, {
+      id: attId,
+      filename: file.name,
+      scope: "graph",
+      status: "processing",
+    });
+    try {
+      const result = await ingestFileToGraph(file, (status) => {
+        updateAttachment(convId, attId, {
+          status: status.status === "failed" ? "error" : "processing",
+          error: status.error ?? undefined,
+        });
+      });
+      if (result.status === "failed") {
+        updateAttachment(convId, attId, {
+          status: "error",
+          error: result.error ?? "Ingestion failed.",
+        });
+      } else {
+        updateAttachment(convId, attId, {
+          status: "ready",
+          ingestedChunks: result.result?.total_chunks ?? 0,
+        });
+      }
+    } catch (err) {
+      updateAttachment(convId, attId, {
+        status: "error",
+        error: err instanceof Error ? err.message : "Upload failed.",
+      });
+    }
+  }
+
+  async function useInChatOnly(file: File) {
+    const convId = ensureActive();
+    const attId = crypto.randomUUID();
+    setPendingFile(null);
+    addAttachment(convId, {
+      id: attId,
+      filename: file.name,
+      scope: "chat",
+      status: "processing",
+    });
+    try {
+      const extracted = await extractFileForChat(file);
+      updateAttachment(convId, attId, {
+        id: extracted.document_id,
+        status: "ready",
+        text: extracted.text,
+      });
+    } catch (err) {
+      updateAttachment(convId, attId, {
+        status: "error",
+        error: err instanceof Error ? err.message : "Could not read file.",
+      });
     }
   }
 
@@ -160,7 +260,34 @@ export default function AskView() {
           }}
           className="mx-auto w-full max-w-3xl pt-2"
         >
+          {attachments.length > 0 && activeId && (
+            <AttachmentBar
+              attachments={attachments}
+              onRemove={(id) => removeAttachment(activeId, id)}
+            />
+          )}
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={FILE_ACCEPT}
+            className="sr-only"
+            onChange={(e) => {
+              handleFilePick(e.target.files);
+              e.target.value = "";
+            }}
+          />
+
           <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-2 shadow-sm focus-within:border-primary">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => fileInputRef.current?.click()}
+              className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+              aria-label="Upload file"
+            >
+              <Paperclip className="size-4" />
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -188,9 +315,21 @@ export default function AskView() {
             </button>
           </div>
           <p className="mt-1.5 px-1 text-center text-xs text-muted-foreground">
-            Answers are grounded in your knowledge graph and cite their sources.
+            {hasChatFiles
+              ? "This chat includes attached files visible only here."
+              : "Answers cite the knowledge graph and any chat-only attachments."}
           </p>
         </form>
+
+        {pendingFile && (
+          <UploadChoiceModal
+            file={pendingFile}
+            onClose={() => setPendingFile(null)}
+            onGraph={() => void saveToKnowledgeGraph(pendingFile)}
+            onChat={() => void useInChatOnly(pendingFile)}
+            graphSupported={isPdf(pendingFile) || isJson(pendingFile)}
+          />
+        )}
       </section>
     </div>
   );
@@ -348,11 +487,12 @@ function TurnView({ turn }: { turn: Turn }) {
 }
 
 function AnswerView({ response }: { response: QueryResponse }) {
-  const cited = new Set(
-    (response.answer.match(SOURCE_RE) ?? [])
-      .map((m) => m.replace(SOURCE_RE, "$1").trim())
-      .filter(Boolean),
-  );
+  const cited = new Set<string>();
+  let match: RegExpExecArray | null;
+  CITE_RE.lastIndex = 0;
+  while ((match = CITE_RE.exec(response.answer)) !== null) {
+    cited.add(match[1].trim());
+  }
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -452,5 +592,130 @@ function ConfidencePill({
       <MessageSquareText className="size-3.5" />
       {label}
     </span>
+  );
+}
+
+function AttachmentBar({
+  attachments,
+  onRemove,
+}: {
+  attachments: ChatAttachment[];
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {attachments.map((a) => (
+        <span
+          key={a.id}
+          className={cn(
+            "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+            a.status === "error"
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : a.scope === "graph"
+                ? "border-brand-200 bg-brand-50 text-brand-800"
+                : "border-border bg-muted text-foreground",
+          )}
+        >
+          {a.scope === "graph" ? (
+            <Database className="size-3 shrink-0" />
+          ) : (
+            <MessageSquare className="size-3 shrink-0" />
+          )}
+          <span className="truncate">{a.filename}</span>
+          {a.status === "processing" && (
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+          )}
+          {a.status === "ready" && a.scope === "graph" && a.ingestedChunks != null && (
+            <span className="text-muted-foreground">· {a.ingestedChunks} chunks</span>
+          )}
+          {a.status === "ready" && a.scope === "chat" && (
+            <span className="text-muted-foreground">· this chat</span>
+          )}
+          {a.status === "error" && (
+            <span className="truncate text-destructive" title={a.error}>
+              · failed
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => onRemove(a.id)}
+            className="rounded p-0.5 hover:bg-black/5"
+            aria-label={`Remove ${a.filename}`}
+          >
+            <X className="size-3" />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function UploadChoiceModal({
+  file,
+  onClose,
+  onGraph,
+  onChat,
+  graphSupported,
+}: {
+  file: File;
+  onClose: () => void;
+  onGraph: () => void;
+  onChat: () => void;
+  graphSupported: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-lg border border-border bg-card p-5 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-lg font-semibold">Add {file.name}</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Should this file be saved to your organization&apos;s knowledge graph, or kept
+          private to this chat?
+        </p>
+        <div className="mt-5 flex flex-col gap-2">
+          <button
+            type="button"
+            disabled={!graphSupported}
+            onClick={onGraph}
+            className="flex items-start gap-3 rounded-md border border-border p-3 text-left transition-colors hover:border-primary hover:bg-brand-50/50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Database className="mt-0.5 size-5 shrink-0 text-brand-700" />
+            <span>
+              <span className="block text-sm font-medium">Save to knowledge graph</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {graphSupported
+                  ? "Chunk and index the file so everyone in your org can query it."
+                  : "Only PDF and JSON conversation exports can be saved to the graph."}
+              </span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onChat}
+            className="flex items-start gap-3 rounded-md border border-border p-3 text-left transition-colors hover:border-primary hover:bg-muted/50"
+          >
+            <MessageSquare className="mt-0.5 size-5 shrink-0 text-mist-700" />
+            <span>
+              <span className="block text-sm font-medium">Use in this chat only</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                The file stays in this conversation and is not added to the graph.
+              </span>
+            </span>
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full text-center text-sm text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }

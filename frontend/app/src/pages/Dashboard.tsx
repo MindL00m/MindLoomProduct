@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -22,6 +22,7 @@ import OrganizationView from "@/pages/OrganizationView";
 import UploadData from "@/pages/UploadData";
 import AskView from "@/pages/AskView";
 import { useOnboarding } from "@/store/onboarding";
+import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
 
 type ViewId =
@@ -44,8 +45,11 @@ const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
 ];
 
 export default function Dashboard() {
-  const { organizationName, summary, selectedProvider, csvFileName } =
-    useOnboarding();
+  const navigate = useNavigate();
+  const { summary, selectedProvider, csvFileName } = useOnboarding();
+  const orgName = useSession((s) => s.orgName);
+  const email = useSession((s) => s.email);
+  const clearSession = useSession((s) => s.clearSession);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [view, setView] = useState<ViewId>("overview");
 
@@ -104,9 +108,8 @@ export default function Dashboard() {
           ))}
         </nav>
         <div className="border-t border-border p-4">
-          <p className="truncate text-xs text-muted-foreground">
-            {organizationName || "Acme Inc"}
-          </p>
+          <p className="truncate text-sm font-medium">{orgName || "Organization"}</p>
+          <p className="truncate text-xs text-muted-foreground">{email}</p>
         </div>
       </aside>
 
@@ -129,12 +132,16 @@ export default function Dashboard() {
             <Menu className="size-5" />
           </button>
           <h1 className="text-sm font-semibold text-foreground">{activeLabel}</h1>
-          <Link
-            to="/setup"
+          <button
+            type="button"
             className="ml-auto text-sm text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              clearSession();
+              navigate("/setup");
+            }}
           >
-            Setup wizard
-          </Link>
+            Sign out
+          </button>
         </header>
 
         {view === "overview" && (

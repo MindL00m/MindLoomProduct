@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { SetupLayout } from "@/components/SetupLayout";
+import { RequireSession } from "@/components/RequireSession";
 import Welcome from "@/pages/setup/Welcome";
+import SignIn from "@/pages/setup/SignIn";
 import CreateOrg from "@/pages/setup/CreateOrg";
 import ChooseSource from "@/pages/setup/ChooseSource";
 import ConnectGoogle from "@/pages/setup/ConnectGoogle";
@@ -17,6 +19,7 @@ export default function App() {
 
       <Route element={<SetupLayout />}>
         <Route path="/setup" element={<Welcome />} />
+        <Route path="/setup/signin" element={<SignIn />} />
         <Route path="/setup/org" element={<CreateOrg />} />
         <Route path="/setup/source" element={<ChooseSource />} />
         <Route path="/setup/google" element={<ConnectGoogle />} />
@@ -26,7 +29,9 @@ export default function App() {
         <Route path="/setup/complete" element={<Complete />} />
       </Route>
 
-      <Route path="/dashboard" element={<Dashboard />} />
+      <Route element={<RequireSession />}>
+        <Route path="/dashboard" element={<Dashboard />} />
+      </Route>
 
       <Route path="*" element={<Navigate to="/setup" replace />} />
     </Routes>

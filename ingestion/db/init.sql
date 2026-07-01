@@ -1,12 +1,35 @@
--- Company Brain — PostgreSQL schema for WhatsApp ingestion.
+-- Company Brain — PostgreSQL schema.
 -- Run against the target database before starting the service.
 
--- Required for vector storage / similarity search.
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Raw chunk text and extracted metadata.
+-- --- Tenancy -------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS organizations (
+    org_id     TEXT PRIMARY KEY,
+    name       TEXT        NOT NULL,
+    domain     TEXT        NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id    TEXT PRIMARY KEY,
+    org_id     TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    email      TEXT        NOT NULL UNIQUE,
+    google_sub TEXT,
+    name       TEXT,
+    photo_url  TEXT,
+    role       TEXT        NOT NULL DEFAULT 'member',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_org_id ON users (org_id);
+
+-- --- Chunks (org-scoped) -------------------------------------------------
+
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id          TEXT PRIMARY KEY,
+    org_id            TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
     raw_text          TEXT        NOT NULL,
     start_time        TIMESTAMPTZ NOT NULL,
     end_time          TIMESTAMPTZ NOT NULL,
@@ -18,24 +41,25 @@ CREATE TABLE IF NOT EXISTS chunks (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX IF NOT EXISTS idx_chunks_org_id ON chunks (org_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_knowledge_type ON chunks (knowledge_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_start_time ON chunks (start_time);
 
--- Embedding vectors (text-embedding-3-small -> 1536 dimensions).
 CREATE TABLE IF NOT EXISTS chunk_embeddings (
     chunk_id  TEXT PRIMARY KEY REFERENCES chunks (chunk_id) ON DELETE CASCADE,
     embedding VECTOR(1536) NOT NULL
 );
 
--- Approximate nearest-neighbour index for cosine similarity search.
 CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_cosine
     ON chunk_embeddings
     USING ivfflat (embedding vector_cosine_ops)
     WITH (lists = 100);
 
--- One row per ingested conversation (any connector: whatsapp, teams, slack).
+-- --- Conversations (org-scoped) ------------------------------------------
+
 CREATE TABLE IF NOT EXISTS conversations (
     conversation_id   TEXT PRIMARY KEY,
+    org_id            TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
     source            TEXT NOT NULL,
     title             TEXT,
     participant_count INTEGER,
@@ -43,9 +67,13 @@ CREATE TABLE IF NOT EXISTS conversations (
     ingested_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Persisted ingestion job state (allows recovery across restarts).
+CREATE INDEX IF NOT EXISTS idx_conversations_org_id ON conversations (org_id);
+
+-- --- Ingestion jobs (org-scoped) -----------------------------------------
+
 CREATE TABLE IF NOT EXISTS ingestion_jobs (
     job_id          TEXT PRIMARY KEY,
+    org_id          TEXT REFERENCES organizations (org_id) ON DELETE CASCADE,
     conversation_id TEXT,
     status          TEXT NOT NULL,
     progress        TEXT,
@@ -53,3 +81,5 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org_id ON ingestion_jobs (org_id);

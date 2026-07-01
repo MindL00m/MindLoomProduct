@@ -41,6 +41,7 @@ class ChunkRow(Base):
     __tablename__ = "chunks"
 
     chunk_id: Mapped[str] = mapped_column(String, primary_key=True)
+    org_id: Mapped[str] = mapped_column(String, nullable=False)
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -61,7 +62,9 @@ class ChunkEmbeddingRow(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
 
 
-async def save_to_postgres(chunk: Chunk, metadata: ChunkMetadata, embedding: list[float]) -> None:
+async def save_to_postgres(
+    chunk: Chunk, metadata: ChunkMetadata, embedding: list[float], org_id: str
+) -> None:
     """Persist a chunk, its metadata, and its embedding to PostgreSQL.
 
     Idempotent: re-ingesting the same ``chunk_id`` upserts both rows.
@@ -82,6 +85,7 @@ async def save_to_postgres(chunk: Chunk, metadata: ChunkMetadata, embedding: lis
 
     chunk_values = {
         "chunk_id": chunk.chunk_id,
+        "org_id": org_id,
         "raw_text": chunk.raw_text,
         "start_time": chunk.start_time,
         "end_time": chunk.end_time,
@@ -127,8 +131,9 @@ _ANSWERED_SIGNAL_TYPE = "explicit"  # LLM-extracted answers are treated as expli
 # fields get sensible defaults on create so every Person is shape-consistent.
 _PEOPLE_CYPHER = """
 UNWIND $people AS name
-MERGE (p:Person {canonical_name: name})
+MERGE (p:Person {org_id: $org_id, canonical_name: name})
 ON CREATE SET p.person_id = randomUUID(),
+              p.org_id = $org_id,
               p.name = name,
               p.is_system_user = false,
               p.status = 'active',
@@ -142,11 +147,11 @@ SET p.updated_at = $ts,
     END
 """
 
-# Entities are de-duplicated on canonical_name; a stable entity_id is minted once.
 _ENTITIES_CYPHER = """
 UNWIND $entities AS ent
-MERGE (e:Entity {canonical_name: ent.name})
+MERGE (e:Entity {org_id: $org_id, canonical_name: ent.name})
 ON CREATE SET e.entity_id = randomUUID(),
+              e.org_id = $org_id,
               e.name = ent.name,
               e.type = ent.type
 SET e.visible_to = $visible_to
@@ -154,7 +159,8 @@ SET e.visible_to = $visible_to
 
 _CHUNK_NODE_CYPHER = """
 MERGE (c:Chunk {chunk_id: $chunk_id})
-SET c.raw_text = $raw_text,
+SET c.org_id = $org_id,
+    c.raw_text = $raw_text,
     c.summary = $summary,
     c.knowledge_type = $knowledge_type,
     c.confidence = $confidence,
@@ -168,41 +174,41 @@ SET c.raw_text = $raw_text,
 """
 
 _MENTIONED_IN_CYPHER = """
-MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
 UNWIND $people AS name
-MATCH (p:Person {canonical_name: name})
+MATCH (p:Person {org_id: $org_id, canonical_name: name})
 MERGE (p)-[r:MENTIONED_IN]->(c)
 SET r.timestamp = $ts
 """
 
 _RELATES_TO_CYPHER = """
-MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
 UNWIND $rels AS rel
-MATCH (e:Entity {canonical_name: rel.name})
+MATCH (e:Entity {org_id: $org_id, canonical_name: rel.name})
 MERGE (c)-[r:RELATES_TO]->(e)
 SET r.relevance = rel.relevance
 """
 
 _ASKED_CYPHER = """
-MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
 UNWIND $people AS name
-MATCH (p:Person {canonical_name: name})
+MATCH (p:Person {org_id: $org_id, canonical_name: name})
 MERGE (p)-[r:ASKED]->(c)
 SET r.timestamp = $ts
 """
 
 _ANSWERED_CYPHER = """
-MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
 UNWIND $people AS name
-MATCH (p:Person {canonical_name: name})
+MATCH (p:Person {org_id: $org_id, canonical_name: name})
 MERGE (p)-[r:ANSWERED]->(c)
 SET r.timestamp = $ts, r.signal_type = $signal_type
 """
 
 _OWNS_CYPHER = """
 UNWIND $pairs AS pair
-MATCH (p:Person {canonical_name: pair.person})
-MATCH (e:Entity {canonical_name: pair.topic})
+MATCH (p:Person {org_id: $org_id, canonical_name: pair.person})
+MATCH (e:Entity {org_id: $org_id, canonical_name: pair.topic})
 MERGE (p)-[r:OWNS]->(e)
 ON CREATE SET r.since = $ts
 SET r.confirmed = false
@@ -211,29 +217,30 @@ SET r.confirmed = false
 _QUESTION_NODE_CYPHER = """
 MERGE (q:Question {question_id: $question_id})
 ON CREATE SET q.created_at = $created_at
-SET q.text = $text,
+SET q.org_id = $org_id,
+    q.text = $text,
     q.status = $status,
     q.resolved_at = $resolved_at,
     q.visible_to = $visible_to
 """
 
 _QUESTION_ASKED_BY_CYPHER = """
-MATCH (q:Question {question_id: $question_id})
+MATCH (q:Question {question_id: $question_id, org_id: $org_id})
 UNWIND $people AS name
-MATCH (p:Person {canonical_name: name})
+MATCH (p:Person {org_id: $org_id, canonical_name: name})
 MERGE (q)-[:ASKED_BY]->(p)
 """
 
 _QUESTION_RELATED_TO_CYPHER = """
-MATCH (q:Question {question_id: $question_id})
+MATCH (q:Question {question_id: $question_id, org_id: $org_id})
 UNWIND $entities AS name
-MATCH (e:Entity {canonical_name: name})
+MATCH (e:Entity {org_id: $org_id, canonical_name: name})
 MERGE (q)-[:RELATED_TO]->(e)
 """
 
 _QUESTION_ANSWERED_BY_CYPHER = """
-MATCH (q:Question {question_id: $question_id})
-MATCH (c:Chunk {chunk_id: $chunk_id})
+MATCH (q:Question {question_id: $question_id, org_id: $org_id})
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
 MERGE (q)-[r:ANSWERED_BY]->(c)
 SET r.timestamp = $ts
 """
@@ -242,6 +249,7 @@ SET r.timestamp = $ts
 async def save_to_neo4j(
     chunk: Chunk,
     metadata: ChunkMetadata,
+    org_id: str,
     source: str = "unknown",
     source_label: str = "",
     visible_to: list[str] | None = None,
@@ -305,6 +313,7 @@ async def save_to_neo4j(
     async def _write(tx) -> None:  # type: ignore[no-untyped-def]
         await tx.run(
             _CHUNK_NODE_CYPHER,
+            org_id=org_id,
             chunk_id=chunk.chunk_id,
             raw_text=chunk.raw_text,
             summary=metadata.summary,
@@ -319,29 +328,47 @@ async def save_to_neo4j(
             created_at=now,
         )
         if all_people:
-            await tx.run(_PEOPLE_CYPHER, people=all_people, ts=end_time)
+            await tx.run(_PEOPLE_CYPHER, org_id=org_id, people=all_people, ts=end_time)
         if entity_nodes:
-            await tx.run(_ENTITIES_CYPHER, entities=entity_nodes, visible_to=visible)
+            await tx.run(
+                _ENTITIES_CYPHER, org_id=org_id, entities=entity_nodes, visible_to=visible
+            )
         if relates:
-            await tx.run(_RELATES_TO_CYPHER, chunk_id=chunk.chunk_id, rels=relates)
+            await tx.run(
+                _RELATES_TO_CYPHER, org_id=org_id, chunk_id=chunk.chunk_id, rels=relates
+            )
         if mentioned:
-            await tx.run(_MENTIONED_IN_CYPHER, chunk_id=chunk.chunk_id, people=mentioned, ts=start_time)
+            await tx.run(
+                _MENTIONED_IN_CYPHER,
+                org_id=org_id,
+                chunk_id=chunk.chunk_id,
+                people=mentioned,
+                ts=start_time,
+            )
         if asked:
-            await tx.run(_ASKED_CYPHER, chunk_id=chunk.chunk_id, people=asked, ts=start_time)
+            await tx.run(
+                _ASKED_CYPHER,
+                org_id=org_id,
+                chunk_id=chunk.chunk_id,
+                people=asked,
+                ts=start_time,
+            )
         if answered:
             await tx.run(
                 _ANSWERED_CYPHER,
+                org_id=org_id,
                 chunk_id=chunk.chunk_id,
                 people=answered,
                 ts=end_time,
                 signal_type=_ANSWERED_SIGNAL_TYPE,
             )
         if owns_pairs:
-            await tx.run(_OWNS_CYPHER, pairs=owns_pairs, ts=start_time)
+            await tx.run(_OWNS_CYPHER, org_id=org_id, pairs=owns_pairs, ts=start_time)
 
         if is_question:
             await tx.run(
                 _QUESTION_NODE_CYPHER,
+                org_id=org_id,
                 question_id=question_id,
                 text=metadata.summary,
                 status="resolved" if resolved else "unresolved",
@@ -350,16 +377,23 @@ async def save_to_neo4j(
                 visible_to=visible,
             )
             if asked:
-                await tx.run(_QUESTION_ASKED_BY_CYPHER, question_id=question_id, people=asked)
+                await tx.run(
+                    _QUESTION_ASKED_BY_CYPHER,
+                    org_id=org_id,
+                    question_id=question_id,
+                    people=asked,
+                )
             if question_entities:
                 await tx.run(
                     _QUESTION_RELATED_TO_CYPHER,
+                    org_id=org_id,
                     question_id=question_id,
                     entities=question_entities,
                 )
             if resolved:
                 await tx.run(
                     _QUESTION_ANSWERED_BY_CYPHER,
+                    org_id=org_id,
                     question_id=question_id,
                     chunk_id=chunk.chunk_id,
                     ts=end_time,
@@ -380,8 +414,9 @@ async def save_to_neo4j(
 # properties cannot hold maps.
 _DIRECTORY_UPSERT_CYPHER = """
 UNWIND $people AS p
-MERGE (person:Person {canonical_email: p.canonical_email})
+MERGE (person:Person {org_id: $org_id, canonical_email: p.canonical_email})
 ON CREATE SET person.person_id = randomUUID(),
+              person.org_id = $org_id,
               person.created_at = $now,
               person.is_system_user = false
 SET person.email = p.email,
@@ -411,8 +446,8 @@ SET person.email = p.email,
 # match and are silently skipped (the person still imports, just unlinked).
 _DIRECTORY_REPORTS_TO_CYPHER = """
 UNWIND $links AS link
-MATCH (p:Person {canonical_email: link.canonical_email})
-MATCH (m:Person {canonical_email: link.manager_email})
+MATCH (p:Person {org_id: $org_id, canonical_email: link.canonical_email})
+MATCH (m:Person {org_id: $org_id, canonical_email: link.manager_email})
 MERGE (p)-[:REPORTS_TO]->(m)
 SET p.manager_id = m.person_id
 RETURN count(*) AS linked
@@ -430,6 +465,7 @@ def _canonical(value: str | None) -> str | None:
 
 async def upsert_directory(
     people: list[DirectoryPerson],
+    org_id: str,
     source: str = "csv",
 ) -> DirectoryIngestResult:
     """Upsert directory people into Neo4j and wire their reporting hierarchy.
@@ -496,9 +532,11 @@ async def upsert_directory(
     async def _write(tx) -> int:  # type: ignore[no-untyped-def]
         linked = 0
         if rows:
-            await tx.run(_DIRECTORY_UPSERT_CYPHER, people=rows, now=now)
+            await tx.run(_DIRECTORY_UPSERT_CYPHER, org_id=org_id, people=rows, now=now)
         if links:
-            result = await tx.run(_DIRECTORY_REPORTS_TO_CYPHER, links=links)
+            result = await tx.run(
+                _DIRECTORY_REPORTS_TO_CYPHER, org_id=org_id, links=links
+            )
             record = await result.single()
             linked = record["linked"] if record else 0
         return linked
@@ -528,9 +566,9 @@ async def upsert_directory(
 # Public-facing org graph: directory people (those with an email) and their
 # REPORTS_TO edges. Internal fields (user_id, source_ids, ...) are not selected.
 _ORG_GRAPH_CYPHER = """
-MATCH (p:Person)
+MATCH (p:Person {org_id: $org_id})
 WHERE p.canonical_email IS NOT NULL
-OPTIONAL MATCH (p)-[:REPORTS_TO]->(m:Person)
+OPTIONAL MATCH (p)-[:REPORTS_TO]->(m:Person {org_id: $org_id})
 RETURN p.person_id AS id,
        p.name AS name,
        p.preferred_name AS preferred_name,
@@ -550,11 +588,11 @@ ORDER BY name
 """
 
 
-async def fetch_org_graph() -> OrgGraphResponse:
+async def fetch_org_graph(org_id: str) -> OrgGraphResponse:
     """Return the org chart: public person profiles + REPORTS_TO edges."""
 
     async def _read(tx) -> list[dict]:  # type: ignore[no-untyped-def]
-        result = await tx.run(_ORG_GRAPH_CYPHER)
+        result = await tx.run(_ORG_GRAPH_CYPHER, org_id=org_id)
         return [record.data() async for record in result]
 
     driver = get_neo4j_driver()

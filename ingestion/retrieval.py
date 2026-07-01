@@ -70,7 +70,8 @@ _VECTOR_SQL = text(
         1 - (ce.embedding <=> CAST(:query_vector AS vector)) AS similarity_score
     FROM chunks c
     JOIN chunk_embeddings ce ON c.chunk_id = ce.chunk_id
-    WHERE 1 - (ce.embedding <=> CAST(:query_vector AS vector)) > :threshold
+    WHERE c.org_id = :org_id
+      AND 1 - (ce.embedding <=> CAST(:query_vector AS vector)) > :threshold
     ORDER BY similarity_score DESC
     LIMIT :limit
     """
@@ -78,7 +79,7 @@ _VECTOR_SQL = text(
 
 # Query 1 — activity on chunks (ANSWERED / MENTIONED_IN).
 _ACTIVITY_CYPHER = """
-MATCH (p:Person)-[r:ANSWERED|MENTIONED_IN]->(c:Chunk)-[:RELATES_TO]->(e:Entity)
+MATCH (p:Person {org_id: $org_id})-[r:ANSWERED|MENTIONED_IN]->(c:Chunk {org_id: $org_id})-[:RELATES_TO]->(e:Entity {org_id: $org_id})
 WHERE e.canonical_name CONTAINS $entity_name
 WITH p, count(r) as rel_count, collect(type(r)) as rel_types
 RETURN p.name as name, rel_count, rel_types
@@ -86,9 +87,8 @@ ORDER BY rel_count DESC
 LIMIT 3
 """
 
-# Query 2 — ownership of entities (OWNS targets Entity, not Chunk).
 _OWNS_CYPHER = """
-MATCH (p:Person)-[r:OWNS]->(e:Entity)
+MATCH (p:Person {org_id: $org_id})-[r:OWNS]->(e:Entity {org_id: $org_id})
 WHERE e.canonical_name CONTAINS $entity_name
 WITH p, count(r) as rel_count, collect(type(r)) as rel_types
 RETURN p.name as name, rel_count, rel_types
@@ -200,12 +200,13 @@ async def _extract_entities(question: str) -> list[str]:
         return []
 
 
-async def _vector_search(query_vector: list[float]) -> list[ChunkResult]:
+async def _vector_search(query_vector: list[float], org_id: str) -> list[ChunkResult]:
     """Task 3 — pgvector cosine-similarity search over chunks."""
 
     settings = get_settings()
     session_factory = get_session_factory()
     params = {
+        "org_id": org_id,
         "query_vector": _format_vector(query_vector),
         "threshold": settings.retrieval_similarity_threshold,
         "limit": settings.retrieval_chunk_limit,
@@ -251,11 +252,11 @@ def _build_reason(rel_counts: Counter[str], entities: list[str]) -> str:
     return f"{body}{suffix}."
 
 
-async def _run_expert_query(cypher: str, entity_name: str) -> list[dict]:
+async def _run_expert_query(cypher: str, entity_name: str, org_id: str) -> list[dict]:
     """Run a single expert traversal query for one entity in its own session."""
 
     async def _traverse(tx) -> list[dict]:  # type: ignore[no-untyped-def]
-        result = await tx.run(cypher, entity_name=entity_name)
+        result = await tx.run(cypher, entity_name=entity_name, org_id=org_id)
         return [record.data() async for record in result]
 
     driver = get_neo4j_driver()
@@ -263,7 +264,7 @@ async def _run_expert_query(cypher: str, entity_name: str) -> list[dict]:
         return await session.execute_read(_traverse)
 
 
-async def _expert_search(entities: list[str]) -> list[ExpertResult]:
+async def _expert_search(entities: list[str], org_id: str) -> list[ExpertResult]:
     """Task 4 — traverse Neo4j for experts connected to the question's entities.
 
     Runs two queries per entity concurrently (chunk activity + entity ownership)
@@ -279,7 +280,7 @@ async def _expert_search(entities: list[str]) -> list[ExpertResult]:
     tasks = []
     for entity in entities:
         for cypher in (_ACTIVITY_CYPHER, _OWNS_CYPHER):
-            tasks.append(_run_expert_query(cypher, entity))
+            tasks.append(_run_expert_query(cypher, entity, org_id))
             entity_for_task.append(entity)
 
     results = await asyncio.gather(*tasks)
@@ -311,7 +312,7 @@ async def _expert_search(entities: list[str]) -> list[ExpertResult]:
 
 
 async def retrieve(
-    question: str, history: list[ChatMessage] | None = None
+    question: str, history: list[ChatMessage] | None = None, org_id: str = ""
 ) -> RetrievalResult:
     """Retrieve relevant chunks and experts for a natural-language question.
 
@@ -334,11 +335,11 @@ async def retrieve(
 
     async def _chunk_pipeline() -> list[ChunkResult]:
         query_vector = await _embed_question(search_query)
-        return await _vector_search(query_vector)
+        return await _vector_search(query_vector, org_id)
 
     async def _expert_pipeline() -> tuple[list[str], list[ExpertResult]]:
         entities = await _extract_entities(search_query)
-        experts = await _expert_search(entities)
+        experts = await _expert_search(entities, org_id)
         return entities, experts
 
     chunks, (entities, experts) = await asyncio.gather(

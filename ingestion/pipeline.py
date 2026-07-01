@@ -86,6 +86,7 @@ async def _process_chunk(
     document_id: str,
     locator: DerivedFrom,
     visible_to: list[str],
+    org_id: str,
     repository: DocumentRepository,
 ) -> _ChunkOutcome:
     """Extract, embed, and persist a single chunk, then link it to its document.
@@ -99,18 +100,21 @@ async def _process_chunk(
     try:
         metadata = await extract_chunk_metadata(chunk)
         embedding = await embed_chunk(chunk, metadata)
-        await save_to_postgres(chunk, metadata, embedding)
+        await save_to_postgres(chunk, metadata, embedding, org_id)
         await save_to_neo4j(
             chunk,
             metadata,
+            org_id,
             source=source,
             source_label=source_label,
             visible_to=visible_to,
         )
-        # Create the citation edge immediately on chunk creation, not in a
-        # separate pass, so a chunk is never persisted without its provenance.
         await link_chunk_to_document(
-            chunk.chunk_id, document_id, locator, repository=repository
+            chunk.chunk_id,
+            document_id,
+            locator,
+            org_id=org_id,
+            repository=repository,
         )
         logger.info("Processed chunk %s (type=%s)", chunk.chunk_id, metadata.knowledge_type)
         return _ChunkOutcome(knowledge_type=metadata.knowledge_type, failed=False)
@@ -121,6 +125,7 @@ async def _process_chunk(
 
 async def run_ingestion(
     conversation: Conversation,
+    org_id: str,
     *,
     document: DocumentInput | None = None,
     repository: DocumentRepository | None = None,
@@ -162,6 +167,7 @@ async def run_ingestion(
     # --- Intake: persist the raw document + Document node before chunking. ---
     document = document or _document_from_conversation(conversation)
     store_result = await store_document(
+        org_id=org_id,
         data=document.data,
         source=document.source,
         source_label=document.source_label,
@@ -239,6 +245,7 @@ async def run_ingestion(
                     doc.document_id,
                     locator,
                     doc.visible_to,
+                    org_id,
                     repository,
                 )
                 for chunk, locator in zip(chunks, locators)
@@ -274,6 +281,7 @@ async def run_ingestion(
 async def run_ingestion_background(
     job_id: str,
     conversation: Conversation,
+    org_id: str,
     job_store: dict[str, JobStatus],
 ) -> None:
     """Run :func:`run_ingestion` as a background job, updating ``job_store``.
@@ -303,7 +311,7 @@ async def run_ingestion_background(
     logger.info("Job %s: processing conversation '%s'", job_id, conversation.conversation_id)
 
     try:
-        result = await run_ingestion(conversation)
+        result = await run_ingestion(conversation, org_id)
         job.status = "complete"
         job.progress = "Ingestion complete"
         job.result = result
@@ -318,6 +326,7 @@ async def run_ingestion_background(
 
 async def run_pdf_ingestion(
     data: bytes,
+    org_id: str,
     *,
     source_label: str,
     original_filename: str | None = None,
@@ -354,6 +363,7 @@ async def run_pdf_ingestion(
     logger.info("Starting PDF ingestion for '%s'", source_label)
 
     store_result = await store_document(
+        org_id=org_id,
         data=data,
         source="pdf",
         source_label=source_label,
@@ -419,6 +429,7 @@ async def run_pdf_ingestion(
                     doc.document_id,
                     locator,
                     doc.visible_to,
+                    org_id,
                     repository,
                 )
                 for chunk, locator in zip(chunks, locators)
@@ -452,6 +463,7 @@ async def run_pdf_ingestion_background(
     job_id: str,
     data: bytes,
     filename: str,
+    org_id: str,
     visible_to: list[str],
     job_store: dict[str, JobStatus],
 ) -> None:
@@ -469,6 +481,7 @@ async def run_pdf_ingestion_background(
     try:
         result = await run_pdf_ingestion(
             data,
+            org_id,
             source_label=filename or "PDF upload",
             original_filename=filename,
             visible_to=visible_to,

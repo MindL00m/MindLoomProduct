@@ -22,6 +22,8 @@ from documents import (
 )
 from models import DerivedFrom
 
+ORG_ID = "org-test"
+
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -38,6 +40,7 @@ async def test_store_document_dedup_on_rehash(tmp_path: Path) -> None:
     data = b"quarterly numbers,42\nmore numbers,43\n"
 
     first = await store_document(
+        org_id=ORG_ID,
         data=data,
         source="excel",
         source_label="Q3 Financials",
@@ -47,9 +50,8 @@ async def test_store_document_dedup_on_rehash(tmp_path: Path) -> None:
         storage=storage,
     )
 
-    # Same bytes, but uploaded with different metadata to prove de-dup keys on
-    # content, not filename/label.
     second = await store_document(
+        org_id=ORG_ID,
         data=data,
         source="excel",
         source_label="Totally Different Label",
@@ -81,6 +83,7 @@ async def test_distinct_content_creates_new_document(tmp_path: Path) -> None:
     storage = LocalBlobStorage(tmp_path)
 
     a = await store_document(
+        org_id=ORG_ID,
         data=b"alpha",
         source="email",
         source_label="Email A",
@@ -90,6 +93,7 @@ async def test_distinct_content_creates_new_document(tmp_path: Path) -> None:
         storage=storage,
     )
     b = await store_document(
+        org_id=ORG_ID,
         data=b"beta",
         source="email",
         source_label="Email B",
@@ -113,6 +117,7 @@ async def test_get_citation_for_pptx_chunk(tmp_path: Path) -> None:
     # PPTX files are zip containers; the magic bytes are enough for this test.
     pptx_bytes = b"PK\x03\x04 fake pptx payload for Q3 board deck"
     stored = await store_document(
+        org_id=ORG_ID,
         data=pptx_bytes,
         source="powerpoint",
         source_label="Q3 Board Deck",
@@ -127,10 +132,11 @@ async def test_get_citation_for_pptx_chunk(tmp_path: Path) -> None:
         chunk_id,
         stored.document.document_id,
         DerivedFrom(page_number=4),
+        org_id=ORG_ID,
         repository=repo,
     )
 
-    citation = await get_citation(chunk_id, repository=repo)
+    citation = await get_citation(chunk_id, org_id=ORG_ID, repository=repo)
 
     assert citation.chunk_id == chunk_id
     assert citation.document_id == stored.document.document_id
@@ -148,6 +154,7 @@ async def test_get_citation_char_offsets_render(tmp_path: Path) -> None:
     storage = LocalBlobStorage(tmp_path)
 
     stored = await store_document(
+        org_id=ORG_ID,
         data=b"a long email body about the migration plan",
         source="email",
         source_label="Migration Thread",
@@ -160,10 +167,11 @@ async def test_get_citation_char_offsets_render(tmp_path: Path) -> None:
         "chunk-email-1",
         stored.document.document_id,
         DerivedFrom(char_start=10, char_end=42),
+        org_id=ORG_ID,
         repository=repo,
     )
 
-    citation = await get_citation("chunk-email-1", repository=repo)
+    citation = await get_citation("chunk-email-1", org_id=ORG_ID, repository=repo)
     assert citation.locator() == "chars 10-42"
     assert citation.render() == (
         "Source: Migration Thread, migration.eml, chars 10-42"
@@ -175,4 +183,4 @@ async def test_get_citation_missing_raises() -> None:
 
     repo = InMemoryDocumentRepository()
     with pytest.raises(CitationNotFoundError):
-        await get_citation("does-not-exist", repository=repo)
+        await get_citation("does-not-exist", org_id=ORG_ID, repository=repo)

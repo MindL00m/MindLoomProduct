@@ -1,4 +1,21 @@
-/** Backend API configuration. Override at build/run time with VITE_API_BASE. */
+/** Backend API configuration and authenticated fetch wrapper. */
+
+import { getOrgId } from "@/store/session";
+
 export const API_BASE: string =
   (import.meta.env.VITE_API_BASE as string | undefined) ??
   "http://localhost:8000";
+
+/** Fetch with ``X-Org-Id`` when a session exists. Set ``skipAuth`` for public endpoints. */
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {},
+  { skipAuth = false }: { skipAuth?: boolean } = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (!skipAuth) {
+    const orgId = getOrgId();
+    if (orgId) headers.set("X-Org-Id", orgId);
+  }
+  return fetch(`${API_BASE}${path}`, { ...init, headers });
+}

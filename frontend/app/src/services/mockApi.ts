@@ -21,7 +21,7 @@
  */
 
 import { sleep } from "@/lib/utils";
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import { summarizeDirectory, type DirectoryPerson } from "@/lib/directory";
 import {
   SetupError,
@@ -148,7 +148,7 @@ export async function uploadCsvDirectory(
 
   let result: DirectoryIngestResult;
   try {
-    const res = await fetch(`${API_BASE}/ingest/directory`, {
+    const res = await apiFetch("/ingest/directory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source, people: people.map(toApiPerson) }),

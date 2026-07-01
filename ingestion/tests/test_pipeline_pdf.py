@@ -23,6 +23,8 @@ from documents import (
 from models import ChunkMetadata
 from pipeline import run_pdf_ingestion
 
+ORG_ID = "org-test"
+
 
 def _sample_pdf() -> bytes:
     doc = fitz.open()
@@ -54,10 +56,10 @@ def fake_side_effects(monkeypatch):
     async def fake_embed(chunk, metadata):
         return [0.0]
 
-    async def fake_save_pg(chunk, metadata, embedding):
+    async def fake_save_pg(chunk, metadata, embedding, org_id):
         return None
 
-    async def fake_save_neo(chunk, metadata, *, source, source_label, visible_to):
+    async def fake_save_neo(chunk, metadata, org_id, *, source, source_label, visible_to):
         saved.append((chunk, source, source_label, visible_to))
 
     monkeypatch.setattr(pipeline, "extract_chunk_metadata", fake_extract)
@@ -77,6 +79,7 @@ async def test_pdf_ingestion_creates_document_chunks_and_page_citations(
 
     result = await run_pdf_ingestion(
         data,
+        ORG_ID,
         source_label="report.pdf",
         original_filename="report.pdf",
         visible_to=["engineering"],
@@ -84,8 +87,7 @@ async def test_pdf_ingestion_creates_document_chunks_and_page_citations(
         storage=storage,
     )
 
-    # Document persisted as a pdf, raw bytes in the blob store.
-    doc = await repo.find_by_content_hash(compute_content_hash(data))
+    doc = await repo.find_by_content_hash(ORG_ID, compute_content_hash(data))
     assert doc is not None
     assert doc.source == "pdf"
     assert await storage.exists(doc.storage_path)
@@ -102,7 +104,7 @@ async def test_pdf_ingestion_creates_document_chunks_and_page_citations(
     for chunk, source, _label, visible_to in saved:
         assert source == "pdf"
         assert visible_to == ["engineering"]
-        citation = await get_citation(chunk.chunk_id, repository=repo)
+        citation = await get_citation(chunk.chunk_id, org_id=ORG_ID, repository=repo)
         assert citation.page_start is not None and citation.page_end is not None
         assert citation.page_start <= citation.page_end
         assert "report.pdf" in citation.render()
@@ -120,15 +122,15 @@ async def test_pdf_reupload_is_noop(tmp_path: Path, fake_side_effects):
     data = _sample_pdf()
 
     first = await run_pdf_ingestion(
-        data, source_label="report.pdf", original_filename="report.pdf",
+        data, ORG_ID, source_label="report.pdf", original_filename="report.pdf",
         repository=repo, storage=storage,
     )
     saved_after_first = len(saved)
-    doc = await repo.find_by_content_hash(compute_content_hash(data))
+    doc = await repo.find_by_content_hash(ORG_ID, compute_content_hash(data))
     assert doc is not None
 
     second = await run_pdf_ingestion(
-        data, source_label="report.pdf", original_filename="report.pdf",
+        data, ORG_ID, source_label="report.pdf", original_filename="report.pdf",
         repository=repo, storage=storage,
     )
 

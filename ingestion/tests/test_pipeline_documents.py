@@ -25,6 +25,8 @@ from documents import (
 from models import ChunkMetadata, Conversation, IncomingMessage, Participant
 from pipeline import DocumentInput, run_ingestion
 
+ORG_ID = "org-test"
+
 BASE = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
 
 
@@ -76,10 +78,10 @@ def fake_side_effects(monkeypatch):
     async def fake_embed(chunk, metadata):
         return [0.0]
 
-    async def fake_save_pg(chunk, metadata, embedding):
+    async def fake_save_pg(chunk, metadata, embedding, org_id):
         return None
 
-    async def fake_save_neo(chunk, metadata, *, source, source_label, visible_to):
+    async def fake_save_neo(chunk, metadata, org_id, *, source, source_label, visible_to):
         saved.append((chunk, source, source_label, visible_to))
 
     monkeypatch.setattr(pipeline, "extract_chunk_metadata", fake_extract)
@@ -116,11 +118,10 @@ async def test_pipeline_creates_document_chunks_and_citations(
     )
 
     result = await run_ingestion(
-        conversation, document=document, repository=repo, storage=storage
+        conversation, ORG_ID, document=document, repository=repo, storage=storage
     )
 
-    # --- Document created and its raw bytes stored in the blob store. ---
-    stored_doc = await repo.find_by_content_hash(compute_content_hash(data))
+    stored_doc = await repo.find_by_content_hash(ORG_ID, compute_content_hash(data))
     assert stored_doc is not None
     assert stored_doc.original_filename == filename
     assert await storage.exists(stored_doc.storage_path)
@@ -142,7 +143,7 @@ async def test_pipeline_creates_document_chunks_and_citations(
     expected = compute_chunk_locators(chunks_in_order, source)
 
     for chunk, exp in zip(chunks_in_order, expected):
-        citation = await get_citation(chunk.chunk_id, repository=repo)
+        citation = await get_citation(chunk.chunk_id, org_id=ORG_ID, repository=repo)
         assert citation.document_id == stored_doc.document_id
         rendered = citation.render()
         assert "engineering" not in rendered  # visibility is not leaked into citations
@@ -164,7 +165,7 @@ async def test_pipeline_creates_document_chunks_and_citations(
     if kind == "char":
         spans = []
         for chunk in chunks_in_order:
-            citation = await get_citation(chunk.chunk_id, repository=repo)
+            citation = await get_citation(chunk.chunk_id, org_id=ORG_ID, repository=repo)
             spans.append((citation.char_start, citation.char_end))
         spans.sort()
         assert spans[0][0] == 0
@@ -190,12 +191,13 @@ async def test_reupload_is_noop_and_does_not_duplicate_chunks(
 
     first = await run_ingestion(
         _conversation("whatsapp_export"),
+        ORG_ID,
         document=document,
         repository=repo,
         storage=storage,
     )
     assert first.total_chunks == 2
-    doc = await repo.find_by_content_hash(compute_content_hash(data))
+    doc = await repo.find_by_content_hash(ORG_ID, compute_content_hash(data))
     assert doc is not None
     links_after_first = await repo.count_chunks_for_document(doc.document_id)
     saved_after_first = len(saved)
@@ -203,6 +205,7 @@ async def test_reupload_is_noop_and_does_not_duplicate_chunks(
     # Re-upload the exact same document.
     second = await run_ingestion(
         _conversation("whatsapp_export"),
+        ORG_ID,
         document=document,
         repository=repo,
         storage=storage,
@@ -227,6 +230,7 @@ async def test_attach_citations_enriches_answer_sources(tmp_path: Path):
     repo = InMemoryDocumentRepository()
     storage = LocalBlobStorage(tmp_path)
     stored = await store_document(
+        org_id=ORG_ID,
         data=b"slide deck bytes",
         source="pptx",
         source_label="Q3 Board Deck",
@@ -236,7 +240,11 @@ async def test_attach_citations_enriches_answer_sources(tmp_path: Path):
         storage=storage,
     )
     await link_chunk_to_document(
-        "chunk-A", stored.document.document_id, DerivedFrom(page_number=2), repository=repo
+        "chunk-A",
+        stored.document.document_id,
+        DerivedFrom(page_number=2),
+        org_id=ORG_ID,
+        repository=repo,
     )
 
     def _chunk(chunk_id: str) -> ChunkResult:
@@ -254,7 +262,7 @@ async def test_attach_citations_enriches_answer_sources(tmp_path: Path):
 
     linked = _chunk("chunk-A")
     unlinked = _chunk("chunk-B")
-    await _attach_citations([linked, unlinked], repository=repo)
+    await _attach_citations([linked, unlinked], ORG_ID, repository=repo)
 
     assert linked.citation is not None
     assert linked.citation.render() == "Source: Q3 Board Deck, q3.pptx, page 2"

@@ -14,7 +14,7 @@ from openai import AsyncOpenAI
 
 from config import get_settings
 from documents import CitationNotFoundError, DocumentRepository, get_citation
-from models import ChatMessage, ChunkResult, QueryResponse, RetrievalResult
+from models import ChatMessage, ChunkResult, Citation, EphemeralDocument, QueryResponse, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,10 @@ company knowledge.
 Rules:
 - Answer only from the provided context. 
 - Never invent facts not present in the context.
-- Always cite the chunk_id of every source you use in your answer 
+- Always cite the chunk_id of every knowledge-graph source you use in your answer 
   using the format [SOURCE: chunk_id].
+- For chat-only attached files (marked EPHEMERAL), cite using 
+  [EPHEMERAL: document_id].
 - If the context does not contain enough information to answer 
   confidently, say so explicitly.
 - Be concise. One to three sentences unless the question requires more.
@@ -51,6 +53,7 @@ _LOW_CONFIDENCE_MARKERS = (
 
 async def _attach_citations(
     chunks: list[ChunkResult],
+    org_id: str,
     repository: DocumentRepository | None = None,
 ) -> None:
     """Populate each chunk's ``citation`` from its source document, in place.
@@ -61,7 +64,9 @@ async def _attach_citations(
 
     async def _fetch(chunk: ChunkResult) -> None:
         try:
-            chunk.citation = await get_citation(chunk.chunk_id, repository=repository)
+            chunk.citation = await get_citation(
+                chunk.chunk_id, org_id=org_id, repository=repository
+            )
         except CitationNotFoundError:
             chunk.citation = None
         except Exception:  # noqa: BLE001 - citations are non-critical metadata
@@ -72,10 +77,16 @@ async def _attach_citations(
         await asyncio.gather(*(_fetch(chunk) for chunk in chunks))
 
 
-def _build_context(retrieval: RetrievalResult) -> str:
-    """Render the retrieved chunks into a cited context string."""
+def _build_context(
+    retrieval: RetrievalResult, ephemeral: list[EphemeralDocument]
+) -> str:
+    """Render retrieved chunks and chat-only attachments into a context string."""
 
-    blocks = []
+    blocks: list[str] = []
+    for doc in ephemeral:
+        blocks.append(
+            f"[EPHEMERAL: {doc.document_id} | {doc.filename}]\n{doc.text}\n---"
+        )
     for chunk in retrieval.chunks:
         speakers = ", ".join(chunk.speakers)
         blocks.append(
@@ -84,6 +95,38 @@ def _build_context(retrieval: RetrievalResult) -> str:
             "---"
         )
     return "\n".join(blocks)
+
+
+def _ephemeral_sources(docs: list[EphemeralDocument]) -> list[ChunkResult]:
+    """Build synthetic source rows for chat-only attachments."""
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    sources: list[ChunkResult] = []
+    for doc in docs:
+        excerpt = doc.text if len(doc.text) <= 600 else doc.text[:600] + "…"
+        sources.append(
+            ChunkResult(
+                chunk_id=doc.document_id,
+                raw_text=excerpt,
+                summary=f"Attached file: {doc.filename}",
+                speakers=[],
+                start_time=now,
+                end_time=now,
+                knowledge_type="attached",
+                confidence="high",
+                similarity_score=1.0,
+                citation=Citation(
+                    chunk_id=doc.document_id,
+                    document_id=doc.document_id,
+                    source="chat_attachment",
+                    source_label=f"{doc.filename} (this chat only)",
+                    original_filename=doc.filename,
+                ),
+            )
+        )
+    return sources
 
 
 def _history_messages(history: list[ChatMessage]) -> list[dict[str, str]]:
@@ -97,6 +140,8 @@ async def generate_answer(
     question: str,
     retrieval: RetrievalResult,
     history: list[ChatMessage] | None = None,
+    org_id: str = "",
+    ephemeral_documents: list[EphemeralDocument] | None = None,
 ) -> QueryResponse:
     """Generate an answer for ``question`` from retrieved context.
 
@@ -110,7 +155,9 @@ async def generate_answer(
         routing metadata.
     """
 
-    if not retrieval.chunks:
+    ephemeral = ephemeral_documents or []
+
+    if not retrieval.chunks and not ephemeral:
         return QueryResponse(
             answer="I don't have enough information to answer this question.",
             sources=[],
@@ -120,7 +167,7 @@ async def generate_answer(
             routed_reason="No relevant chunks found in the knowledge base.",
         )
 
-    context_string = _build_context(retrieval)
+    context_string = _build_context(retrieval, ephemeral)
 
     settings = get_settings()
     client = AsyncOpenAI(
@@ -144,7 +191,7 @@ async def generate_answer(
     if any(marker in lowered for marker in _LOW_CONFIDENCE_MARKERS):
         confidence = "low"
         routed = True
-    elif len(retrieval.chunks) == 1:
+    elif len(retrieval.chunks) + len(ephemeral) == 1:
         confidence = "medium"
         routed = False
     else:
@@ -158,12 +205,15 @@ async def generate_answer(
         else None
     )
 
-    # Every source surfaced to a user carries its citation.
-    await _attach_citations(retrieval.chunks)
+    await _attach_citations(retrieval.chunks, org_id)
+
+    graph_sources = list(retrieval.chunks)
+    chat_sources = _ephemeral_sources(ephemeral)
+    all_sources = graph_sources + chat_sources
 
     return QueryResponse(
         answer=answer,
-        sources=retrieval.chunks,
+        sources=all_sources,
         expert=expert,
         confidence=confidence,
         routed=routed,

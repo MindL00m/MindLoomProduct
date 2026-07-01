@@ -121,6 +121,7 @@ class Document(BaseModel):
     """
 
     document_id: str = Field(description="Stable UUID identifying this document.")
+    org_id: str = Field(description="Organization that owns this document.")
     source: str = Field(description="Origin connector, e.g. whatsapp_export, email, excel.")
     source_label: str = Field(description="Human-readable label shown in citations.")
     original_filename: Optional[str] = Field(
@@ -331,6 +332,7 @@ class JobStatus(BaseModel):
     """State of an asynchronous ingestion job."""
 
     job_id: str = Field(description="Unique identifier for this ingestion job")
+    org_id: Optional[str] = Field(default=None, description="Organization that owns this job")
     status: Literal["queued", "processing", "complete", "failed"] = Field(
         description="Current status of the job"
     )
@@ -391,6 +393,23 @@ class ChatMessage(BaseModel):
     content: str = Field(description="The message text")
 
 
+class EphemeralDocument(BaseModel):
+    """Chat-only file content sent with a query (not stored in the knowledge graph)."""
+
+    document_id: str = Field(description="Client-generated id for citation")
+    filename: str = Field(description="Original upload filename")
+    text: str = Field(description="Extracted text from the file")
+
+
+class FileExtractResponse(BaseModel):
+    """Text extracted from an uploaded file for ephemeral chat context."""
+
+    document_id: str
+    filename: str
+    text: str
+    char_count: int
+
+
 class QueryRequest(BaseModel):
     """A natural-language query against the knowledge base."""
 
@@ -401,6 +420,10 @@ class QueryRequest(BaseModel):
     history: list[ChatMessage] = Field(
         default_factory=list,
         description="Prior turns in this conversation (oldest first), for memory.",
+    )
+    ephemeral_documents: list[EphemeralDocument] = Field(
+        default_factory=list,
+        description="Chat-only attachments available for this conversation only.",
     )
 
 
@@ -420,3 +443,44 @@ class QueryResponse(BaseModel):
     routed_reason: Optional[str] = Field(
         default=None, description="Present when routed is true, explains why"
     )
+
+
+# --- Auth / tenancy ---------------------------------------------------------
+
+
+class GoogleSignInRequest(BaseModel):
+    """Simulated Google SSO sign-in payload."""
+
+    email: str = Field(description="Google account email")
+    name: Optional[str] = Field(default=None, description="Display name")
+    photo_url: Optional[str] = Field(default=None, description="Profile photo URL")
+
+
+class CreateOrgRequest(BaseModel):
+    """Create a new organization and its first admin user."""
+
+    name: str = Field(description="Organization display name")
+    domain: str = Field(description="Primary email domain, e.g. acme.com")
+    admin_email: str = Field(description="Admin Google account email")
+    admin_name: Optional[str] = Field(default=None)
+    admin_photo_url: Optional[str] = Field(default=None)
+
+
+class AuthSessionResponse(BaseModel):
+    """Returned after sign-in or org creation."""
+
+    org_id: str
+    org_name: str
+    user_id: str
+    email: str
+    name: Optional[str] = None
+    photo_url: Optional[str] = None
+
+
+class OrgSummaryResponse(BaseModel):
+    """Org-scoped counts for dashboard and setup completion."""
+
+    organization: str
+    people: int
+    departments: int
+    groups: int

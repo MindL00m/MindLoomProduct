@@ -1,20 +1,20 @@
-// Company Brain — Neo4j constraints & indexes for the knowledge graph.
+// Company Brain — Neo4j constraints & indexes for the multi-tenant knowledge graph.
 // Run once against the target database before ingesting. Safe to re-run.
 
 // --- Person -----------------------------------------------------------------
-// Identity keys. person_id is the stable internal id; canonical_email is the
-// de-duplication key for directory-sourced people (lower-cased email).
 CREATE CONSTRAINT person_id_unique IF NOT EXISTS
 FOR (p:Person) REQUIRE p.person_id IS UNIQUE;
 
-CREATE CONSTRAINT person_canonical_email_unique IF NOT EXISTS
-FOR (p:Person) REQUIRE p.canonical_email IS UNIQUE;
+// Per-org email de-duplication (directory-sourced people).
+DROP CONSTRAINT person_canonical_email_unique IF EXISTS;
+CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS
+FOR (p:Person) REQUIRE (p.org_id, p.canonical_email) IS NODE KEY;
 
-// canonical_name is NO LONGER a unique identity: real directories contain
-// people who share a name, and people are now de-duplicated on email. Drop the
-// old uniqueness constraint (if present) and keep canonical_name only as a
-// lookup index. Chat-derived people (no email) still MERGE on canonical_name.
+// Chat-derived people (no email) merge on (org_id, canonical_name).
 DROP CONSTRAINT person_canonical_name_unique IF EXISTS;
+
+CREATE INDEX person_org_id_index IF NOT EXISTS
+FOR (p:Person) ON (p.org_id);
 
 CREATE INDEX person_canonical_name_index IF NOT EXISTS
 FOR (p:Person) ON (p.canonical_name);
@@ -32,25 +32,37 @@ FOR (p:Person) ON (p.status);
 CREATE CONSTRAINT entity_id_unique IF NOT EXISTS
 FOR (e:Entity) REQUIRE e.entity_id IS UNIQUE;
 
-CREATE CONSTRAINT entity_canonical_name_unique IF NOT EXISTS
-FOR (e:Entity) REQUIRE e.canonical_name IS UNIQUE;
+DROP CONSTRAINT entity_canonical_name_unique IF EXISTS;
+CREATE CONSTRAINT entity_org_name_unique IF NOT EXISTS
+FOR (e:Entity) REQUIRE (e.org_id, e.canonical_name) IS NODE KEY;
+
+CREATE INDEX entity_org_id_index IF NOT EXISTS
+FOR (e:Entity) ON (e.org_id);
 
 // --- Chunk ------------------------------------------------------------------
 CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS
 FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE;
 
+CREATE INDEX chunk_org_id_index IF NOT EXISTS
+FOR (c:Chunk) ON (c.org_id);
+
 // --- Question ---------------------------------------------------------------
 CREATE CONSTRAINT question_id_unique IF NOT EXISTS
 FOR (q:Question) REQUIRE q.question_id IS UNIQUE;
 
+CREATE INDEX question_org_id_index IF NOT EXISTS
+FOR (q:Question) ON (q.org_id);
+
 // --- Document ---------------------------------------------------------------
-// document_id is the stable internal id; content_hash (sha256 of the raw bytes)
-// is the de-duplication key so re-uploading identical content reuses one node.
 CREATE CONSTRAINT document_id_unique IF NOT EXISTS
 FOR (d:Document) REQUIRE d.document_id IS UNIQUE;
 
-CREATE CONSTRAINT document_content_hash_unique IF NOT EXISTS
-FOR (d:Document) REQUIRE d.content_hash IS UNIQUE;
+DROP CONSTRAINT document_content_hash_unique IF EXISTS;
+CREATE CONSTRAINT document_org_hash_unique IF NOT EXISTS
+FOR (d:Document) REQUIRE (d.org_id, d.content_hash) IS NODE KEY;
+
+CREATE INDEX document_org_id_index IF NOT EXISTS
+FOR (d:Document) ON (d.org_id);
 
 CREATE INDEX document_source_index IF NOT EXISTS
 FOR (d:Document) ON (d.source);

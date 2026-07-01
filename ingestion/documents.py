@@ -126,17 +126,11 @@ def compute_content_hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _storage_key(content_hash: str, original_filename: str | None) -> str:
-    """Build a content-addressed blob key, preserving the file extension.
-
-    Sharding by the first two hex chars keeps any single directory from holding
-    an unbounded number of files. Because the key is derived purely from the
-    content hash, identical bytes always map to the same key — so the blob layer
-    de-duplicates for free.
-    """
+def _storage_key(org_id: str, content_hash: str, original_filename: str | None) -> str:
+    """Build a content-addressed blob key scoped to an organization."""
 
     suffix = Path(original_filename).suffix.lower() if original_filename else ""
-    return f"{content_hash[:2]}/{content_hash}{suffix}"
+    return f"{org_id}/{content_hash[:2]}/{content_hash}{suffix}"
 
 
 # --- Repository abstraction -------------------------------------------------
@@ -146,8 +140,10 @@ class DocumentRepository(ABC):
     """Graph persistence for documents and their chunk links."""
 
     @abstractmethod
-    async def find_by_content_hash(self, content_hash: str) -> Optional[Document]:
-        """Return an existing document with this hash, or ``None``."""
+    async def find_by_content_hash(
+        self, org_id: str, content_hash: str
+    ) -> Optional[Document]:
+        """Return an existing document with this hash within ``org_id``, or ``None``."""
 
     @abstractmethod
     async def create(self, document: Document) -> Document:
@@ -159,12 +155,12 @@ class DocumentRepository(ABC):
 
     @abstractmethod
     async def link_chunk(
-        self, chunk_id: str, document_id: str, locator: DerivedFrom
+        self, chunk_id: str, document_id: str, locator: DerivedFrom, org_id: str
     ) -> None:
         """Create/Update a ``DERIVED_FROM`` edge from a chunk to a document."""
 
     @abstractmethod
-    async def get_citation(self, chunk_id: str) -> Optional[Citation]:
+    async def get_citation(self, chunk_id: str, org_id: str) -> Optional[Citation]:
         """Return the citation for ``chunk_id``, or ``None`` if unlinked."""
 
     @abstractmethod
@@ -188,6 +184,7 @@ def _document_from_record(record: dict) -> Document:
 
     return Document(
         document_id=record["document_id"],
+        org_id=record["org_id"],
         source=record["source"],
         source_label=record["source_label"],
         original_filename=record.get("original_filename"),
@@ -206,6 +203,7 @@ class Neo4jDocumentRepository(DocumentRepository):
 
     _RETURN_FIELDS = """
         d.document_id AS document_id,
+        d.org_id AS org_id,
         d.source AS source,
         d.source_label AS source_label,
         d.original_filename AS original_filename,
@@ -219,18 +217,16 @@ class Neo4jDocumentRepository(DocumentRepository):
     """
 
     _FIND_CYPHER = f"""
-    MATCH (d:Document {{content_hash: $content_hash}})
+    MATCH (d:Document {{org_id: $org_id, content_hash: $content_hash}})
     RETURN {_RETURN_FIELDS}
     LIMIT 1
     """
 
-    # MERGE on content_hash makes node creation idempotent even under a race:
-    # a concurrent caller that already created the node wins, and we return its
-    # id so the loser can detect the de-dup.
     _CREATE_CYPHER = f"""
-    MERGE (d:Document {{content_hash: $content_hash}})
+    MERGE (d:Document {{org_id: $org_id, content_hash: $content_hash}})
     ON CREATE SET
         d.document_id = $document_id,
+        d.org_id = $org_id,
         d.source = $source,
         d.source_label = $source_label,
         d.original_filename = $original_filename,
@@ -244,8 +240,8 @@ class Neo4jDocumentRepository(DocumentRepository):
     """
 
     _LINK_CYPHER = """
-    MATCH (c:Chunk {chunk_id: $chunk_id})
-    MATCH (d:Document {document_id: $document_id})
+    MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
+    MATCH (d:Document {document_id: $document_id, org_id: $org_id})
     MERGE (c)-[r:DERIVED_FROM]->(d)
     SET r.char_start = $char_start,
         r.char_end = $char_end,
@@ -257,7 +253,7 @@ class Neo4jDocumentRepository(DocumentRepository):
     """
 
     _CITATION_CYPHER = """
-    MATCH (c:Chunk {chunk_id: $chunk_id})-[r:DERIVED_FROM]->(d:Document)
+    MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})-[r:DERIVED_FROM]->(d:Document)
     RETURN c.chunk_id AS chunk_id,
            d.document_id AS document_id,
            d.source AS source,
@@ -284,9 +280,13 @@ class Neo4jDocumentRepository(DocumentRepository):
 
         return get_neo4j_driver()
 
-    async def find_by_content_hash(self, content_hash: str) -> Optional[Document]:
+    async def find_by_content_hash(
+        self, org_id: str, content_hash: str
+    ) -> Optional[Document]:
         async def _read(tx):  # type: ignore[no-untyped-def]
-            result = await tx.run(self._FIND_CYPHER, content_hash=content_hash)
+            result = await tx.run(
+                self._FIND_CYPHER, org_id=org_id, content_hash=content_hash
+            )
             return await result.single()
 
         async with self._driver().session() as session:
@@ -295,6 +295,7 @@ class Neo4jDocumentRepository(DocumentRepository):
 
     async def create(self, document: Document) -> Document:
         params = {
+            "org_id": document.org_id,
             "content_hash": document.content_hash,
             "document_id": document.document_id,
             "source": document.source,
@@ -317,9 +318,10 @@ class Neo4jDocumentRepository(DocumentRepository):
         return _document_from_record(record.data())
 
     async def link_chunk(
-        self, chunk_id: str, document_id: str, locator: DerivedFrom
+        self, chunk_id: str, document_id: str, locator: DerivedFrom, org_id: str
     ) -> None:
         params = {
+            "org_id": org_id,
             "chunk_id": chunk_id,
             "document_id": document_id,
             "char_start": locator.char_start,
@@ -343,9 +345,11 @@ class Neo4jDocumentRepository(DocumentRepository):
                 "chunk or document node not found."
             )
 
-    async def get_citation(self, chunk_id: str) -> Optional[Citation]:
+    async def get_citation(self, chunk_id: str, org_id: str) -> Optional[Citation]:
         async def _read(tx):  # type: ignore[no-untyped-def]
-            result = await tx.run(self._CITATION_CYPHER, chunk_id=chunk_id)
+            result = await tx.run(
+                self._CITATION_CYPHER, chunk_id=chunk_id, org_id=org_id
+            )
             return await result.single()
 
         async with self._driver().session() as session:
@@ -368,34 +372,41 @@ class InMemoryDocumentRepository(DocumentRepository):
     """In-memory repository for tests and local experiments."""
 
     def __init__(self) -> None:
-        self._by_hash: dict[str, Document] = {}
+        self._by_hash: dict[tuple[str, str], Document] = {}
         self._by_id: dict[str, Document] = {}
         self._links: dict[str, tuple[str, DerivedFrom]] = {}
 
-    async def find_by_content_hash(self, content_hash: str) -> Optional[Document]:
-        return self._by_hash.get(content_hash)
+    async def find_by_content_hash(
+        self, org_id: str, content_hash: str
+    ) -> Optional[Document]:
+        return self._by_hash.get((org_id, content_hash))
 
     async def create(self, document: Document) -> Document:
-        existing = self._by_hash.get(document.content_hash)
+        key = (document.org_id, document.content_hash)
+        existing = self._by_hash.get(key)
         if existing is not None:
             return existing
-        self._by_hash[document.content_hash] = document
+        self._by_hash[key] = document
         self._by_id[document.document_id] = document
         return document
 
     async def link_chunk(
-        self, chunk_id: str, document_id: str, locator: DerivedFrom
+        self, chunk_id: str, document_id: str, locator: DerivedFrom, org_id: str
     ) -> None:
         if document_id not in self._by_id:
             raise ValueError(f"Unknown document {document_id!r}")
+        if self._by_id[document_id].org_id != org_id:
+            raise ValueError(f"Document {document_id!r} does not belong to org {org_id!r}")
         self._links[chunk_id] = (document_id, locator)
 
-    async def get_citation(self, chunk_id: str) -> Optional[Citation]:
+    async def get_citation(self, chunk_id: str, org_id: str) -> Optional[Citation]:
         link = self._links.get(chunk_id)
         if link is None:
             return None
         document_id, locator = link
         document = self._by_id[document_id]
+        if document.org_id != org_id:
+            return None
         return Citation(
             chunk_id=chunk_id,
             document_id=document.document_id,
@@ -438,6 +449,7 @@ def _citation_from_record(record: dict) -> Citation:
 
 async def store_document(
     *,
+    org_id: str,
     data: bytes,
     source: str,
     source_label: str,
@@ -477,7 +489,7 @@ async def store_document(
 
     content_hash = compute_content_hash(data)
 
-    existing = await repository.find_by_content_hash(content_hash)
+    existing = await repository.find_by_content_hash(org_id, content_hash)
     if existing is not None:
         logger.info(
             "Document de-dup: reusing %s for content_hash %s…",
@@ -486,11 +498,12 @@ async def store_document(
         )
         return DocumentStoreResult(document=existing, deduped=True)
 
-    key = _storage_key(content_hash, original_filename)
+    key = _storage_key(org_id, content_hash, original_filename)
     storage_path = await storage.put(key, data)
 
     document = Document(
         document_id=str(uuid4()),
+        org_id=org_id,
         source=source,
         source_label=source_label,
         original_filename=original_filename,
@@ -515,17 +528,21 @@ async def link_chunk_to_document(
     document_id: str,
     locator: DerivedFrom | None = None,
     *,
+    org_id: str,
     repository: DocumentRepository | None = None,
 ) -> None:
     """Attach ``chunk_id`` to ``document_id`` via ``DERIVED_FROM`` with a locator."""
 
     repository = repository or Neo4jDocumentRepository()
-    await repository.link_chunk(chunk_id, document_id, locator or DerivedFrom())
+    await repository.link_chunk(
+        chunk_id, document_id, locator or DerivedFrom(), org_id
+    )
 
 
 async def get_citation(
     chunk_id: str,
     *,
+    org_id: str,
     repository: DocumentRepository | None = None,
 ) -> Citation:
     """Return a renderable :class:`Citation` for ``chunk_id``.
@@ -538,7 +555,7 @@ async def get_citation(
     """
 
     repository = repository or Neo4jDocumentRepository()
-    citation = await repository.get_citation(chunk_id)
+    citation = await repository.get_citation(chunk_id, org_id)
     if citation is None:
         raise CitationNotFoundError(chunk_id)
     return citation

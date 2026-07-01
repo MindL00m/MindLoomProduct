@@ -1,6 +1,6 @@
 /** Ask API: query the knowledge graph and receive a cited, routed answer. */
 
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 export interface Citation {
   chunk_id: string;
@@ -51,14 +51,43 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface EphemeralDocument {
+  document_id: string;
+  filename: string;
+  text: string;
+}
+
+export async function extractFileForChat(file: File): Promise<EphemeralDocument> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await apiFetch("/files/extract", { method: "POST", body: form });
+  if (!res.ok) {
+    let detail = `Could not read file (${res.status})`;
+    try {
+      const body = await res.json();
+      detail = (body?.detail as string) || detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  const data = await res.json();
+  return {
+    document_id: data.document_id,
+    filename: data.filename,
+    text: data.text,
+  };
+}
+
 export async function askQuestion(
   question: string,
   history: ChatMessage[] = [],
+  ephemeralDocuments: EphemeralDocument[] = [],
 ): Promise<QueryResponse> {
-  const res = await fetch(`${API_BASE}/query`, {
+  const res = await apiFetch("/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, history }),
+    body: JSON.stringify({ question, history, ephemeral_documents: ephemeralDocuments }),
   });
   if (!res.ok) {
     let detail = `Query failed (${res.status})`;

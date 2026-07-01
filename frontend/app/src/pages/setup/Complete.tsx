@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -13,15 +14,27 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { SummaryCard } from "@/components/SummaryCard";
 import { useOnboarding } from "@/store/onboarding";
+import { useSession } from "@/store/session";
+import { getOrgSummary, type OrgSummary } from "@/services/auth";
 
 export default function Complete() {
   const navigate = useNavigate();
-  const { summary, organizationName } = useOnboarding();
+  const { summary: localSummary, organizationName } = useOnboarding();
+  const orgName = useSession((s) => s.orgName);
+  const [remote, setRemote] = useState<OrgSummary | null>(null);
+
+  useEffect(() => {
+    getOrgSummary()
+      .then(setRemote)
+      .catch(() => setRemote(null));
+  }, []);
+
+  const summary = remote ?? localSummary;
 
   const rows = [
     {
       label: "Organization",
-      value: summary?.organization ?? organizationName ?? "—",
+      value: summary?.organization ?? orgName ?? organizationName ?? "—",
       icon: <Building2 className="size-4 text-mist-700" />,
     },
     {

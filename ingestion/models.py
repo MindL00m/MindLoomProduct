@@ -328,6 +328,35 @@ class OrgGraphResponse(BaseModel):
     edges: list[OrgEdge] = Field(description="REPORTS_TO relationships between people.")
 
 
+class GraphDebugNode(BaseModel):
+    """A node in the org-scoped knowledge graph (debug export)."""
+
+    id: str = Field(description="Stable node key used in edges.")
+    labels: list[str] = Field(description="Neo4j labels, e.g. Person, Chunk.")
+    properties: dict[str, object] = Field(default_factory=dict)
+
+
+class GraphDebugEdge(BaseModel):
+    """A directed relationship between two graph nodes."""
+
+    id: str
+    source: str
+    target: str
+    type: str = Field(description="Neo4j relationship type.")
+    properties: dict[str, object] = Field(default_factory=dict)
+
+
+class KnowledgeGraphResponse(BaseModel):
+    """Full knowledge-graph snapshot for dev/debug visualisation."""
+
+    nodes: list[GraphDebugNode]
+    edges: list[GraphDebugEdge]
+    truncated: bool = Field(
+        default=False,
+        description="True when the export hit the server-side node cap.",
+    )
+
+
 class JobStatus(BaseModel):
     """State of an asynchronous ingestion job."""
 
@@ -484,3 +513,50 @@ class OrgSummaryResponse(BaseModel):
     people: int
     departments: int
     groups: int
+
+
+# --- Integrations / connected apps ------------------------------------------
+
+
+class IntegrationInfo(BaseModel):
+    """A connected third-party app for the current user."""
+
+    provider: str = Field(description="Integration key, e.g. google_calendar")
+    label: str = Field(description="Human-readable app name")
+    connected: bool
+    account_email: Optional[str] = None
+    connected_at: Optional[str] = None
+
+
+class IntegrationsListResponse(BaseModel):
+    """All workspace apps and their connection status."""
+
+    integrations: list[IntegrationInfo]
+    oauth_enabled: bool = Field(
+        description="True when real Google OAuth credentials are configured on the server."
+    )
+
+
+class OAuthAuthorizeResponse(BaseModel):
+    """URL to redirect the user to for Google consent."""
+
+    authorization_url: str
+
+
+class CalendarEvent(BaseModel):
+    """A single calendar event from Google Calendar."""
+
+    id: str
+    title: str
+    start: str
+    end: Optional[str] = None
+    all_day: bool = False
+    location: Optional[str] = None
+    html_link: Optional[str] = None
+
+
+class CalendarEventsResponse(BaseModel):
+    """Upcoming events from a connected Google Calendar."""
+
+    account_email: Optional[str] = None
+    events: list[CalendarEvent]

@@ -13,21 +13,36 @@ from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from answerer import generate_answer
 from auth import create_org, get_org_summary, google_signin, require_org_id
+from config import get_settings
 from database import close_pools
+from integrations import (
+    connect_google_calendar_dev,
+    disconnect_google_calendar,
+    get_calendar_events,
+    handle_google_calendar_callback,
+    list_integrations,
+    require_user_context,
+    start_google_calendar_oauth,
+)
 from models import (
     AuthSessionResponse,
+    CalendarEventsResponse,
     Conversation,
     CreateOrgRequest,
     DirectoryIngestRequest,
     DirectoryIngestResult,
     FileExtractResponse,
     GoogleSignInRequest,
+    IntegrationsListResponse,
     JobStatus,
+    KnowledgeGraphResponse,
+    OAuthAuthorizeResponse,
     OrgGraphResponse,
     OrgSummaryResponse,
     QueryRequest,
@@ -36,7 +51,8 @@ from models import (
 from file_extract import extract_file_text
 from pipeline import run_ingestion_background, run_pdf_ingestion_background
 from retrieval import retrieve
-from storage import fetch_org_graph, upsert_directory
+from schema import ensure_schema
+from storage import fetch_knowledge_graph_debug, fetch_org_graph, upsert_directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,6 +66,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage shared connection pools for the app lifecycle."""
 
     logger.info("Company Brain ingestion service starting up")
+    await ensure_schema()
     try:
         yield
     finally:
@@ -190,6 +207,18 @@ async def get_org_graph(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+@app.get("/graph/debug", response_model=KnowledgeGraphResponse)
+async def get_knowledge_graph_debug(
+    org_id: Annotated[str, Depends(require_org_id)],
+) -> KnowledgeGraphResponse:
+    """Return all knowledge-graph nodes and edges for dev/debug visualisation."""
+
+    try:
+        return await fetch_knowledge_graph_debug(org_id)
+    except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @app.get("/ingest/status/{job_id}", response_model=JobStatus)
 async def get_job_status(
     job_id: str,
@@ -247,3 +276,80 @@ async def extract_uploaded_file(
         text=text,
         char_count=len(text),
     )
+
+
+@app.get("/integrations", response_model=IntegrationsListResponse)
+async def get_integrations(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> IntegrationsListResponse:
+    """List connected workspace apps for the current user."""
+
+    org_id, user_id = ctx
+    try:
+        return await list_integrations(org_id, user_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get("/integrations/google/calendar/authorize", response_model=OAuthAuthorizeResponse)
+async def authorize_google_calendar(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> OAuthAuthorizeResponse:
+    """Return the Google OAuth consent URL for Calendar read access."""
+
+    org_id, user_id = ctx
+    try:
+        return await start_google_calendar_oauth(org_id, user_id)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/integrations/google/calendar/connect-dev", response_model=IntegrationsListResponse)
+async def dev_connect_google_calendar(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> IntegrationsListResponse:
+    """Simulated Calendar connect when Google OAuth credentials are not configured."""
+
+    org_id, user_id = ctx
+    await connect_google_calendar_dev(org_id, user_id)
+    return await list_integrations(org_id, user_id)
+
+
+@app.get("/integrations/google/calendar/callback")
+async def google_calendar_callback(
+    code: str = Query(...),
+    state: str = Query(...),
+) -> RedirectResponse:
+    """OAuth callback — exchange code and redirect to the Apps screen."""
+
+    try:
+        redirect_url = await handle_google_calendar_callback(code, state)
+        return RedirectResponse(url=redirect_url, status_code=302)
+    except HTTPException as exc:
+        settings = get_settings()
+        detail = exc.detail if isinstance(exc.detail, str) else "oauth_failed"
+        url = f"{settings.frontend_url.rstrip('/')}/dashboard?tab=apps&error={detail}"
+        return RedirectResponse(url=url, status_code=302)
+
+
+@app.get("/integrations/google/calendar/events", response_model=CalendarEventsResponse)
+async def calendar_events(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> CalendarEventsResponse:
+    """Return upcoming events from the user's connected Google Calendar."""
+
+    org_id, user_id = ctx
+    return await get_calendar_events(org_id, user_id)
+
+
+@app.delete("/integrations/google/calendar")
+async def calendar_disconnect(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict[str, str]:
+    """Disconnect Google Calendar for the current user."""
+
+    org_id, user_id = ctx
+    await disconnect_google_calendar(org_id, user_id)
+    return {"status": "disconnected"}

@@ -43,3 +43,9 @@ export function getOrgId(): string | null {
   const state = useSession.getState();
   return state.isAuthenticated ? state.orgId : null;
 }
+
+/** Read user id synchronously for API calls (outside React). */
+export function getUserId(): string | null {
+  const state = useSession.getState();
+  return state.isAuthenticated ? state.userId : null;
+}

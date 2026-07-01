@@ -76,6 +76,29 @@ class Settings(BaseSettings):
         description="Filesystem root for the local blob storage backend.",
     )
 
+    google_client_id: str = Field(
+        default="",
+        description="Google OAuth client ID for Calendar and other workspace apps.",
+    )
+    google_client_secret: str = Field(
+        default="",
+        description="Google OAuth client secret.",
+    )
+    google_oauth_redirect_uri: str = Field(
+        default="http://localhost:8000/integrations/google/calendar/callback",
+        description="OAuth redirect URI registered in Google Cloud Console.",
+    )
+    frontend_url: str = Field(
+        default="http://localhost:5173",
+        description="Frontend origin used for OAuth success/error redirects.",
+    )
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        """True when Google OAuth credentials are configured."""
+
+        return bool(self.google_client_id.strip() and self.google_client_secret.strip())
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

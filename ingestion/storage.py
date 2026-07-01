@@ -23,6 +23,9 @@ from models import (
     ChunkMetadata,
     DirectoryIngestResult,
     DirectoryPerson,
+    GraphDebugEdge,
+    GraphDebugNode,
+    KnowledgeGraphResponse,
     OrgEdge,
     OrgGraphResponse,
     OrgPerson,
@@ -607,3 +610,134 @@ async def fetch_org_graph(org_id: str) -> OrgGraphResponse:
     ]
     logger.info("Org graph: %d people, %d reporting edges", len(people), len(edges))
     return OrgGraphResponse(people=people, edges=edges)
+
+
+_GRAPH_NODE_CAP = 400
+
+_KG_NODES_CYPHER = """
+MATCH (n {org_id: $org_id})
+WHERE n:Person OR n:Chunk OR n:Document OR n:Entity OR n:Question
+RETURN n, labels(n) AS labels
+LIMIT $limit
+"""
+
+_KG_EDGES_CYPHER = """
+MATCH (a {org_id: $org_id})-[r]->(b)
+WHERE b.org_id = $org_id
+  AND (
+    a:Person OR a:Chunk OR a:Document OR a:Entity OR a:Question
+  )
+  AND (
+    b:Person OR b:Chunk OR b:Document OR b:Entity OR b:Question
+  )
+RETURN a, labels(a) AS a_labels, type(r) AS rel_type, properties(r) AS rel_props,
+       b, labels(b) AS b_labels
+"""
+
+
+def _serialize_graph_value(value: object) -> object:
+    """Convert Neo4j driver values into JSON-safe Python objects."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()  # type: ignore[union-attr]
+    if isinstance(value, list):
+        return [_serialize_graph_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _serialize_graph_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _serialize_props(props: dict) -> dict[str, object]:
+    return {str(k): _serialize_graph_value(v) for k, v in props.items()}
+
+
+def _graph_node_id(labels: list[str], props: dict) -> str | None:
+    """Derive a stable id for a knowledge-graph node."""
+
+    if "Person" in labels:
+        return (
+            props.get("person_id")
+            or props.get("canonical_email")
+            or props.get("canonical_name")
+        )
+    if "Chunk" in labels:
+        return props.get("chunk_id")
+    if "Document" in labels:
+        return props.get("document_id")
+    if "Entity" in labels:
+        return props.get("entity_id") or props.get("canonical_name")
+    if "Question" in labels:
+        return props.get("question_id")
+    return None
+
+
+async def fetch_knowledge_graph_debug(org_id: str) -> KnowledgeGraphResponse:
+    """Export all org-scoped knowledge-graph nodes and outgoing edges for debug UI."""
+
+    async def _read(tx) -> tuple[list[dict], list[dict]]:  # type: ignore[no-untyped-def]
+        node_result = await tx.run(_KG_NODES_CYPHER, org_id=org_id, limit=_GRAPH_NODE_CAP + 1)
+        node_records = [record.data() async for record in node_result]
+        edge_result = await tx.run(_KG_EDGES_CYPHER, org_id=org_id)
+        edge_records = [record.data() async for record in edge_result]
+        return node_records, edge_records
+
+    driver = get_neo4j_driver()
+    async with driver.session() as session:
+        node_records, edge_records = await session.execute_read(_read)
+
+    truncated = len(node_records) > _GRAPH_NODE_CAP
+    if truncated:
+        node_records = node_records[:_GRAPH_NODE_CAP]
+
+    nodes: list[GraphDebugNode] = []
+    known_ids: set[str] = set()
+    for record in node_records:
+        raw = dict(record["n"])
+        labels = list(record["labels"])
+        node_id = _graph_node_id(labels, raw)
+        if not node_id:
+            continue
+        known_ids.add(node_id)
+        nodes.append(
+            GraphDebugNode(
+                id=node_id,
+                labels=labels,
+                properties=_serialize_props(raw),
+            )
+        )
+
+    edges: list[GraphDebugEdge] = []
+    seen_edges: set[str] = set()
+    for idx, record in enumerate(edge_records):
+        a_labels = list(record["a_labels"])
+        b_labels = list(record["b_labels"])
+        a_props = dict(record["a"])
+        b_props = dict(record["b"])
+        source = _graph_node_id(a_labels, a_props)
+        target = _graph_node_id(b_labels, b_props)
+        if not source or not target or source not in known_ids or target not in known_ids:
+            continue
+        rel_type = record["rel_type"]
+        edge_id = f"{source}->{rel_type}->{target}:{idx}"
+        if edge_id in seen_edges:
+            continue
+        seen_edges.add(edge_id)
+        edges.append(
+            GraphDebugEdge(
+                id=edge_id,
+                source=source,
+                target=target,
+                type=rel_type,
+                properties=_serialize_props(dict(record["rel_props"])),
+            )
+        )
+
+    logger.info(
+        "Knowledge graph debug: %d nodes, %d edges (truncated=%s)",
+        len(nodes),
+        len(edges),
+        truncated,
+    )
+    return KnowledgeGraphResponse(nodes=nodes, edges=edges, truncated=truncated)

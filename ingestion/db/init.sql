@@ -25,6 +25,25 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_org_id ON users (org_id);
 
+-- --- Connected apps (per user, org-scoped) --------------------------------
+
+CREATE TABLE IF NOT EXISTS app_connections (
+    connection_id  TEXT PRIMARY KEY,
+    org_id         TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id        TEXT        NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    provider       TEXT        NOT NULL,
+    account_email  TEXT,
+    access_token   TEXT        NOT NULL,
+    refresh_token  TEXT,
+    token_expiry   TIMESTAMPTZ,
+    scopes         TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, user_id, provider)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_connections_org_user ON app_connections (org_id, user_id);
+
 -- --- Chunks (org-scoped) -------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS chunks (

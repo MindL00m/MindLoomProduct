@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -11,6 +11,7 @@ import {
   MessageSquareText,
   Upload,
   X,
+  LayoutGrid,
 } from "lucide-react";
 import { FileSpreadsheet } from "lucide-react";
 import { Logo } from "@/components/Logo";
@@ -21,6 +22,8 @@ import { GoogleIcon } from "@/components/icons";
 import OrganizationView from "@/pages/OrganizationView";
 import UploadData from "@/pages/UploadData";
 import AskView from "@/pages/AskView";
+import AppsView from "@/pages/AppsView";
+import KnowledgeGraphView from "@/pages/KnowledgeGraphView";
 import { useOnboarding } from "@/store/onboarding";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
@@ -30,6 +33,7 @@ type ViewId =
   | "ask"
   | "upload"
   | "organization"
+  | "apps"
   | "graph"
   | "sources"
   | "settings";
@@ -39,6 +43,7 @@ const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "ask", label: "Ask", icon: MessageSquareText },
   { id: "upload", label: "Upload", icon: Upload },
   { id: "organization", label: "Organization", icon: Users },
+  { id: "apps", label: "Apps", icon: LayoutGrid },
   { id: "graph", label: "Knowledge Graph", icon: Network },
   { id: "sources", label: "Sources", icon: Plug },
   { id: "settings", label: "Settings", icon: Settings },
@@ -46,12 +51,28 @@ const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { summary, selectedProvider, csvFileName } = useOnboarding();
   const orgName = useSession((s) => s.orgName);
   const email = useSession((s) => s.email);
   const clearSession = useSession((s) => s.clearSession);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [view, setView] = useState<ViewId>("overview");
+
+  const tabParam = searchParams.get("tab");
+  const connectedParam = searchParams.get("connected");
+  const errorParam = searchParams.get("error");
+
+  useEffect(() => {
+    if (tabParam === "apps") setView("apps");
+  }, [tabParam]);
+
+  function clearOAuthParams() {
+    const next = new URLSearchParams(searchParams);
+    next.delete("connected");
+    next.delete("error");
+    setSearchParams(next, { replace: true });
+  }
 
   const activeLabel = NAV.find((n) => n.id === view)?.label ?? "Overview";
 
@@ -180,7 +201,13 @@ export default function Dashboard() {
               <CardHeader className="flex-row items-center justify-between">
                 <CardTitle>Connected Sources</CardTitle>
                 {/* Disabled per spec — single source connected in this demo. */}
-                <SecondaryButton size="sm" disabled>
+                <SecondaryButton
+                  size="sm"
+                  onClick={() => {
+                    setView("apps");
+                    setSearchParams({ tab: "apps" }, { replace: true });
+                  }}
+                >
                   <Plus />
                   Connect Another Source
                 </SecondaryButton>
@@ -223,10 +250,34 @@ export default function Dashboard() {
           </main>
         )}
 
+        {view === "apps" && (
+          <main className="flex-1 p-4 lg:p-8">
+            <AppsView
+              oauthStatus={
+                connectedParam === "google_calendar"
+                  ? "connected"
+                  : errorParam
+                    ? "error"
+                    : null
+              }
+              oauthError={errorParam}
+              onOAuthHandled={clearOAuthParams}
+            />
+          </main>
+        )}
+
+        {view === "graph" && (
+          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
+            <KnowledgeGraphView />
+          </main>
+        )}
+
         {view !== "overview" &&
           view !== "organization" &&
           view !== "upload" &&
-          view !== "ask" && (
+          view !== "ask" &&
+          view !== "apps" &&
+          view !== "graph" && (
             <main className="flex flex-1 flex-col items-center justify-center p-8 text-center">
               <p className="text-sm text-muted-foreground">
                 {activeLabel} is coming soon.

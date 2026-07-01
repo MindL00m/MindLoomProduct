@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from answerer import generate_answer
@@ -26,7 +26,7 @@ from models import (
     QueryRequest,
     QueryResponse,
 )
-from pipeline import run_ingestion_background
+from pipeline import run_ingestion_background, run_pdf_ingestion_background
 from retrieval import retrieve
 from storage import fetch_org_graph, upsert_directory
 
@@ -91,6 +91,40 @@ async def ingest_conversation(
     return {"job_id": job_id, "status": "queued"}
 
 
+@app.post("/ingest/pdf")
+async def ingest_pdf(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> dict[str, str]:
+    """Ingest an uploaded PDF: store it, chunk it structurally, and classify.
+
+    Chunking + per-chunk LLM classification is slow, so this enqueues a
+    background job and returns a ``job_id``; poll ``/ingest/status/{job_id}``.
+    """
+
+    filename = file.filename or "upload.pdf"
+    is_pdf = filename.lower().endswith(".pdf") or file.content_type == "application/pdf"
+    if not is_pdf:
+        raise HTTPException(status_code=400, detail="Expected a PDF file.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded PDF is empty.")
+
+    job_id = str(uuid4())
+    job_store[job_id] = JobStatus(
+        job_id=job_id,
+        status="queued",
+        conversation_id=filename,
+        progress="Queued",
+    )
+    background_tasks.add_task(
+        run_pdf_ingestion_background, job_id, data, filename, [], job_store
+    )
+
+    return {"job_id": job_id, "status": "queued"}
+
+
 @app.post("/ingest/directory", response_model=DirectoryIngestResult)
 async def ingest_directory(request: DirectoryIngestRequest) -> DirectoryIngestResult:
     """Upsert an org-directory import (CSV / Google / ...) into the graph.
@@ -134,8 +168,10 @@ async def query(request: QueryRequest) -> QueryResponse:
     """Answer a natural-language question from the knowledge base."""
 
     try:
-        retrieval = await retrieve(request.question)
-        response = await generate_answer(request.question, retrieval)
+        retrieval = await retrieve(request.question, request.history)
+        response = await generate_answer(
+            request.question, retrieval, request.history
+        )
         return response
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
         raise HTTPException(status_code=500, detail=str(e))

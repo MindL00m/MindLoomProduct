@@ -23,12 +23,29 @@ from sqlalchemy import text
 
 from config import get_settings
 from database import get_neo4j_driver, get_session_factory
-from models import ChunkResult, ExpertResult, RetrievalResult
+from models import ChatMessage, ChunkResult, ExpertResult, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
 _EMBEDDING_MODEL = "text-embedding-3-small"
 _EXTRACTION_MODEL = "gpt-4o-mini"
+
+_CONDENSE_PROMPT = """\
+Given the conversation so far and a follow-up question, rewrite the follow-up as
+a standalone search query that captures the user's intent without needing the
+prior turns. Resolve pronouns and references (it, that, they, the project) using
+the history. Return ONLY the rewritten query text, no preamble.
+
+Conversation:
+{history}
+
+Follow-up question: {question}
+
+Standalone query:"""
+
+# Only the most recent turns matter for resolving references; cap to keep the
+# condensation prompt small and cheap.
+_CONDENSE_HISTORY_TURNS = 6
 
 _ENTITY_PROMPT = """\
 Extract named entities from this question. Return only a JSON array of strings. 
@@ -125,6 +142,43 @@ def _parse_entities(content: str) -> list[str]:
     if not isinstance(parsed, list):
         raise ValueError("Entity extraction did not return a JSON array")
     return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+async def _condense_query(question: str, history: list[ChatMessage]) -> str:
+    """Rewrite a follow-up into a standalone search query using recent history.
+
+    Never raises: on any failure it logs and falls back to the raw question, so
+    retrieval degrades gracefully to non-conversational behaviour.
+    """
+
+    if not history:
+        return question
+
+    recent = history[-_CONDENSE_HISTORY_TURNS:]
+    transcript = "\n".join(
+        f"{'User' if turn.role == 'user' else 'Assistant'}: {turn.content}"
+        for turn in recent
+    )
+    try:
+        response = await _client().chat.completions.create(
+            model=_EXTRACTION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": _CONDENSE_PROMPT.format(
+                        history=transcript, question=question
+                    ),
+                }
+            ],
+            temperature=0,
+        )
+        rewritten = (response.choices[0].message.content or "").strip()
+        if rewritten:
+            logger.info("Condensed follow-up into standalone query: %r", rewritten)
+            return rewritten
+    except Exception as exc:  # noqa: BLE001 - retrieval must not fail on condensation
+        logger.warning("Query condensation failed; using raw question: %s", exc)
+    return question
 
 
 async def _extract_entities(question: str) -> list[str]:
@@ -256,27 +310,34 @@ async def _expert_search(entities: list[str]) -> list[ExpertResult]:
     return experts
 
 
-async def retrieve(question: str) -> RetrievalResult:
+async def retrieve(
+    question: str, history: list[ChatMessage] | None = None
+) -> RetrievalResult:
     """Retrieve relevant chunks and experts for a natural-language question.
 
-    Runs two independent pipelines concurrently:
-      * embed the question -> pgvector similarity search (chunks), and
+    When ``history`` is provided, the follow-up is first condensed into a
+    standalone search query so references ("it", "that project") resolve against
+    earlier turns. Retrieval then runs two independent pipelines concurrently:
+      * embed the query -> pgvector similarity search (chunks), and
       * extract entities -> Neo4j traversal (experts).
 
     Args:
         question: The natural-language question to answer.
+        history: Prior conversation turns (oldest first), for follow-up context.
 
     Returns:
         A :class:`RetrievalResult` with chunks ranked by similarity score and
         experts ranked by relationship count.
     """
 
+    search_query = await _condense_query(question, history or [])
+
     async def _chunk_pipeline() -> list[ChunkResult]:
-        query_vector = await _embed_question(question)
+        query_vector = await _embed_question(search_query)
         return await _vector_search(query_vector)
 
     async def _expert_pipeline() -> tuple[list[str], list[ExpertResult]]:
-        entities = await _extract_entities(question)
+        entities = await _extract_entities(search_query)
         experts = await _expert_search(entities)
         return entities, experts
 

@@ -7,12 +7,14 @@ from the response.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from openai import AsyncOpenAI
 
 from config import get_settings
-from models import QueryResponse, RetrievalResult
+from documents import CitationNotFoundError, DocumentRepository, get_citation
+from models import ChatMessage, ChunkResult, QueryResponse, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,14 @@ Rules:
 - If the context does not contain enough information to answer 
   confidently, say so explicitly.
 - Be concise. One to three sentences unless the question requires more.
+- You may use the earlier conversation turns to understand follow-up
+  questions, but every factual claim must still come from the context below.
 
 Context:
 {context_string}"""
+
+# Cap how many prior turns are replayed to the model, to bound prompt size.
+_MAX_HISTORY_MESSAGES = 12
 
 # Phrases in the answer that signal the model could not answer confidently.
 _LOW_CONFIDENCE_MARKERS = (
@@ -40,6 +47,29 @@ _LOW_CONFIDENCE_MARKERS = (
     "cannot answer",
     "not mentioned",
 )
+
+
+async def _attach_citations(
+    chunks: list[ChunkResult],
+    repository: DocumentRepository | None = None,
+) -> None:
+    """Populate each chunk's ``citation`` from its source document, in place.
+
+    Best-effort: a chunk without a linked document (or any lookup error) simply
+    keeps ``citation=None`` so answering never fails on missing provenance.
+    """
+
+    async def _fetch(chunk: ChunkResult) -> None:
+        try:
+            chunk.citation = await get_citation(chunk.chunk_id, repository=repository)
+        except CitationNotFoundError:
+            chunk.citation = None
+        except Exception:  # noqa: BLE001 - citations are non-critical metadata
+            logger.warning("Citation lookup failed for chunk %s", chunk.chunk_id)
+            chunk.citation = None
+
+    if chunks:
+        await asyncio.gather(*(_fetch(chunk) for chunk in chunks))
 
 
 def _build_context(retrieval: RetrievalResult) -> str:
@@ -56,12 +86,24 @@ def _build_context(retrieval: RetrievalResult) -> str:
     return "\n".join(blocks)
 
 
-async def generate_answer(question: str, retrieval: RetrievalResult) -> QueryResponse:
+def _history_messages(history: list[ChatMessage]) -> list[dict[str, str]]:
+    """Render prior conversation turns as OpenAI chat messages (most recent)."""
+
+    recent = history[-_MAX_HISTORY_MESSAGES:]
+    return [{"role": turn.role, "content": turn.content} for turn in recent]
+
+
+async def generate_answer(
+    question: str,
+    retrieval: RetrievalResult,
+    history: list[ChatMessage] | None = None,
+) -> QueryResponse:
     """Generate an answer for ``question`` from retrieved context.
 
     Args:
         question: The user's natural-language question.
         retrieval: The vector + graph retrieval result for the question.
+        history: Prior conversation turns (oldest first) for follow-up memory.
 
     Returns:
         A :class:`QueryResponse` with the answer, sources, confidence, and
@@ -86,12 +128,14 @@ async def generate_answer(question: str, retrieval: RetrievalResult) -> QueryRes
         timeout=settings.openai_request_timeout_seconds,
     )
 
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _SYSTEM_PROMPT.format(context_string=context_string)},
+        *_history_messages(history or []),
+        {"role": "user", "content": question},
+    ]
     response = await client.chat.completions.create(
         model=_MODEL,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT.format(context_string=context_string)},
-            {"role": "user", "content": question},
-        ],
+        messages=messages,  # type: ignore[arg-type]
         temperature=0,
     )
     answer = (response.choices[0].message.content or "").strip()
@@ -113,6 +157,9 @@ async def generate_answer(question: str, retrieval: RetrievalResult) -> QueryRes
         if routed
         else None
     )
+
+    # Every source surfaced to a user carries its citation.
+    await _attach_citations(retrieval.chunks)
 
     return QueryResponse(
         answer=answer,

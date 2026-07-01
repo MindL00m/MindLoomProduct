@@ -8,6 +8,8 @@ import {
   Settings,
   Plus,
   Menu,
+  MessageSquareText,
+  Upload,
   X,
 } from "lucide-react";
 import { FileSpreadsheet } from "lucide-react";
@@ -17,13 +19,24 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { GoogleIcon } from "@/components/icons";
 import OrganizationView from "@/pages/OrganizationView";
+import UploadData from "@/pages/UploadData";
+import AskView from "@/pages/AskView";
 import { useOnboarding } from "@/store/onboarding";
 import { cn } from "@/lib/utils";
 
-type ViewId = "overview" | "organization" | "graph" | "sources" | "settings";
+type ViewId =
+  | "overview"
+  | "ask"
+  | "upload"
+  | "organization"
+  | "graph"
+  | "sources"
+  | "settings";
 
 const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "ask", label: "Ask", icon: MessageSquareText },
+  { id: "upload", label: "Upload", icon: Upload },
   { id: "organization", label: "Organization", icon: Users },
   { id: "graph", label: "Knowledge Graph", icon: Network },
   { id: "sources", label: "Sources", icon: Plug },
@@ -185,19 +198,34 @@ export default function Dashboard() {
           </main>
         )}
 
+        {view === "ask" && (
+          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
+            <AskView />
+          </main>
+        )}
+
+        {view === "upload" && (
+          <main className="flex-1 p-4 lg:p-8">
+            <UploadData />
+          </main>
+        )}
+
         {view === "organization" && (
           <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
             <OrganizationView />
           </main>
         )}
 
-        {view !== "overview" && view !== "organization" && (
-          <main className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              {activeLabel} is coming soon.
-            </p>
-          </main>
-        )}
+        {view !== "overview" &&
+          view !== "organization" &&
+          view !== "upload" &&
+          view !== "ask" && (
+            <main className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+              <p className="text-sm text-muted-foreground">
+                {activeLabel} is coming soon.
+              </p>
+            </main>
+          )}
       </div>
     </div>
   );

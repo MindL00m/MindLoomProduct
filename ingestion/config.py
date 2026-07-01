@@ -8,6 +8,7 @@ configuration through :func:`get_settings`.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -61,6 +62,18 @@ class Settings(BaseSettings):
     openai_request_timeout_seconds: float = Field(
         30.0,
         description="Hard timeout applied to every outbound OpenAI API request.",
+    )
+
+    blob_storage_backend: Literal["local"] = Field(
+        "local",
+        description=(
+            "Blob storage backend for raw uploaded files. Only 'local' is "
+            "implemented today; the interface allows adding 's3'/'gcs' later."
+        ),
+    )
+    blob_storage_root: str = Field(
+        "./data/blobs",
+        description="Filesystem root for the local blob storage backend.",
     )
 
 

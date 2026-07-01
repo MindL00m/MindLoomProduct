@@ -8,6 +8,7 @@ tiktoken==0.8.0
 thefuzz==0.22.1
 python-levenshtein==0.26.1
 pgvector==0.3.6
+pymupdf==1.25.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
 python-multipart==0.0.20

@@ -5,13 +5,18 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 PersonStatus = Literal["active", "inactive"]
 
 KnowledgeType = Literal["decision", "question_answer", "problem_report", "status_update", "noise"]
 SignalType = Literal["asked", "answered", "owns", "mentioned"]
 Confidence = Literal["high", "medium", "low"]
+
+# Lifecycle of a stored source document. ``pending`` = stored but not yet
+# processed into chunks; ``processed`` = chunking/extraction succeeded;
+# ``failed`` = processing errored.
+DocumentStatus = Literal["pending", "processed", "failed"]
 
 
 class Message(BaseModel):
@@ -103,6 +108,131 @@ class Conversation(BaseModel):
     messages: list[IncomingMessage] = Field(
         description="All messages ordered by timestamp ascending"
     )
+
+
+class Document(BaseModel):
+    """A raw source file that one or more chunks were derived from.
+
+    A ``Document`` is the citation anchor for chunks: it records where the raw
+    bytes live (``storage_path`` in blob storage), how to de-duplicate re-uploads
+    (``content_hash``), and provenance metadata. It is stored as a node in the
+    knowledge graph, separate from ``Chunk`` nodes, and connected to them via the
+    ``DERIVED_FROM`` relationship.
+    """
+
+    document_id: str = Field(description="Stable UUID identifying this document.")
+    source: str = Field(description="Origin connector, e.g. whatsapp_export, email, excel.")
+    source_label: str = Field(description="Human-readable label shown in citations.")
+    original_filename: Optional[str] = Field(
+        default=None, description="Original upload filename, if any."
+    )
+    storage_path: str = Field(description="Path / URI to the raw file in blob storage.")
+    content_hash: str = Field(description="SHA-256 hex digest of the raw bytes; de-dup key.")
+    mime_type: str = Field(description="MIME type of the raw file.")
+    uploaded_by: Optional[str] = Field(
+        default=None, description="person_id of the uploader, if known."
+    )
+    visible_to: list[str] = Field(
+        default_factory=list, description="Group names permitted to see this document."
+    )
+    uploaded_at: datetime = Field(description="When the document was uploaded (UTC).")
+    status: DocumentStatus = Field(
+        default="pending", description="Processing lifecycle state."
+    )
+
+
+class DerivedFrom(BaseModel):
+    """Locator for the slice of a ``Document`` a chunk was derived from.
+
+    All fields are optional because the meaningful locator depends on the source
+    type: character offsets for free text, ``page_number`` for paginated sources
+    (PDF/PPTX), and ``row_range`` for spreadsheets.
+    """
+
+    char_start: Optional[int] = Field(
+        default=None, description="Start offset into the document's extracted text."
+    )
+    char_end: Optional[int] = Field(
+        default=None, description="End offset into the document's extracted text."
+    )
+    page_number: Optional[int] = Field(
+        default=None, description="1-based page/slide number for single-page sources."
+    )
+    page_start: Optional[int] = Field(
+        default=None, description="1-based first page a chunk spans (paginated sources)."
+    )
+    page_end: Optional[int] = Field(
+        default=None, description="1-based last page a chunk spans (paginated sources)."
+    )
+    row_range: Optional[tuple[int, int]] = Field(
+        default=None, description="Inclusive (start, end) row range for spreadsheets."
+    )
+
+
+class DocumentStoreResult(BaseModel):
+    """Outcome of storing a document, including whether it was de-duplicated."""
+
+    document: Document = Field(description="The stored (or pre-existing) document.")
+    deduped: bool = Field(
+        description="True when an existing document with the same content_hash was reused."
+    )
+
+
+class Citation(BaseModel):
+    """Everything needed to render a human-readable source citation for a chunk.
+
+    Produced by joining ``Chunk -[:DERIVED_FROM]-> Document``. Call
+    :meth:`render` for the display string, or read the raw fields directly.
+    """
+
+    chunk_id: str = Field(description="Chunk the citation is for.")
+    document_id: str = Field(description="Source document id.")
+    source: str = Field(description="Origin connector of the document.")
+    source_label: str = Field(description="Human-readable document label.")
+    original_filename: Optional[str] = Field(
+        default=None, description="Original document filename, if any."
+    )
+    char_start: Optional[int] = Field(default=None)
+    char_end: Optional[int] = Field(default=None)
+    page_number: Optional[int] = Field(default=None)
+    page_start: Optional[int] = Field(default=None)
+    page_end: Optional[int] = Field(default=None)
+    row_range: Optional[tuple[int, int]] = Field(default=None)
+
+    def locator(self) -> str:
+        """Return the location-within-document fragment (e.g. ``pages 2-3``).
+
+        Page ranges take precedence for paginated sources (PDFs); character
+        offsets are used for free text and rows for spreadsheets.
+        """
+
+        if self.page_start is not None and self.page_end is not None:
+            if self.page_start == self.page_end:
+                return f"page {self.page_start}"
+            return f"pages {self.page_start}-{self.page_end}"
+        if self.page_number is not None:
+            return f"page {self.page_number}"
+        if self.char_start is not None and self.char_end is not None:
+            return f"chars {self.char_start}-{self.char_end}"
+        if self.row_range is not None:
+            return f"rows {self.row_range[0]}-{self.row_range[1]}"
+        return ""
+
+    def render(self) -> str:
+        """Render the full citation string, e.g.
+        ``Source: Q3 Board Deck, q3.pptx, page 4``."""
+
+        name = self.original_filename or "(unnamed document)"
+        locator = self.locator()
+        base = f"Source: {self.source_label}, {name}"
+        return f"{base}, {locator}" if locator else base
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def label(self) -> str:
+        """Serialized, human-readable citation string for API consumers."""
+
+        return self.render()
 
 
 class DirectoryPerson(BaseModel):
@@ -224,6 +354,10 @@ class ChunkResult(BaseModel):
     knowledge_type: str = Field(description="Dominant kind of knowledge captured in the chunk")
     confidence: str = Field(description="Extraction confidence level for the chunk")
     similarity_score: float = Field(description="Cosine similarity score from pgvector search")
+    citation: Optional["Citation"] = Field(
+        default=None,
+        description="Source citation for this chunk, joined from its DERIVED_FROM document.",
+    )
 
 
 class ExpertResult(BaseModel):
@@ -250,12 +384,23 @@ class RetrievalResult(BaseModel):
     )
 
 
+class ChatMessage(BaseModel):
+    """A single prior turn in a conversation, for follow-up memory."""
+
+    role: Literal["user", "assistant"] = Field(description="Who authored the message")
+    content: str = Field(description="The message text")
+
+
 class QueryRequest(BaseModel):
     """A natural-language query against the knowledge base."""
 
     question: str = Field(description="Natural language question from the user")
     user_id: Optional[str] = Field(
         default=None, description="User id for permission filtering, unused in v1"
+    )
+    history: list[ChatMessage] = Field(
+        default_factory=list,
+        description="Prior turns in this conversation (oldest first), for memory.",
     )
 
 

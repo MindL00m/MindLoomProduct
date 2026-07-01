@@ -41,3 +41,7 @@ Thumbs.db
 # ---- Logs ----
 *.log
 logs/
+
+# ---- Blob storage (raw uploaded source files) ----
+data/blobs/
+**/data/blobs/

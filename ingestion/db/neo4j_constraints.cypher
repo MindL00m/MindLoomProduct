@@ -42,3 +42,18 @@ FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE;
 // --- Question ---------------------------------------------------------------
 CREATE CONSTRAINT question_id_unique IF NOT EXISTS
 FOR (q:Question) REQUIRE q.question_id IS UNIQUE;
+
+// --- Document ---------------------------------------------------------------
+// document_id is the stable internal id; content_hash (sha256 of the raw bytes)
+// is the de-duplication key so re-uploading identical content reuses one node.
+CREATE CONSTRAINT document_id_unique IF NOT EXISTS
+FOR (d:Document) REQUIRE d.document_id IS UNIQUE;
+
+CREATE CONSTRAINT document_content_hash_unique IF NOT EXISTS
+FOR (d:Document) REQUIRE d.content_hash IS UNIQUE;
+
+CREATE INDEX document_source_index IF NOT EXISTS
+FOR (d:Document) ON (d.source);
+
+CREATE INDEX document_status_index IF NOT EXISTS
+FOR (d:Document) ON (d.status);

@@ -52,7 +52,7 @@ export const useOnboarding = create<OnboardingState>()(
       reset: () => set({ ...initialState }),
     }),
     {
-      name: "company-brain-onboarding",
+      name: "loom-onboarding",
       // syncProgress is transient; don't persist it across reloads.
       partialize: ({ syncProgress: _omit, ...rest }) => rest,
     },

@@ -34,7 +34,7 @@ export const useSession = create<SessionState>()(
         set({ ...session, isAuthenticated: true }),
       clearSession: () => set({ ...empty }),
     }),
-    { name: "company-brain-session" },
+    { name: "loom-session" },
   ),
 );
 

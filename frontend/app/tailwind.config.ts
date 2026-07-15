@@ -1,12 +1,9 @@
 import type { Config } from "tailwindcss";
 
 /**
- * "Frozen mist" palette.
- *   brand (accent)  #DD700B
- *   mist-700        #7C7D75
- *   mist-400        #ADACA7
- *   mist-200        #D9DADF
- *   cream           #FCF8D8
+ * Loom palette.
+ *   brand (rust)    #b85c2c
+ *   cream           #f2e6cf
  *
  * Semantic tokens (background / foreground / border / ...) are exposed as CSS
  * variables in src/index.css so components stay theme-agnostic.
@@ -57,24 +54,24 @@ const config: Config = {
         },
         // Raw palette, available as e.g. bg-brand, text-mist-700.
         brand: {
-          DEFAULT: "#DD700B",
-          50: "#FDF3E9",
-          100: "#FAE2C9",
-          200: "#F3BE85",
-          300: "#EC9A41",
-          400: "#E68420",
-          500: "#DD700B",
-          600: "#B85C09",
-          700: "#8F4707",
-          800: "#663305",
-          900: "#3D1F03",
+          DEFAULT: "#b85c2c",
+          50: "#faf3ee",
+          100: "#f4e4d9",
+          200: "#e8c4b0",
+          300: "#d9956f",
+          400: "#c97547",
+          500: "#b85c2c",
+          600: "#9a4a24",
+          700: "#7c3b1d",
+          800: "#5e2d16",
+          900: "#401f0f",
         },
         mist: {
           200: "#D9DADF",
           400: "#ADACA7",
           700: "#7C7D75",
         },
-        cream: "#FCF8D8",
+        cream: "#f2e6cf",
       },
       borderRadius: {
         lg: "16px",

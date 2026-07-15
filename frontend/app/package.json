@@ -1,9 +1,9 @@
 {
-  "name": "company-brain-onboarding",
+  "name": "loom-onboarding",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Company Brain — Organization Setup Wizard (frontend only).",
+  "description": "Loom — Organization Setup Wizard (frontend only).",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

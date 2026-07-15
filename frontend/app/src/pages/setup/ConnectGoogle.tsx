@@ -45,7 +45,7 @@ export default function ConnectGoogle() {
         </span>
       }
       title="Connect your Google Workspace directory"
-      subtitle="Company Brain will request read-only access to your organization's directory."
+      subtitle="Loom will request read-only access to your organization's directory."
     >
       {error ? (
         <ErrorState

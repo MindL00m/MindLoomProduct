@@ -65,7 +65,7 @@ _DEV_MOCK_EVENTS = [
     ),
     CalendarEvent(
         id="dev-3",
-        title="Company Brain planning",
+        title="Loom planning",
         start=(datetime.now(timezone.utc) + timedelta(days=2)).replace(
             hour=14, minute=0, second=0, microsecond=0
         ).isoformat(),

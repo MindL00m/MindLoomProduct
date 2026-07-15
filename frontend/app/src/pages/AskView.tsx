@@ -426,7 +426,7 @@ function EmptyState({ onExample }: { onExample: (q: string) => void }) {
         <Sparkles className="size-6" />
       </span>
       <h2 className="mt-4 text-2xl font-semibold tracking-tight">
-        Ask your Company Brain
+        Ask Loom
       </h2>
       <p className="mt-1 max-w-md text-muted-foreground">
         Questions are answered strictly from your ingested knowledge, with a

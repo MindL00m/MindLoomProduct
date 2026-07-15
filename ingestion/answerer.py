@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _MODEL = "gpt-4o-mini"
 
 _SYSTEM_PROMPT = """\
-You are the Company Brain, an AI that answers questions strictly from 
+You are Loom, an AI that answers questions strictly from 
 company knowledge. 
 
 Rules:

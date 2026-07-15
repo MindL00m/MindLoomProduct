@@ -93,16 +93,16 @@ job_store: dict[str, JobStatus] = {}
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage shared connection pools for the app lifecycle."""
 
-    logger.info("Company Brain ingestion service starting up")
+    logger.info("Loom ingestion service starting up")
     await ensure_schema()
     try:
         yield
     finally:
         await close_pools()
-        logger.info("Company Brain ingestion service shut down")
+        logger.info("Loom ingestion service shut down")
 
 
-app = FastAPI(title="Company Brain — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="Loom — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

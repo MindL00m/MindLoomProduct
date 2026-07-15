@@ -2,7 +2,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Outlet, useLocation } from "react-router-dom";
 import { Logo } from "./Logo";
 import { StepIndicator } from "./StepIndicator";
-import { flowForContext, getSteps, stepIndexForPath } from "@/lib/steps";
+import {
+  flowForContext,
+  getSteps,
+  shouldShowSetupSteps,
+  stepIndexForPath,
+} from "@/lib/steps";
 import { useOnboarding } from "@/store/onboarding";
 
 /** Shared chrome for every /setup/* route: header, step indicator and an
@@ -10,6 +15,7 @@ import { useOnboarding } from "@/store/onboarding";
 export function SetupLayout() {
   const location = useLocation();
   const provider = useOnboarding((s) => s.selectedProvider);
+  const showSteps = shouldShowSetupSteps(location.pathname);
   const steps = getSteps(flowForContext(location.pathname, provider));
   const current = stepIndexForPath(steps, location.pathname);
 
@@ -29,9 +35,11 @@ export function SetupLayout() {
       </header>
 
       <main className="relative z-10 flex flex-1 flex-col items-center px-4 pb-16 pt-2">
-        <div className="mb-10 w-full">
-          <StepIndicator steps={steps} current={current} />
-        </div>
+        {showSteps && (
+          <div className="mb-10 w-full">
+            <StepIndicator steps={steps} current={current} />
+          </div>
+        )}
 
         <div className="w-full max-w-lg">
           <AnimatePresence mode="wait">

@@ -11,7 +11,7 @@ export default function Welcome() {
     <WizardCard
       centered
       media={<OrgNetworkIllustration className="h-32 w-full" />}
-      title="Welcome to Company Brain"
+      title="Welcome to Loom"
       subtitle="Sign in to your organization's knowledge graph, or set up a new one."
       footer={
         <div className="flex w-full flex-col gap-2.5">

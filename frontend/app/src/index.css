@@ -18,15 +18,15 @@
 
     --border: 60 5% 89%;
     --input: 60 5% 89%;
-    --ring: 29 91% 45%; /* brand */
+    --ring: 18 60% 45%; /* loom rust */
 
-    --primary: 29 91% 45%; /* #DD700B */
+    --primary: 18 60% 45%; /* #b85c2c */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 60 9% 96%;
+    --secondary: 38 45% 94%;
     --secondary-foreground: 60 3% 15%;
 
-    --accent: 53 78% 92%; /* cream #FCF8D8 */
+    --accent: 38 45% 94%; /* cream #f2e6cf */
     --accent-foreground: 60 3% 15%;
 
     --destructive: 0 72% 51%;

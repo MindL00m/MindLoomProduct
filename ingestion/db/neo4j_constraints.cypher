@@ -1,4 +1,4 @@
-// Company Brain — Neo4j constraints & indexes for the multi-tenant knowledge graph.
+// Loom — Neo4j constraints & indexes for the multi-tenant knowledge graph.
 // Run once against the target database before ingesting. Safe to re-run.
 
 // --- Person -----------------------------------------------------------------

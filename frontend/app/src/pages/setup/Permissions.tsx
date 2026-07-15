@@ -34,7 +34,7 @@ export default function Permissions() {
   return (
     <WizardCard
       title="Review requested permissions"
-      subtitle="Company Brain requests only the read scopes it needs to build your graph."
+      subtitle="Loom requests only the read scopes it needs to build your graph."
     >
       <ul className="divide-y divide-border">
         {PERMISSIONS.map((p) => (
@@ -44,7 +44,7 @@ export default function Permissions() {
 
       <div className="mt-5 flex items-start gap-2.5 rounded-md bg-accent/60 p-3.5 text-sm text-accent-foreground">
         <ShieldCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden="true" />
-        <p>Company Brain never modifies your Google Workspace.</p>
+        <p>Loom never modifies your Google Workspace.</p>
       </div>
 
       <div className="mt-8 flex items-center justify-between gap-3">

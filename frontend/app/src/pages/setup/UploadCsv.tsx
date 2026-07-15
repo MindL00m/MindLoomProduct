@@ -98,7 +98,7 @@ export default function UploadCsv() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "company-brain-directory-template.csv";
+    a.download = "loom-directory-template.csv";
     a.click();
     URL.revokeObjectURL(url);
   }

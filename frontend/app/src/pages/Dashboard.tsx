@@ -169,7 +169,7 @@ export default function Dashboard() {
           <main className="mx-auto w-full max-w-5xl flex-1 space-y-8 p-4 lg:p-8">
             <div>
               <h2 className="text-2xl font-semibold tracking-tight">
-                Welcome to Company Brain
+                Welcome to Loom
               </h2>
               <p className="mt-1 text-muted-foreground">
                 Your organization graph is live. Connect more sources to enrich

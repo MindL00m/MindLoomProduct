@@ -190,7 +190,7 @@ export const useChat = create<ChatState>()(
         })),
     }),
     {
-      name: "company-brain-chat",
+      name: "loom-chat",
       // Convert any turns left "pending" by a reload/crash into an error so the
       // UI never shows a permanently-spinning message.
       onRehydrateStorage: () => (state) => {

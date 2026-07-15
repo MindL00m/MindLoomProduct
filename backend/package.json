@@ -1,0 +1,17 @@
+{
+  "name": "workstyle-capture-backend",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "vision": "node vision.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "openai": "^6.46.0",
+    "sharp": "^0.35.3"
+  }
+}

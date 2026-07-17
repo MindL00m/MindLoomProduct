@@ -123,12 +123,13 @@ Knowledge governance is stored in Postgres:
 
 When a low-confidence question has a matching directory expert, the query route
 creates an assigned `expert_request`. The employee sees it in the in-app Expert
-inbox and notification badge. Publishing an answer immediately versions and
-ingests it through the normal knowledge pipeline; no administrator approval is
+Messages page and notification badge. An expert answer creates a proposed Skill
+File inside the conversation; once the expert approves it, the answer is
+versioned and ingested through the normal knowledge pipeline; no administrator approval is
 required. Administrators can subsequently correct the answer (creating a new
 source version) or remove it from searchable knowledge.
 
-Every request is placed in the in-app inbox. A durable worker also attempts
+Every request is placed in the in-app Messages page. A durable worker also attempts
 Gmail, Outlook, and Teams delivery independently:
 
 - Gmail sends an RFC 2822 message through `users.messages.send`.

@@ -1,31 +1,20 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Users,
+  Home,
   Network,
-  Plug,
-  Settings,
   Menu,
   MessageSquareText,
   Upload,
   X,
-  LayoutGrid,
-  CheckCircle2,
-  Circle,
-  Bell,
-  BookOpenCheck,
+  MessagesSquare,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { SecondaryButton } from "@/components/SecondaryButton";
-import OrganizationView from "@/pages/OrganizationView";
 import UploadData from "@/pages/UploadData";
 import AskView from "@/pages/AskView";
-import AppsView from "@/pages/AppsView";
 import KnowledgeGraphView from "@/pages/KnowledgeGraphView";
-import ExpertInbox from "@/pages/ExpertInbox";
-import SkillFiles from "@/pages/SkillFiles";
+import HomePage from "@/pages/HomePage";
+import ExpertMessages from "@/pages/ExpertMessages";
 import { useOnboarding } from "@/store/onboarding";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
@@ -33,28 +22,18 @@ import { getOrgSummary, type OrgSummary } from "@/services/auth";
 import { getExpertInboxCount } from "@/services/reviews";
 
 type ViewId =
-  | "overview"
+  | "home"
   | "ask"
-  | "expert-inbox"
-  | "skill-files"
+  | "messages"
   | "upload"
-  | "organization"
-  | "apps"
-  | "graph"
-  | "sources"
-  | "settings";
+  | "graph";
 
-const NAV: { id: ViewId; label: string; icon: typeof LayoutDashboard }[] = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
+const NAV: { id: ViewId; label: string; icon: typeof Home }[] = [
+  { id: "home", label: "Home", icon: Home },
   { id: "ask", label: "Ask", icon: MessageSquareText },
-  { id: "expert-inbox", label: "Expert inbox", icon: Bell },
-  { id: "skill-files", label: "Skill Files", icon: BookOpenCheck },
+  { id: "messages", label: "Expert Messages", icon: MessagesSquare },
   { id: "upload", label: "Upload", icon: Upload },
-  { id: "organization", label: "Organization", icon: Users },
-  { id: "apps", label: "Apps", icon: LayoutGrid },
   { id: "graph", label: "Knowledge Graph", icon: Network },
-  { id: "sources", label: "Sources", icon: Plug },
-  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 export default function Dashboard() {
@@ -66,12 +45,12 @@ export default function Dashboard() {
   const role = useSession((s) => s.role);
   const clearSession = useSession((s) => s.clearSession);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [view, setView] = useState<ViewId>("overview");
+  const [view, setView] = useState<ViewId>("home");
   const [orgSummary, setOrgSummary] = useState<OrgSummary | null>(null);
   const [expertNotifications, setExpertNotifications] = useState(0);
   const isAdmin = role === "admin";
   const availableNav = NAV.filter(
-    (item) => isAdmin || (item.id !== "apps" && item.id !== "graph"),
+    (item) => isAdmin || item.id !== "graph",
   );
 
   const tabParam = searchParams.get("tab");
@@ -80,8 +59,10 @@ export default function Dashboard() {
   const errorParam = searchParams.get("error");
 
   useEffect(() => {
-    if (tabParam === "apps" && isAdmin) setView("apps");
-    if (tabParam === "organization") setView("organization");
+    if (tabParam === "apps" || tabParam === "organization" || tabParam === "home") {
+      setView("home");
+    }
+    if (tabParam === "messages") setView("messages");
   }, [tabParam, isAdmin]);
 
   useEffect(() => {
@@ -98,7 +79,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin && view === "apps") setView("overview");
+    if (!isAdmin && view === "graph") setView("home");
   }, [isAdmin, view]);
 
   function clearOAuthParams() {
@@ -109,7 +90,7 @@ export default function Dashboard() {
     setSearchParams(next, { replace: true });
   }
 
-  const activeLabel = availableNav.find((n) => n.id === view)?.label ?? "Overview";
+  const activeLabel = availableNav.find((n) => n.id === view)?.label ?? "Home";
 
   return (
     <div className="flex min-h-dvh bg-muted/40">
@@ -149,7 +130,7 @@ export default function Dashboard() {
             >
               <item.icon className="size-4" aria-hidden="true" />
               {item.label}
-              {item.id === "expert-inbox" && expertNotifications > 0 && (
+              {item.id === "messages" && expertNotifications > 0 && (
                 <span className="ml-auto min-w-5 rounded-full bg-destructive px-1.5 text-center text-xs text-destructive-foreground">
                   {expertNotifications > 99 ? "99+" : expertNotifications}
                 </span>
@@ -195,115 +176,11 @@ export default function Dashboard() {
           </button>
         </header>
 
-        {view === "overview" && (
-          <main className="mx-auto w-full max-w-5xl flex-1 space-y-8 p-4 lg:p-8">
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight">
-                Welcome to Loom
-              </h2>
-              <p className="mt-1 text-muted-foreground">
-                {isAdmin
-                  ? "Start by connecting approved company knowledge. The employee directory can be added later."
-                  : "Ask questions and explore the company knowledge you are allowed to access."}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-              {[
-                { label: "People", value: orgSummary?.people ?? 0 },
-                { label: "Departments", value: orgSummary?.departments ?? 0 },
-                { label: "Groups", value: orgSummary?.groups ?? 0 },
-                { label: "Knowledge sources", value: 0 },
-              ].map((s) => (
-                <Card key={s.label}>
-                  <CardContent className="p-4">
-                    <p className="text-sm text-muted-foreground">{s.label}</p>
-                    <p className="mt-1 text-2xl font-semibold tabular-nums">
-                      {s.value}
-                    </p>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-
-            {isAdmin ? (
-              <Card>
-                <CardHeader><CardTitle>Set up Loom</CardTitle></CardHeader>
-                <CardContent className="space-y-3">
-                  <SetupItem
-                    complete={false}
-                    title="Connect company knowledge"
-                    description="Connect approved Google or Microsoft locations, or upload documents."
-                    action="Connect a source"
-                    onClick={() => {
-                      setView("apps");
-                      setSearchParams({ tab: "apps" }, { replace: true });
-                    }}
-                  />
-                  <SetupItem
-                    complete={(orgSummary?.people ?? 0) > 0}
-                    title="Add your employee directory"
-                    description="Optional — builds the org chart, identifies experts, and supports department access."
-                    action="Add directory"
-                    onClick={() => setView("organization")}
-                  />
-                  <SetupItem
-                    complete={false}
-                    title="Invite employees"
-                    description="Do this after Loom contains useful knowledge."
-                    action="Coming later"
-                  />
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardHeader><CardTitle>Start using Loom</CardTitle></CardHeader>
-                <CardContent>
-                  <p className="mb-4 text-sm text-muted-foreground">
-                    Your administrator manages company connections and permissions.
-                  </p>
-                  <SecondaryButton onClick={() => setView("ask")}>
-                    <MessageSquareText className="size-4" /> Ask Loom
-                  </SecondaryButton>
-                </CardContent>
-              </Card>
-            )}
-          </main>
-        )}
-
-        {view === "ask" && (
-          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
-            <AskView />
-          </main>
-        )}
-
-        {view === "expert-inbox" && (
+        {view === "home" && (
           <main className="flex-1 p-4 lg:p-8">
-            <ExpertInbox onCountChange={setExpertNotifications} />
-          </main>
-        )}
-
-        {view === "skill-files" && (
-          <main className="flex-1 p-4 lg:p-8">
-            <SkillFiles />
-          </main>
-        )}
-
-        {view === "upload" && (
-          <main className="flex-1 p-4 lg:p-8">
-            <UploadData />
-          </main>
-        )}
-
-        {view === "organization" && (
-          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
-            <OrganizationView />
-          </main>
-        )}
-
-        {view === "apps" && isAdmin && (
-          <main className="flex-1 p-4 lg:p-8">
-            <AppsView
+            <HomePage
+              summary={orgSummary}
+              isAdmin={isAdmin}
               setupProvider={
                 setupParam === "google_workspace" ||
                 setupParam === "microsoft_teams" ||
@@ -326,58 +203,31 @@ export default function Dashboard() {
           </main>
         )}
 
-        {view === "graph" && (
+        {view === "ask" && (
+          <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
+            <AskView />
+          </main>
+        )}
+
+        {view === "messages" && (
+          <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
+            <ExpertMessages onCountChange={setExpertNotifications} />
+          </main>
+        )}
+
+        {view === "upload" && (
+          <main className="flex-1 p-4 lg:p-8">
+            <UploadData />
+          </main>
+        )}
+
+        {view === "graph" && isAdmin && (
           <main className="flex h-[calc(100dvh-4rem)] flex-col p-4 lg:p-6">
             <KnowledgeGraphView />
           </main>
         )}
 
-        {view !== "overview" &&
-          view !== "organization" &&
-          view !== "upload" &&
-          view !== "ask" &&
-          view !== "expert-inbox" &&
-          view !== "skill-files" &&
-          view !== "apps" &&
-          view !== "graph" && (
-            <main className="flex flex-1 flex-col items-center justify-center p-8 text-center">
-              <p className="text-sm text-muted-foreground">
-                {activeLabel} is coming soon.
-              </p>
-            </main>
-          )}
       </div>
-    </div>
-  );
-}
-
-function SetupItem({
-  complete,
-  title,
-  description,
-  action,
-  onClick,
-}: {
-  complete: boolean;
-  title: string;
-  description: string;
-  action: string;
-  onClick?: () => void;
-}) {
-  return (
-    <div className="flex items-start gap-3 rounded-md border border-border p-4">
-      {complete ? (
-        <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
-      ) : (
-        <Circle className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
-      )}
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">{title}</p>
-        <p className="mt-0.5 text-sm text-muted-foreground">{description}</p>
-      </div>
-      <SecondaryButton size="sm" onClick={onClick} disabled={!onClick}>
-        {action}
-      </SecondaryButton>
     </div>
   );
 }

@@ -195,6 +195,19 @@ _DURABLE_INTEGRATIONS_SQL = [
 )""",
 """CREATE INDEX IF NOT EXISTS idx_notification_deliveries_review
   ON notification_deliveries (org_id, review_id, channel)""",
+"""CREATE TABLE IF NOT EXISTS expert_messages (
+    message_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    review_id TEXT NOT NULL REFERENCES knowledge_reviews (review_id) ON DELETE CASCADE,
+    sender_user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    message_type TEXT NOT NULL DEFAULT 'text',
+    attachment_name TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    read_at TIMESTAMPTZ
+)""",
+"""CREATE INDEX IF NOT EXISTS idx_expert_messages_thread
+  ON expert_messages (org_id, review_id, created_at)""",
 ]
 
 

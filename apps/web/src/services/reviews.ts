@@ -13,6 +13,83 @@ export interface KnowledgeReview {
   deliveries?: Record<string, { status: string; error?: string | null }>;
 }
 
+export interface ExpertThread {
+  review_id: string;
+  status: string;
+  title: string;
+  description: string;
+  created_by: string;
+  owner_user_id: string;
+  requester_name?: string | null;
+  requester_email?: string | null;
+  expert_name?: string | null;
+  expert_email?: string | null;
+  last_message?: string | null;
+  last_message_at?: string | null;
+  unread_count: number;
+}
+
+export interface ExpertMessage {
+  message_id: string;
+  sender_user_id: string;
+  sender_name: string;
+  body: string;
+  message_type: string;
+  attachment_name?: string | null;
+  created_at: string;
+  read_at?: string | null;
+}
+
+export interface MessageContact {
+  user_id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+export async function listExpertThreads(): Promise<ExpertThread[]> {
+  const response = await apiFetch("/knowledge/reviews/messages");
+  if (!response.ok) throw new Error("Could not load expert conversations.");
+  return response.json();
+}
+
+export async function listMessageContacts(): Promise<MessageContact[]> {
+  const response = await apiFetch("/knowledge/reviews/messages/contacts");
+  if (!response.ok) throw new Error("Could not load company contacts.");
+  return response.json();
+}
+
+export async function listThreadMessages(reviewId: string): Promise<ExpertMessage[]> {
+  const response = await apiFetch(`/knowledge/reviews/messages/${reviewId}`);
+  if (!response.ok) throw new Error("Could not load messages.");
+  return response.json();
+}
+
+export async function startExpertThread(
+  expertUserId: string,
+  message: string,
+): Promise<{ review_id: string }> {
+  const response = await apiFetch("/knowledge/reviews/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ expert_user_id: expertUserId, message }),
+  });
+  if (!response.ok) throw new Error("Could not start the conversation.");
+  return response.json();
+}
+
+export async function sendExpertMessage(
+  reviewId: string,
+  message: string,
+): Promise<void> {
+  const response = await apiFetch(`/knowledge/reviews/messages/${reviewId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!response.ok) throw new Error("Could not send the message.");
+}
+
 export async function listExpertInbox(): Promise<KnowledgeReview[]> {
   const response = await apiFetch("/knowledge/reviews/expert-inbox");
   if (!response.ok) throw new Error("Could not load expert requests.");

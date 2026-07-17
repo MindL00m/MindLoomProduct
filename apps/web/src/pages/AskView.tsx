@@ -512,6 +512,14 @@ function AnswerView({ response }: { response: QueryResponse }) {
               ? "An in-app request was sent to this expert."
               : "This expert is not yet linked to a signed-in employee account, so no notification was sent."}
           </p>
+          {response.expert_request_created && (
+            <a
+              href="/dashboard?tab=messages"
+              className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+            >
+              Open expert conversation
+            </a>
+          )}
         </div>
       )}
 

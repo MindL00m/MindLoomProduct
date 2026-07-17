@@ -11,10 +11,16 @@ from review_workflows import (
     answer_expert_request,
     create_review,
     expert_notification_count,
+    expert_message_notification_count,
+    get_expert_thread_messages,
+    list_expert_threads,
+    list_message_contacts,
     list_expert_requests,
     list_reviews,
     moderate_expert_answer,
     resolve_review,
+    send_expert_message,
+    start_expert_conversation,
     upsert_review_schedule,
 )
 
@@ -50,6 +56,15 @@ class ModerationInput(BaseModel):
     answer: str | None = None
 
 
+class StartConversationInput(BaseModel):
+    expert_user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
+
+class SendMessageInput(BaseModel):
+    message: str = Field(min_length=1)
+
+
 @router.get("")
 async def reviews(
     review_type: str | None = None,
@@ -69,7 +84,54 @@ async def expert_inbox(
 async def expert_inbox_count(
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict[str, int]:
-    return {"count": await expert_notification_count(*ctx)}
+    return {"count": await expert_message_notification_count(*ctx)}
+
+
+@router.get("/messages")
+async def message_threads(
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    return await list_expert_threads(*ctx)
+
+
+@router.get("/messages/contacts")
+async def message_contacts(
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    return await list_message_contacts(*ctx)
+
+
+@router.post("/messages")
+async def start_message_thread(
+    request: StartConversationInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict[str, str]:
+    review_id = await start_expert_conversation(
+        org_id=ctx[0],
+        requester_user_id=ctx[1],
+        expert_user_id=request.expert_user_id,
+        message=request.message,
+    )
+    return {"review_id": review_id, "status": "open"}
+
+
+@router.get("/messages/{review_id}")
+async def thread_messages(
+    review_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    return await get_expert_thread_messages(*ctx, review_id)
+
+
+@router.post("/messages/{review_id}")
+async def send_message(
+    review_id: str,
+    request: SendMessageInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    return await send_expert_message(
+        org_id=ctx[0], user_id=ctx[1], review_id=review_id, body=request.message
+    )
 
 
 @router.post("/expert-inbox/{review_id}/answer")

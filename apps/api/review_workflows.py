@@ -88,7 +88,7 @@ async def create_expert_request(
                 SELECT review_id FROM knowledge_reviews
                 WHERE org_id=:org AND review_type='expert_request'
                   AND owner_user_id=:owner AND title=:title
-                  AND status IN ('open','answered')
+                  AND status IN ('open','answered','drafted')
                 LIMIT 1
             """), {
                 "org": org_id, "owner": str(expert["user_id"]),
@@ -102,10 +102,17 @@ async def create_expert_request(
         title=f"Expert question: {question}",
         description=(
             f"Company Brain could not answer this question and suggested {expert_name}. "
-            "Your answer will become searchable immediately and remain available for administrator moderation."
+            "Reply in Messages. Loom will turn the useful answer into a reviewable knowledge draft."
         ),
         created_by=requester_user_id, owner_user_id=str(expert["user_id"]),
         source_ids=source_ids, due_at=_now() + timedelta(days=7),
+    )
+    await send_expert_message(
+        org_id=org_id,
+        user_id=requester_user_id,
+        review_id=review_id,
+        body=question,
+        message_type="routed_question",
     )
     from durable_jobs import enqueue
     try:
@@ -124,6 +131,194 @@ async def create_expert_request(
         # retried from the notification record without losing the question.
         pass
     return review_id
+
+
+async def start_expert_conversation(
+    *,
+    org_id: str,
+    requester_user_id: str,
+    expert_user_id: str,
+    message: str,
+) -> str:
+    factory = get_session_factory()
+    async with factory() as session:
+        expert = (
+            await session.execute(text("""
+                SELECT user_id, email, coalesce(name, email) AS name
+                FROM users WHERE org_id=:org AND user_id=:expert
+            """), {"org": org_id, "expert": expert_user_id})
+        ).mappings().one_or_none()
+    if expert is None:
+        raise HTTPException(status_code=404, detail="Expert was not found.")
+    review_id = await create_review(
+        org_id=org_id,
+        review_type="expert_request",
+        title=f"Conversation with {expert['name']}",
+        description="A direct employee-to-expert knowledge conversation.",
+        created_by=requester_user_id,
+        owner_user_id=expert_user_id,
+        due_at=_now() + timedelta(days=7),
+    )
+    await send_expert_message(
+        org_id=org_id,
+        user_id=requester_user_id,
+        review_id=review_id,
+        body=message,
+        message_type="manual_question",
+    )
+    from durable_jobs import enqueue
+    try:
+        await enqueue(
+            "expert_notification",
+            org_id=org_id,
+            conversation_id=f"expert-notification:{review_id}",
+            payload={
+                "review_id": review_id,
+                "recipient": str(expert["email"]),
+                "question": message,
+            },
+        )
+    except Exception:
+        pass
+    return review_id
+
+
+async def send_expert_message(
+    *,
+    org_id: str,
+    user_id: str,
+    review_id: str,
+    body: str,
+    message_type: str = "text",
+    attachment_name: str | None = None,
+) -> dict:
+    cleaned = body.strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    factory = get_session_factory()
+    async with factory() as session:
+        thread = (
+            await session.execute(text("""
+                SELECT created_by, owner_user_id FROM knowledge_reviews
+                WHERE org_id=:org AND review_id=:id
+                  AND review_type='expert_request'
+            """), {"org": org_id, "id": review_id})
+        ).mappings().one_or_none()
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Conversation was not found.")
+        if user_id not in {thread["created_by"], thread["owner_user_id"]}:
+            raise HTTPException(status_code=403, detail="You are not part of this conversation.")
+        message_id = str(uuid4())
+        await session.execute(text("""
+            INSERT INTO expert_messages
+              (message_id, org_id, review_id, sender_user_id, body,
+               message_type, attachment_name, created_at)
+            VALUES (:message, :org, :review, :sender, :body, :type, :attachment, now())
+        """), {
+            "message": message_id, "org": org_id, "review": review_id,
+            "sender": user_id, "body": cleaned, "type": message_type,
+            "attachment": attachment_name,
+        })
+        await session.execute(text("""
+            UPDATE knowledge_reviews SET updated_at=now()
+            WHERE org_id=:org AND review_id=:review
+        """), {"org": org_id, "review": review_id})
+        await session.commit()
+    return {"message_id": message_id, "status": "sent"}
+
+
+async def list_expert_threads(org_id: str, user_id: str) -> list[dict]:
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text("""
+                SELECT r.review_id, r.status, r.title, r.description,
+                       r.created_by, r.owner_user_id, r.created_at, r.updated_at,
+                       requester.name AS requester_name, requester.email AS requester_email,
+                       expert.name AS expert_name, expert.email AS expert_email,
+                       last_message.body AS last_message,
+                       last_message.created_at AS last_message_at,
+                       coalesce(unread.count, 0) AS unread_count
+                FROM knowledge_reviews r
+                LEFT JOIN users requester ON requester.user_id=r.created_by
+                LEFT JOIN users expert ON expert.user_id=r.owner_user_id
+                LEFT JOIN LATERAL (
+                    SELECT body, created_at FROM expert_messages
+                    WHERE review_id=r.review_id ORDER BY created_at DESC LIMIT 1
+                ) last_message ON true
+                LEFT JOIN LATERAL (
+                    SELECT count(*) AS count FROM expert_messages
+                    WHERE review_id=r.review_id AND sender_user_id<>:user AND read_at IS NULL
+                ) unread ON true
+                WHERE r.org_id=:org AND r.review_type='expert_request'
+                  AND (r.created_by=:user OR r.owner_user_id=:user)
+                ORDER BY coalesce(last_message.created_at, r.updated_at) DESC
+            """), {"org": org_id, "user": user_id})
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def get_expert_thread_messages(
+    org_id: str, user_id: str, review_id: str
+) -> list[dict]:
+    factory = get_session_factory()
+    async with factory() as session:
+        participant = (
+            await session.execute(text("""
+                SELECT 1 FROM knowledge_reviews
+                WHERE org_id=:org AND review_id=:review
+                  AND review_type='expert_request'
+                  AND (created_by=:user OR owner_user_id=:user)
+            """), {"org": org_id, "review": review_id, "user": user_id})
+        ).scalar_one_or_none()
+        if participant is None:
+            raise HTTPException(status_code=404, detail="Conversation was not found.")
+        await session.execute(text("""
+            UPDATE expert_messages SET read_at=now()
+            WHERE org_id=:org AND review_id=:review
+              AND sender_user_id<>:user AND read_at IS NULL
+        """), {"org": org_id, "review": review_id, "user": user_id})
+        await session.commit()
+        rows = (
+            await session.execute(text("""
+                SELECT m.message_id, m.sender_user_id, m.body, m.message_type,
+                       m.attachment_name, m.created_at, m.read_at,
+                       coalesce(u.name, u.email) AS sender_name
+                FROM expert_messages m
+                JOIN users u ON u.user_id=m.sender_user_id
+                WHERE m.org_id=:org AND m.review_id=:review
+                ORDER BY m.created_at
+            """), {"org": org_id, "review": review_id})
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def expert_message_notification_count(org_id: str, user_id: str) -> int:
+    factory = get_session_factory()
+    async with factory() as session:
+        value = (
+            await session.execute(text("""
+                SELECT count(*) FROM expert_messages m
+                JOIN knowledge_reviews r ON r.review_id=m.review_id
+                WHERE m.org_id=:org AND m.sender_user_id<>:user AND m.read_at IS NULL
+                  AND (r.created_by=:user OR r.owner_user_id=:user)
+            """), {"org": org_id, "user": user_id})
+        ).scalar_one()
+    return int(value)
+
+
+async def list_message_contacts(org_id: str, user_id: str) -> list[dict]:
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text("""
+                SELECT user_id, coalesce(name, email) AS name, email, role
+                FROM users
+                WHERE org_id=:org AND user_id<>:user
+                ORDER BY coalesce(name, email)
+            """), {"org": org_id, "user": user_id})
+        ).mappings().all()
+    return [dict(row) for row in rows]
 
 
 async def list_expert_requests(org_id: str, user_id: str) -> list[dict]:
@@ -208,7 +403,7 @@ async def _publish_expert_answer(
             mime_type="text/plain", visible_to=[f"org:{org_id}"],
             title=question, author=expert_user_id, owners=[expert_user_id],
             source_created_at=timestamp, source_updated_at=timestamp,
-            source_application="Company Brain Expert Inbox",
+            source_application="Company Brain Expert Messages",
             source_location="Expert answers", version=version,
             contributors=[expert_user_id], permissions=[f"org:{org_id}"],
         ),
@@ -231,6 +426,13 @@ async def answer_expert_request(
     if row is None:
         raise HTTPException(status_code=404, detail="Open expert request not found.")
     question = str(row["title"]).removeprefix("Expert question: ")
+    await send_expert_message(
+        org_id=org_id,
+        user_id=user_id,
+        review_id=review_id,
+        body=answer,
+        message_type="expert_answer",
+    )
     from capture_service import create_skill_file_from_expert_answer
 
     skill = await create_skill_file_from_expert_answer(

@@ -45,3 +45,7 @@ logs/
 # ---- Blob storage (raw uploaded source files) ----
 data/blobs/
 **/data/blobs/
+
+# Approved screenshots and AI summaries are private runtime data.
+apps/api/data/captures/*
+!apps/api/data/captures/.gitkeep

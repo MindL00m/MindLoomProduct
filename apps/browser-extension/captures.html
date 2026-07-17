@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loom Capture — Captures</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        color: #1a1a1a;
+        background: #f4f4f5;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 600;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+
+      .meta {
+        font-size: 13px;
+        color: #666;
+      }
+
+      .header-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      button {
+        border: none;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        background: #2563eb;
+        color: #fff;
+      }
+
+      button:hover {
+        background: #1d4ed8;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .btn-approve {
+        background: #15803d;
+      }
+
+      .btn-approve:hover {
+        background: #166534;
+      }
+
+      .btn-reject {
+        background: #dc2626;
+      }
+
+      .btn-reject:hover {
+        background: #b91c1c;
+      }
+
+      .btn-secondary {
+        background: #52525b;
+      }
+
+      .btn-secondary:hover {
+        background: #3f3f46;
+      }
+
+      .section {
+        margin-bottom: 32px;
+      }
+
+      .empty {
+        padding: 32px 24px;
+        text-align: center;
+        color: #666;
+        background: #fff;
+        border-radius: 8px;
+        border: 1px dashed #d4d4d8;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 16px;
+      }
+
+      .card {
+        background: #fff;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #e4e4e7;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      }
+
+      .card.approved {
+        border-color: #bbf7d0;
+      }
+
+      .thumb {
+        display: block;
+        width: 100%;
+        height: 160px;
+        object-fit: cover;
+        object-position: top left;
+        background: #e4e4e7;
+      }
+
+      .card-body {
+        padding: 12px;
+      }
+
+      .card-title {
+        margin: 0 0 6px;
+        font-weight: 600;
+        font-size: 13px;
+        line-height: 1.3;
+        word-break: break-word;
+      }
+
+      .card-url {
+        margin: 0 0 8px;
+        font-size: 12px;
+        color: #2563eb;
+        word-break: break-all;
+        line-height: 1.35;
+      }
+
+      .card-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 11px;
+        color: #71717a;
+        margin-bottom: 10px;
+      }
+
+      .badge {
+        background: #f4f4f5;
+        border-radius: 4px;
+        padding: 2px 6px;
+      }
+
+      .badge-approved {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .card-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .card-actions button {
+        flex: 1;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Captures</h1>
+        <div id="summary" class="meta">Loading…</div>
+      </div>
+      <div class="header-actions">
+        <button type="button" id="approve-all-btn" class="btn-approve" disabled>
+          Approve All
+        </button>
+        <button type="button" id="analyze-btn" class="btn-secondary">
+          Create Skill File
+        </button>
+        <button type="button" id="refresh-btn">Refresh</button>
+      </div>
+    </header>
+    <div id="analysis-result" class="empty" hidden></div>
+
+    <section class="section">
+      <h2>Pending review</h2>
+      <div id="pending-empty" class="empty" hidden>
+        No pending captures. Turn <strong>Capture ON</strong>, browse a normal
+        webpage, then refresh.
+      </div>
+      <div id="pending-grid" class="grid"></div>
+    </section>
+
+    <section class="section">
+      <h2>Approved</h2>
+      <div id="approved-empty" class="empty" hidden>
+        No approved captures yet. Approve items from the pending queue above.
+      </div>
+      <div id="approved-grid" class="grid"></div>
+    </section>
+
+    <script src="captures.js"></script>
+  </body>
+</html>

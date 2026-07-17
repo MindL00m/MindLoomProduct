@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Loom Capture",
+  "version": "1.4.0",
+  "description": "Turns approved Chrome screenshot sessions into reviewable Loom Skill Files.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Loom Capture"
+  }
+}

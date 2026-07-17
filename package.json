@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "dotenv": "^17.4.2",
-    "openai": "^6.46.0",
-    "sharp": "^0.35.3"
-  }
-}

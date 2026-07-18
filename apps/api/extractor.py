@@ -48,7 +48,30 @@ Given a chunk from a company document or conversation, return ONLY a single vali
   "decisions": [string],
   "action_items": [string],
   "factual_claims": [string],
-  "valid_until": string | null
+  "valid_until": string | null,
+  "project_updates": [
+    {
+      "name": string,
+      "work_status": "open" | "closed",
+      "evidence": string
+    }
+  ],
+  "action_item_updates": [
+    {
+      "text": string,
+      "status": "open" | "done" | "cancelled",
+      "assignee": string | null,
+      "project": string | null
+    }
+  ],
+  "issue_updates": [
+    {
+      "title": string,
+      "kind": "problem_report" | "status_update",
+      "status": "open" | "closed",
+      "project": string | null
+    }
+  ]
 }
 
 Rules:
@@ -60,6 +83,10 @@ Rules:
 - Keep entity names stable and specific. Do not treat ordinary dates as entities.
 - A decision is a committed choice, not a suggestion. An action item must describe assigned or requested work.
 - valid_until must be an ISO-8601 timestamp only when the text explicitly states an expiry.
+- project_updates: emit when a named project/initiative is clearly still active (open) or finished/cancelled/shipped (closed).
+- action_item_updates: prefer this over bare action_items strings when status/assignee/project is known. Mirror open items in both lists when useful.
+- issue_updates: for problem reports or status updates that are still unresolved (open) or clearly resolved (closed). Use stable short titles.
+- Empty lists are fine when no lifecycle signals exist.
 """
 
 

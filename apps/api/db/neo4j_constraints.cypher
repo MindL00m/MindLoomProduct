@@ -78,9 +78,27 @@ CREATE CONSTRAINT action_item_id_unique IF NOT EXISTS
 FOR (a:ActionItem) REQUIRE a.action_item_id IS UNIQUE;
 CREATE CONSTRAINT claim_id_unique IF NOT EXISTS
 FOR (c:Claim) REQUIRE c.claim_id IS UNIQUE;
+CREATE CONSTRAINT open_issue_id_unique IF NOT EXISTS
+FOR (i:OpenIssue) REQUIRE i.issue_id IS UNIQUE;
 CREATE INDEX decision_org_id_index IF NOT EXISTS
 FOR (d:Decision) ON (d.org_id);
 CREATE INDEX action_item_org_id_index IF NOT EXISTS
 FOR (a:ActionItem) ON (a.org_id);
 CREATE INDEX claim_org_id_index IF NOT EXISTS
 FOR (c:Claim) ON (c.org_id);
+CREATE INDEX open_issue_org_id_index IF NOT EXISTS
+FOR (i:OpenIssue) ON (i.org_id);
+CREATE INDEX open_issue_status_index IF NOT EXISTS
+FOR (i:OpenIssue) ON (i.status);
+CREATE INDEX action_item_status_index IF NOT EXISTS
+FOR (a:ActionItem) ON (a.status);
+CREATE INDEX entity_type_index IF NOT EXISTS
+FOR (e:Entity) ON (e.type);
+CREATE INDEX entity_work_status_index IF NOT EXISTS
+FOR (e:Entity) ON (e.work_status);
+
+// Lookup indexes for cross-chunk lifecycle updates (merged in app on org_id+canonical_key).
+CREATE INDEX action_item_canonical_key_index IF NOT EXISTS
+FOR (a:ActionItem) ON (a.canonical_key);
+CREATE INDEX open_issue_canonical_key_index IF NOT EXISTS
+FOR (i:OpenIssue) ON (i.canonical_key);

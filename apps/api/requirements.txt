@@ -1,6 +1,7 @@
 fastapi==0.115.6
 uvicorn==0.34.0
 sqlalchemy==2.0.36
+greenlet==3.5.3
 asyncpg==0.30.0
 neo4j==5.27.0
 openai==1.59.6

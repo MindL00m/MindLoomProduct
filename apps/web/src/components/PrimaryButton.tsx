@@ -11,10 +11,27 @@ export interface PrimaryButtonProps extends Omit<ButtonProps, "variant"> {
 export const PrimaryButton = React.forwardRef<
   HTMLButtonElement,
   PrimaryButtonProps
->(({ loading, disabled, children, ...props }, ref) => (
-  <Button ref={ref} variant="primary" disabled={loading || disabled} {...props}>
-    {loading && <LoadingSpinner className="size-4" />}
-    {children}
-  </Button>
-));
+>(({ loading, disabled, children, asChild, ...props }, ref) => {
+  // Radix Slot (asChild) requires exactly one element child. Never inject the
+  // spinner alongside that child — it breaks <PrimaryButton asChild><Link/>.
+  if (asChild) {
+    return (
+      <Button
+        ref={ref}
+        variant="primary"
+        disabled={loading || disabled}
+        asChild
+        {...props}
+      >
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <Button ref={ref} variant="primary" disabled={loading || disabled} {...props}>
+      {loading && <LoadingSpinner className="size-4" />}
+      {children}
+    </Button>
+  );
+});
 PrimaryButton.displayName = "PrimaryButton";

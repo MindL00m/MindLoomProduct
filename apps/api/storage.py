@@ -7,10 +7,11 @@ shared, pooled connections from :mod:`database`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timezone
-
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ARRAY, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,16 +20,19 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from database import get_neo4j_driver, get_session_factory
 from embedder import EMBEDDING_DIMENSIONS
 from models import (
+    ActionItemUpdate,
     Chunk,
     ChunkMetadata,
     DirectoryIngestResult,
     DirectoryPerson,
     GraphDebugEdge,
     GraphDebugNode,
+    IssueUpdate,
     KnowledgeGraphResponse,
     OrgEdge,
     OrgGraphResponse,
     OrgPerson,
+    ProjectUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,8 +166,19 @@ MERGE (e:Entity {org_id: $org_id, canonical_name: ent.canonical_name})
 ON CREATE SET e.entity_id = randomUUID(),
               e.org_id = $org_id,
               e.name = ent.name,
-              e.type = ent.type
-SET e.visible_to = $visible_to
+              e.type = ent.type,
+              e.work_status = CASE WHEN ent.type = 'project' THEN 'open' ELSE null END,
+              e.last_signal_at = CASE WHEN ent.type = 'project' THEN $ts ELSE null END
+SET e.type = ent.type,
+    e.visible_to = $visible_to,
+    e.work_status = CASE
+        WHEN ent.type = 'project' AND e.work_status IS NULL THEN 'open'
+        ELSE e.work_status
+    END,
+    e.last_signal_at = CASE
+        WHEN ent.type = 'project' THEN coalesce($ts, e.last_signal_at)
+        ELSE e.last_signal_at
+    END
 """
 
 _CHUNK_NODE_CYPHER = """
@@ -263,12 +278,6 @@ FOREACH (item IN $decisions |
       d.confidence = $confidence, d.visible_to = $visible_to
   MERGE (d)-[:SUPPORTED_BY]->(c)
 )
-FOREACH (item IN $actions |
-  MERGE (a:ActionItem {action_item_id: item.id})
-  SET a.org_id = $org_id, a.text = item.text, a.status = 'open',
-      a.created_at = $timestamp, a.visible_to = $visible_to
-  MERGE (a)-[:EVIDENCED_BY]->(c)
-)
 FOREACH (item IN $claims |
   MERGE (f:Claim {claim_id: item.id})
   SET f.org_id = $org_id, f.text = item.text, f.observed_at = $timestamp,
@@ -277,6 +286,142 @@ FOREACH (item IN $claims |
   MERGE (f)-[:SUPPORTED_BY]->(c)
 )
 """
+
+_PROJECT_UPDATES_CYPHER = """
+UNWIND $updates AS u
+MERGE (e:Entity {org_id: $org_id, canonical_name: u.canonical_name})
+ON CREATE SET e.entity_id = randomUUID(),
+              e.org_id = $org_id,
+              e.name = u.name,
+              e.type = 'project',
+              e.work_status = u.work_status
+SET e.type = 'project',
+    e.name = u.name,
+    e.work_status = u.work_status,
+    e.last_signal_at = $ts,
+    e.closed_at = CASE WHEN u.work_status = 'closed' THEN $ts ELSE e.closed_at END,
+    e.visible_to = $visible_to
+WITH e
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
+MERGE (c)-[r:RELATES_TO]->(e)
+SET r.relevance = 'primary'
+"""
+
+_ACTION_ITEM_UPDATES_CYPHER = """
+UNWIND $updates AS u
+MERGE (a:ActionItem {org_id: $org_id, canonical_key: u.canonical_key})
+ON CREATE SET a.action_item_id = u.id,
+              a.text = u.text,
+              a.status = u.status,
+              a.created_at = $ts,
+              a.visible_to = $visible_to
+SET a.text = u.text,
+    a.status = u.status,
+    a.last_signal_at = $ts,
+    a.assignee = coalesce(u.assignee, a.assignee),
+    a.visible_to = $visible_to,
+    a.closed_at = CASE
+        WHEN u.status IN ['done', 'cancelled'] THEN $ts
+        ELSE a.closed_at
+    END
+WITH a, u
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
+MERGE (a)-[:EVIDENCED_BY]->(c)
+WITH a, u
+OPTIONAL MATCH (e:Entity {org_id: $org_id, canonical_name: u.canonical_project})
+FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (a)-[:PART_OF]->(e)
+)
+WITH a, u
+OPTIONAL MATCH (p:Person {org_id: $org_id, canonical_name: toLower(trim(u.assignee))})
+WHERE u.assignee IS NOT NULL AND trim(u.assignee) <> ''
+FOREACH (_ IN CASE WHEN p IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (a)-[:ASSIGNED_TO]->(p)
+)
+"""
+
+_OPEN_ISSUE_UPDATES_CYPHER = """
+UNWIND $updates AS u
+MERGE (i:OpenIssue {org_id: $org_id, canonical_key: u.canonical_key})
+ON CREATE SET i.issue_id = u.id,
+              i.title = u.title,
+              i.kind = u.kind,
+              i.status = u.status,
+              i.created_at = $ts,
+              i.visible_to = $visible_to
+SET i.title = u.title,
+    i.kind = u.kind,
+    i.status = u.status,
+    i.last_seen_at = $ts,
+    i.visible_to = $visible_to,
+    i.closed_at = CASE WHEN u.status = 'closed' THEN $ts ELSE i.closed_at END
+WITH i, u
+MATCH (c:Chunk {chunk_id: $chunk_id, org_id: $org_id})
+MERGE (i)-[:EVIDENCED_BY]->(c)
+WITH i, u
+OPTIONAL MATCH (e:Entity {org_id: $org_id, canonical_name: u.canonical_project})
+FOREACH (_ IN CASE WHEN e IS NOT NULL THEN [1] ELSE [] END |
+  MERGE (i)-[:ABOUT]->(e)
+)
+"""
+
+
+def _canonical_key(text: str) -> str:
+    """Stable key for matching action items / issues across chunks."""
+
+    normalized = re.sub(r"\s+", " ", text.strip().lower())
+    return normalized
+
+
+def _stable_id(prefix: str, org_id: str, key: str) -> str:
+    digest = hashlib.sha1(f"{org_id}:{key}".encode("utf-8")).hexdigest()[:16]
+    return f"{prefix}:{digest}"
+
+
+def _coerce_action_updates(metadata: ChunkMetadata) -> list[ActionItemUpdate]:
+    """Merge structured updates with legacy bare action_items strings."""
+
+    updates = list(metadata.action_item_updates)
+    seen = {_canonical_key(item.text) for item in updates if item.text.strip()}
+    for text in metadata.action_items:
+        key = _canonical_key(text)
+        if not key or key in seen:
+            continue
+        updates.append(ActionItemUpdate(text=text, status="open"))
+        seen.add(key)
+    return [item for item in updates if item.text.strip()]
+
+
+def _coerce_issue_updates(metadata: ChunkMetadata) -> list[IssueUpdate]:
+    """Use explicit issue updates, or synthesize from knowledge_type."""
+
+    updates = [item for item in metadata.issue_updates if item.title.strip()]
+    if updates:
+        return updates
+    if metadata.knowledge_type in ("problem_report", "status_update"):
+        title = (metadata.summary or "").strip() or metadata.knowledge_type.replace("_", " ")
+        return [
+            IssueUpdate(
+                title=title,
+                kind=metadata.knowledge_type,  # type: ignore[arg-type]
+                status="open",
+            )
+        ]
+    return []
+
+
+def _coerce_project_updates(
+    metadata: ChunkMetadata, entity_nodes: list[dict]
+) -> list[ProjectUpdate]:
+    updates = [item for item in metadata.project_updates if item.name.strip()]
+    if updates:
+        return updates
+    # Mentioned project entities default to open until a close signal arrives.
+    return [
+        ProjectUpdate(name=str(ent["name"]), work_status="open")
+        for ent in entity_nodes
+        if ent.get("type") == "project" and ent.get("name")
+    ]
 
 
 async def save_to_neo4j(
@@ -386,7 +531,11 @@ async def save_to_neo4j(
             await tx.run(_PEOPLE_CYPHER, org_id=org_id, people=all_people, ts=end_time)
         if entity_nodes:
             await tx.run(
-                _ENTITIES_CYPHER, org_id=org_id, entities=entity_nodes, visible_to=visible
+                _ENTITIES_CYPHER,
+                org_id=org_id,
+                entities=entity_nodes,
+                visible_to=visible,
+                ts=end_time,
             )
         if relates:
             await tx.run(
@@ -459,7 +608,7 @@ async def save_to_neo4j(
                     chunk_id=chunk.chunk_id,
                     ts=end_time,
                 )
-        if metadata.decisions or metadata.action_items or metadata.factual_claims:
+        if metadata.decisions or metadata.factual_claims:
             await tx.run(
                 _KNOWLEDGE_RECORDS_CYPHER,
                 org_id=org_id,
@@ -468,10 +617,6 @@ async def save_to_neo4j(
                     {"id": f"decision:{chunk.chunk_id}:{index}", "text": value}
                     for index, value in enumerate(metadata.decisions)
                 ],
-                actions=[
-                    {"id": f"action:{chunk.chunk_id}:{index}", "text": value}
-                    for index, value in enumerate(metadata.action_items)
-                ],
                 claims=[
                     {"id": f"claim:{chunk.chunk_id}:{index}", "text": value}
                     for index, value in enumerate(metadata.factual_claims)
@@ -479,6 +624,70 @@ async def save_to_neo4j(
                 timestamp=end_time,
                 confidence=metadata.confidence,
                 valid_until=metadata.valid_until,
+                visible_to=visible,
+            )
+
+        project_updates = _coerce_project_updates(metadata, entity_nodes)
+        if project_updates:
+            await tx.run(
+                _PROJECT_UPDATES_CYPHER,
+                org_id=org_id,
+                chunk_id=chunk.chunk_id,
+                updates=[
+                    {
+                        "name": item.name.strip(),
+                        "canonical_name": item.name.strip().lower(),
+                        "work_status": item.work_status,
+                    }
+                    for item in project_updates
+                ],
+                ts=end_time,
+                visible_to=visible,
+            )
+
+        action_updates = _coerce_action_updates(metadata)
+        if action_updates:
+            await tx.run(
+                _ACTION_ITEM_UPDATES_CYPHER,
+                org_id=org_id,
+                chunk_id=chunk.chunk_id,
+                updates=[
+                    {
+                        "id": _stable_id("action", org_id, _canonical_key(item.text)),
+                        "text": item.text.strip(),
+                        "canonical_key": _canonical_key(item.text),
+                        "status": item.status,
+                        "assignee": item.assignee,
+                        "canonical_project": (
+                            item.project.strip().lower() if item.project else None
+                        ),
+                    }
+                    for item in action_updates
+                ],
+                ts=end_time,
+                visible_to=visible,
+            )
+
+        issue_updates = _coerce_issue_updates(metadata)
+        if issue_updates:
+            await tx.run(
+                _OPEN_ISSUE_UPDATES_CYPHER,
+                org_id=org_id,
+                chunk_id=chunk.chunk_id,
+                updates=[
+                    {
+                        "id": _stable_id("issue", org_id, _canonical_key(item.title)),
+                        "title": item.title.strip(),
+                        "canonical_key": _canonical_key(item.title),
+                        "kind": item.kind,
+                        "status": item.status,
+                        "canonical_project": (
+                            item.project.strip().lower() if item.project else None
+                        ),
+                    }
+                    for item in issue_updates
+                ],
+                ts=end_time,
                 visible_to=visible,
             )
 
@@ -697,7 +906,7 @@ _GRAPH_NODE_CAP = 400
 _KG_NODES_CYPHER = """
 MATCH (n {org_id: $org_id})
 WHERE n:Person OR n:Chunk OR n:Document OR n:Entity OR n:Question
-   OR n:Decision OR n:ActionItem OR n:Claim
+   OR n:Decision OR n:ActionItem OR n:Claim OR n:OpenIssue
 RETURN n, labels(n) AS labels
 LIMIT $limit
 """
@@ -707,11 +916,11 @@ MATCH (a {org_id: $org_id})-[r]->(b)
 WHERE b.org_id = $org_id
   AND (
     a:Person OR a:Chunk OR a:Document OR a:Entity OR a:Question
-    OR a:Decision OR a:ActionItem OR a:Claim
+    OR a:Decision OR a:ActionItem OR a:Claim OR a:OpenIssue
   )
   AND (
     b:Person OR b:Chunk OR b:Document OR b:Entity OR b:Question
-    OR b:Decision OR b:ActionItem OR b:Claim
+    OR b:Decision OR b:ActionItem OR b:Claim OR b:OpenIssue
   )
 RETURN a, labels(a) AS a_labels, type(r) AS rel_type, properties(r) AS rel_props,
        b, labels(b) AS b_labels
@@ -759,6 +968,8 @@ def _graph_node_id(labels: list[str], props: dict) -> str | None:
         return props.get("action_item_id")
     if "Claim" in labels:
         return props.get("claim_id")
+    if "OpenIssue" in labels:
+        return props.get("issue_id") or props.get("canonical_key")
     return None
 
 

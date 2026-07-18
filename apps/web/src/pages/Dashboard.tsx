@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
+  Activity,
   Home,
   Network,
   Menu,
@@ -15,6 +16,7 @@ import AskView from "@/pages/AskView";
 import KnowledgeGraphView from "@/pages/KnowledgeGraphView";
 import HomePage from "@/pages/HomePage";
 import ExpertMessages from "@/pages/ExpertMessages";
+import StatusView from "@/pages/StatusView";
 import { useOnboarding } from "@/store/onboarding";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
@@ -23,6 +25,7 @@ import { getExpertInboxCount } from "@/services/reviews";
 
 type ViewId =
   | "home"
+  | "status"
   | "ask"
   | "messages"
   | "upload"
@@ -30,6 +33,7 @@ type ViewId =
 
 const NAV: { id: ViewId; label: string; icon: typeof Home }[] = [
   { id: "home", label: "Home", icon: Home },
+  { id: "status", label: "Status", icon: Activity },
   { id: "ask", label: "Ask", icon: MessageSquareText },
   { id: "messages", label: "Expert Messages", icon: MessagesSquare },
   { id: "upload", label: "Upload", icon: Upload },
@@ -62,6 +66,7 @@ export default function Dashboard() {
     if (tabParam === "apps" || tabParam === "organization" || tabParam === "home") {
       setView("home");
     }
+    if (tabParam === "status") setView("status");
     if (tabParam === "messages") setView("messages");
   }, [tabParam, isAdmin]);
 
@@ -200,6 +205,12 @@ export default function Dashboard() {
               oauthError={errorParam}
               onOAuthHandled={clearOAuthParams}
             />
+          </main>
+        )}
+
+        {view === "status" && (
+          <main className="flex-1 p-4 lg:p-8">
+            <StatusView />
           </main>
         )}
 

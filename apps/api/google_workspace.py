@@ -165,6 +165,10 @@ async def handle_google_workspace_callback(code: str, state: str) -> str:
     creds = flow.credentials
     account_email = await _fetch_user_email(creds.token or "")
 
+    expiry = creds.expiry
+    if expiry is not None and expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+
     await _save_connection(
         org_id=org_id,
         user_id=user_id,
@@ -172,7 +176,7 @@ async def handle_google_workspace_callback(code: str, state: str) -> str:
         account_email=account_email,
         access_token=creds.token or "",
         refresh_token=creds.refresh_token,
-        token_expiry=creds.expiry,
+        token_expiry=expiry,
         scopes=" ".join(creds.scopes or WORKSPACE_SCOPES),
     )
 

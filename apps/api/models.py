@@ -13,6 +13,10 @@ KnowledgeType = Literal["decision", "question_answer", "problem_report", "status
 SignalType = Literal["asked", "answered", "owns", "mentioned"]
 Confidence = Literal["high", "medium", "low"]
 EntityType = Literal["person", "project", "system", "tool", "process", "policy", "location", "equipment", "topic"]
+WorkStatus = Literal["open", "closed"]
+ActionItemStatus = Literal["open", "done", "cancelled"]
+IssueKind = Literal["problem_report", "status_update"]
+IssueStatus = Literal["open", "closed"]
 
 # Lifecycle of a stored source document. ``pending`` = stored but not yet
 # processed into chunks; ``processed`` = chunking/extraction succeeded;
@@ -126,6 +130,32 @@ class TypedEntity(BaseModel):
     relevance: Literal["primary", "secondary"] = "secondary"
 
 
+class ProjectUpdate(BaseModel):
+    """Lifecycle signal for a named project mentioned in the chunk."""
+
+    name: str
+    work_status: WorkStatus = "open"
+    evidence: str = ""
+
+
+class ActionItemUpdate(BaseModel):
+    """Open/close signal for assigned work extracted from the chunk."""
+
+    text: str
+    status: ActionItemStatus = "open"
+    assignee: Optional[str] = None
+    project: Optional[str] = None
+
+
+class IssueUpdate(BaseModel):
+    """Open/close signal for a problem report or status update."""
+
+    title: str
+    kind: IssueKind = "problem_report"
+    status: IssueStatus = "open"
+    project: Optional[str] = None
+
+
 class ChunkMetadata(BaseModel):
     """LLM-extracted structured metadata describing a single chunk."""
 
@@ -149,6 +179,53 @@ class ChunkMetadata(BaseModel):
     action_items: list[str] = Field(default_factory=list)
     factual_claims: list[str] = Field(default_factory=list)
     valid_until: Optional[datetime] = None
+    project_updates: list[ProjectUpdate] = Field(default_factory=list)
+    action_item_updates: list[ActionItemUpdate] = Field(default_factory=list)
+    issue_updates: list[IssueUpdate] = Field(default_factory=list)
+
+
+class StatusEvidence(BaseModel):
+    chunk_id: str
+    summary: str = ""
+    source: str = ""
+    source_label: str = ""
+
+
+class StatusProjectItem(BaseModel):
+    entity_id: str
+    name: str
+    work_status: WorkStatus = "open"
+    last_signal_at: Optional[datetime] = None
+    evidence: list[StatusEvidence] = Field(default_factory=list)
+
+
+class StatusIssueItem(BaseModel):
+    issue_id: str
+    title: str
+    kind: IssueKind
+    status: IssueStatus = "open"
+    project: Optional[str] = None
+    last_seen_at: Optional[datetime] = None
+    evidence: list[StatusEvidence] = Field(default_factory=list)
+
+
+class StatusActionItem(BaseModel):
+    action_item_id: str
+    text: str
+    status: ActionItemStatus = "open"
+    assignee: Optional[str] = None
+    project: Optional[str] = None
+    created_at: Optional[datetime] = None
+    last_signal_at: Optional[datetime] = None
+    evidence: list[StatusEvidence] = Field(default_factory=list)
+
+
+class OpenStatusResponse(BaseModel):
+    """Open projects, reports, and action items for the Status tab."""
+
+    projects: list[StatusProjectItem] = Field(default_factory=list)
+    issues: list[StatusIssueItem] = Field(default_factory=list)
+    action_items: list[StatusActionItem] = Field(default_factory=list)
 
 
 class IngestionResult(BaseModel):

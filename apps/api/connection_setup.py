@@ -189,7 +189,11 @@ async def discover_resources(
                 params={"pageSize": "100", "fields": "drives(id,name)"},
             )
             if drives_response.status_code >= 400:
-                raise HTTPException(status_code=502, detail="Could not list Google shared drives.")
+                logger.warning(
+                    "Could not list Google shared drives (%s); returning base resources",
+                    drives_response.status_code,
+                )
+                return ConnectionResourcesResponse(provider=provider, resources=resources)
             for drive in drives_response.json().get("drives", []):
                 drive_id = str(drive["id"])
                 resources.append(

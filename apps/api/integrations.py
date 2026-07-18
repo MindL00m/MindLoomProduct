@@ -193,17 +193,36 @@ async def _delete_connection(org_id: str, user_id: str, provider: str) -> None:
                 await session.delete(row)
 
 
-def _credentials_from_row(row: AppConnectionRow) -> Credentials:
+def _credentials_from_row(
+    row: AppConnectionRow, *, include_scopes: bool = True
+) -> Credentials:
     settings = get_settings()
+    # google-auth compares expiry to naive UTC; strip tzinfo from TIMESTAMPTZ.
+    expiry = row.token_expiry
+    if expiry is not None and expiry.tzinfo is not None:
+        expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
+    # Omitting scopes on refresh avoids Google's invalid_scope errors when the
+    # stored grant includes openid/email/profile (or incremental grants).
+    scopes = None
+    if include_scopes and row.scopes and row.scopes != "dev":
+        scopes = row.scopes.split()
     return Credentials(
         token=row.access_token,
         refresh_token=row.refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
-        scopes=row.scopes.split() if row.scopes else None,
-        expiry=row.token_expiry,
+        scopes=scopes,
+        expiry=expiry,
     )
+
+
+def _normalize_token_expiry(expiry: datetime | None) -> datetime | None:
+    if expiry is None:
+        return None
+    if expiry.tzinfo is None:
+        return expiry.replace(tzinfo=timezone.utc)
+    return expiry.astimezone(timezone.utc)
 
 
 async def _refresh_token_if_needed(row: AppConnectionRow) -> AppConnectionRow:
@@ -218,20 +237,36 @@ async def _refresh_token_if_needed(row: AppConnectionRow) -> AppConnectionRow:
     if not creds.refresh_token:
         raise HTTPException(
             status_code=401,
-            detail="Google Calendar connection expired. Please reconnect.",
+            detail="Google Workspace connection expired. Please reconnect.",
         )
 
-    await asyncio.to_thread(creds.refresh, GoogleAuthRequest())
+    refresh_creds = _credentials_from_row(row, include_scopes=False)
+    try:
+        await asyncio.to_thread(refresh_creds.refresh, GoogleAuthRequest())
+    except Exception as exc:  # noqa: BLE001 - surface provider errors cleanly
+        from google.auth.exceptions import RefreshError
 
+        if isinstance(exc, RefreshError):
+            logger.warning("Google token refresh failed for %s: %s", row.provider, exc)
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Google Workspace authorization is no longer valid. "
+                    "Disconnect and reconnect Google Workspace, then try again."
+                ),
+            ) from exc
+        raise
+
+    retained_scopes = row.scopes.split() if row.scopes else []
     return await _save_connection(
         org_id=row.org_id,
         user_id=row.user_id,
         provider=row.provider,
         account_email=row.account_email,
-        access_token=creds.token or row.access_token,
-        refresh_token=creds.refresh_token,
-        token_expiry=creds.expiry,
-        scopes=" ".join(creds.scopes or (row.scopes.split() if row.scopes else [])),
+        access_token=refresh_creds.token or row.access_token,
+        refresh_token=refresh_creds.refresh_token or row.refresh_token,
+        token_expiry=_normalize_token_expiry(refresh_creds.expiry),
+        scopes=" ".join(refresh_creds.scopes or retained_scopes),
     )
 
 

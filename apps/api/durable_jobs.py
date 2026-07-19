@@ -256,6 +256,12 @@ async def execute(message: dict[str, Any]) -> None:
                 "Expert notification delivery: "
                 + ", ".join(f"{channel}={status}" for channel, status in outcomes.items())
             )
+        elif kind == "expert_thread_ingest":
+            from review_workflows import ingest_expert_thread
+
+            await ingest_expert_thread(org_id, str(payload["review_id"]))
+            local[job_id].status = "complete"
+            local[job_id].progress = "Expert Messages thread ingested into knowledge graph"
         else:
             raise ValueError(f"Unknown durable job type: {kind}")
     except Exception as exc:  # noqa: BLE001

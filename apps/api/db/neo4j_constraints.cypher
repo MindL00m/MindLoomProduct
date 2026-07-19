@@ -34,8 +34,9 @@ CREATE CONSTRAINT entity_id_unique IF NOT EXISTS
 FOR (e:Entity) REQUIRE e.entity_id IS UNIQUE;
 
 DROP CONSTRAINT entity_canonical_name_unique IF EXISTS;
+// Community Edition: composite UNIQUE (NODE KEY is Enterprise-only).
 CREATE CONSTRAINT entity_org_name_unique IF NOT EXISTS
-FOR (e:Entity) REQUIRE (e.org_id, e.canonical_name) IS NODE KEY;
+FOR (e:Entity) REQUIRE (e.org_id, e.canonical_name) IS UNIQUE;
 
 CREATE INDEX entity_org_id_index IF NOT EXISTS
 FOR (e:Entity) ON (e.org_id);
@@ -59,8 +60,9 @@ CREATE CONSTRAINT document_id_unique IF NOT EXISTS
 FOR (d:Document) REQUIRE d.document_id IS UNIQUE;
 
 DROP CONSTRAINT document_content_hash_unique IF EXISTS;
+// Community Edition: composite UNIQUE (NODE KEY is Enterprise-only).
 CREATE CONSTRAINT document_org_hash_unique IF NOT EXISTS
-FOR (d:Document) REQUIRE (d.org_id, d.content_hash) IS NODE KEY;
+FOR (d:Document) REQUIRE (d.org_id, d.content_hash) IS UNIQUE;
 
 CREATE INDEX document_org_id_index IF NOT EXISTS
 FOR (d:Document) ON (d.org_id);

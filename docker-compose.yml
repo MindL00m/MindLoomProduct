@@ -53,10 +53,13 @@ services:
     volumes:
       - neo4jdata:/data
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"${NEO4J_PASSWORD}\" 'RETURN 1' || exit 1"]
+      # HTTP check avoids auth failures when the volume was created with an
+      # older NEO4J_PASSWORD (NEO4J_AUTH only applies on first init).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 15
+      start_period: 40s
 
   # One-shot job that applies the uniqueness constraints, then exits.
   neo4j-init:

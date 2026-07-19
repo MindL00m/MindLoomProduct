@@ -676,6 +676,26 @@ class QueryRequest(BaseModel):
     )
 
 
+class MessageablePerson(BaseModel):
+    """A signed-in org member that can receive Expert Messages."""
+
+    user_id: str
+    name: str
+    email: str
+    title: Optional[str] = None
+    department: Optional[str] = None
+
+
+class ProposedExpertMessage(BaseModel):
+    """Draft message awaiting user confirmation in Ask before send."""
+
+    recipient_user_id: str
+    recipient_name: str
+    recipient_email: str
+    message: str
+    candidates: list[MessageablePerson] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """An answer generated from retrieved context, with routing metadata."""
 
@@ -692,6 +712,10 @@ class QueryResponse(BaseModel):
     )
     routed_reason: Optional[str] = Field(
         default=None, description="Present when routed is true, explains why"
+    )
+    proposed_message: Optional[ProposedExpertMessage] = Field(
+        default=None,
+        description="Draft Expert Message awaiting explicit user approval in Ask.",
     )
 
 

@@ -19,9 +19,11 @@ import {
   extractFileForChat,
   type ChatMessage,
   type EphemeralDocument,
+  type ProposedExpertMessage,
   type QueryResponse,
   type Source,
 } from "@/services/ask";
+import { sendProposedExpertMessage } from "@/services/reviews";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
@@ -142,7 +144,12 @@ export default function AskView() {
     addTurn(convId, { id: turnId, question: q, status: "pending" });
     try {
       const response = await askQuestion(q, history, ephemeral);
-      updateTurn(convId, turnId, { status: "done", response });
+      updateTurn(convId, turnId, {
+        status: "done",
+        response,
+        proposedMessage: response.proposed_message ?? null,
+        proposalState: response.proposed_message ? "pending" : undefined,
+      });
     } catch (err) {
       updateTurn(convId, turnId, {
         status: "error",
@@ -246,7 +253,13 @@ export default function AskView() {
           ) : (
             <div className="mx-auto max-w-3xl space-y-6 py-4">
               {turns.map((turn) => (
-                <TurnView key={turn.id} turn={turn} />
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  onProposalPatch={(patch) =>
+                    updateTurn(activeId!, turn.id, patch)
+                  }
+                />
               ))}
               <div ref={bottomRef} />
             </div>
@@ -448,7 +461,13 @@ function EmptyState({ onExample }: { onExample: (q: string) => void }) {
   );
 }
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({
+  turn,
+  onProposalPatch,
+}: {
+  turn: Turn;
+  onProposalPatch: (patch: Partial<Turn>) => void;
+}) {
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
@@ -478,7 +497,16 @@ function TurnView({ turn }: { turn: Turn }) {
             </div>
           )}
           {turn.status === "done" && turn.response && (
-            <AnswerView response={turn.response} />
+            <AnswerView
+              response={turn.response}
+              proposedMessage={
+                turn.proposedMessage ?? turn.response.proposed_message ?? null
+              }
+              proposalState={turn.proposalState}
+              proposalReviewId={turn.proposalReviewId}
+              proposalError={turn.proposalError}
+              onProposalPatch={onProposalPatch}
+            />
           )}
         </div>
       </div>
@@ -486,13 +514,133 @@ function TurnView({ turn }: { turn: Turn }) {
   );
 }
 
-function AnswerView({ response }: { response: QueryResponse }) {
+function ProposedMessageCard({
+  proposal,
+  state,
+  reviewId,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedExpertMessage;
+  state?: Turn["proposalState"];
+  reviewId?: string;
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+
+  async function approve() {
+    onPatch({ proposalState: "sending", proposalError: undefined });
+    try {
+      const result = await sendProposedExpertMessage(
+        proposal.recipient_user_id,
+        proposal.message,
+      );
+      onPatch({
+        proposalState: "sent",
+        proposalReviewId: result.review_id,
+        proposalError: undefined,
+      });
+    } catch (err) {
+      onPatch({
+        proposalState: "pending",
+        proposalError: err instanceof Error ? err.message : "Send failed.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Proposed message discarded.
+      </div>
+    );
+  }
+
+  if (status === "sent") {
+    return (
+      <div className="rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <p className="font-medium">Message sent to {proposal.recipient_name}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Delivered via Expert Messages
+          {reviewId ? ` (${reviewId.slice(0, 8)}…)` : ""}.
+        </p>
+        <a
+          href="/dashboard?tab=messages"
+          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          Open Expert Messages
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="proposed-expert-message-card"
+      className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+    >
+      <p className="font-semibold text-foreground">Send Expert Message?</p>
+      <p className="mt-1 text-muted-foreground">
+        To{" "}
+        <span className="font-medium text-foreground">
+          {proposal.recipient_name}
+        </span>{" "}
+        ({proposal.recipient_email})
+      </p>
+      <p className="mt-2 whitespace-pre-wrap rounded-md border border-border bg-card px-3 py-2 text-foreground">
+        {proposal.message}
+      </p>
+      {error && (
+        <p className="mt-2 text-xs text-destructive">{error}</p>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={status === "sending"}
+          onClick={() => void approve()}
+          className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+        >
+          {status === "sending" ? "Sending…" : "Approve & send"}
+        </button>
+        <button
+          type="button"
+          disabled={status === "sending"}
+          onClick={() => onPatch({ proposalState: "cancelled" })}
+          className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        Nothing is sent until you approve.
+      </p>
+    </div>
+  );
+}
+
+function AnswerView({
+  response,
+  proposedMessage,
+  proposalState,
+  proposalReviewId,
+  proposalError,
+  onProposalPatch,
+}: {
+  response: QueryResponse;
+  proposedMessage?: ProposedExpertMessage | null;
+  proposalState?: Turn["proposalState"];
+  proposalReviewId?: string;
+  proposalError?: string;
+  onProposalPatch: (patch: Partial<Turn>) => void;
+}) {
   const cited = new Set<string>();
   let match: RegExpExecArray | null;
   CITE_RE.lastIndex = 0;
   while ((match = CITE_RE.exec(response.answer)) !== null) {
     cited.add(match[1].trim());
   }
+  const proposal = proposedMessage ?? response.proposed_message ?? null;
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -503,7 +651,17 @@ function AnswerView({ response }: { response: QueryResponse }) {
         {renderAnswer(response.answer, response.sources)}
       </p>
 
-      {response.routed && response.expert && (
+      {proposal && (
+        <ProposedMessageCard
+          proposal={proposal}
+          state={proposalState}
+          reviewId={proposalReviewId}
+          error={proposalError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
+      {response.routed && response.expert && !proposal && (
         <div className="rounded-md border border-border bg-muted/50 px-3 py-3 text-sm">
           <span className="font-medium">Suggested expert: {response.expert.name}</span>
           <span className="text-muted-foreground"> — {response.expert.reason}</span>

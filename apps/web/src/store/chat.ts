@@ -8,6 +8,12 @@ export interface Turn {
   status: "pending" | "done" | "error";
   response?: QueryResponse;
   error?: string;
+  /** Copied from the API so the approve card survives store quirks. */
+  proposedMessage?: QueryResponse["proposed_message"];
+  /** Local UI state for Ask-proposed Expert Messages. */
+  proposalState?: "pending" | "sending" | "sent" | "cancelled";
+  proposalReviewId?: string;
+  proposalError?: string;
 }
 
 export type AttachmentScope = "chat" | "graph";

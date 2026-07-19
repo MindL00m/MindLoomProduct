@@ -78,6 +78,31 @@ export async function startExpertThread(
   return response.json();
 }
 
+export async function sendProposedExpertMessage(
+  recipientUserId: string,
+  message: string,
+): Promise<{ review_id: string; status: string }> {
+  const response = await apiFetch("/knowledge/reviews/messages/send-proposed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient_user_id: recipientUserId,
+      message,
+    }),
+  });
+  if (!response.ok) {
+    let detail = "Could not send the proposed message.";
+    try {
+      const body = await response.json();
+      detail = (body?.detail as string) || detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
 export async function sendExpertMessage(
   reviewId: string,
   message: string,

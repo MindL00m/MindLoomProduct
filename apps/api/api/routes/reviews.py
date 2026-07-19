@@ -20,6 +20,7 @@ from review_workflows import (
     moderate_expert_answer,
     resolve_review,
     send_expert_message,
+    send_proposed_expert_message,
     start_expert_conversation,
     upsert_review_schedule,
 )
@@ -63,6 +64,12 @@ class StartConversationInput(BaseModel):
 
 class SendMessageInput(BaseModel):
     message: str = Field(min_length=1)
+
+
+class SendProposedMessageInput(BaseModel):
+    recipient_user_id: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    client_request_id: str | None = None
 
 
 @router.get("")
@@ -113,6 +120,19 @@ async def start_message_thread(
         message=request.message,
     )
     return {"review_id": review_id, "status": "open"}
+
+
+@router.post("/messages/send-proposed")
+async def send_proposed_message(
+    request: SendProposedMessageInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict[str, str]:
+    return await send_proposed_expert_message(
+        org_id=ctx[0],
+        requester_user_id=ctx[1],
+        recipient_user_id=request.recipient_user_id,
+        message=request.message,
+    )
 
 
 @router.get("/messages/{review_id}")

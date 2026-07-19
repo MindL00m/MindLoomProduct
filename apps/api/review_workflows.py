@@ -224,6 +224,16 @@ async def send_expert_message(
             WHERE org_id=:org AND review_id=:review
         """), {"org": org_id, "review": review_id})
         await session.commit()
+    from durable_jobs import enqueue
+    try:
+        await enqueue(
+            "expert_thread_ingest",
+            org_id=org_id,
+            conversation_id=f"expert_messages:{review_id}",
+            payload={"review_id": review_id},
+        )
+    except Exception:
+        pass
     return {"message_id": message_id, "status": "sent"}
 
 
@@ -319,6 +329,336 @@ async def list_message_contacts(org_id: str, user_id: str) -> list[dict]:
             """), {"org": org_id, "user": user_id})
         ).mappings().all()
     return [dict(row) for row in rows]
+
+
+async def _directory_people_matching_query(org_id: str, query: str) -> list[dict]:
+    """Match org-directory Person nodes by title, name, or email."""
+
+    cleaned = query.strip()
+    if not cleaned:
+        return []
+    try:
+        from database import get_neo4j_driver
+
+        driver = get_neo4j_driver()
+        async with driver.session() as graph:
+            result = await graph.run(
+                """
+                MATCH (p:Person {org_id: $org_id})
+                WHERE coalesce(p.canonical_email, p.email) IS NOT NULL
+                  AND (
+                    toLower(coalesce(p.title, '')) = toLower($q)
+                    OR toLower(coalesce(p.name, '')) = toLower($q)
+                    OR toLower(coalesce(p.canonical_email, p.email, '')) = toLower($q)
+                    OR toLower(coalesce(p.title, '')) CONTAINS toLower($q)
+                    OR toLower(coalesce(p.name, '')) CONTAINS toLower($q)
+                    OR toLower(coalesce(p.canonical_email, p.email, '')) CONTAINS toLower($q)
+                  )
+                RETURN toLower(coalesce(p.canonical_email, p.email)) AS email,
+                       p.name AS name,
+                       p.title AS title,
+                       p.department AS department,
+                       CASE
+                         WHEN toLower(coalesce(p.title, '')) = toLower($q) THEN 0
+                         WHEN toLower(coalesce(p.name, '')) = toLower($q) THEN 1
+                         WHEN toLower(coalesce(p.canonical_email, p.email, '')) = toLower($q) THEN 2
+                         WHEN toLower(coalesce(p.title, '')) CONTAINS toLower($q) THEN 3
+                         ELSE 4
+                       END AS rank_score
+                ORDER BY rank_score, p.name
+                LIMIT 20
+                """,
+                org_id=org_id,
+                q=cleaned,
+            )
+            return [dict(rec) async for rec in result]
+    except Exception:  # noqa: BLE001 - messaging still works with Postgres-only match
+        return []
+
+
+async def lookup_messageable_people(
+    org_id: str,
+    query: str,
+    *,
+    exclude_user_id: str | None = None,
+    limit: int = 8,
+) -> list[dict]:
+    """Rank signed-in org users matching name, email, or directory title/role."""
+
+    cleaned = " ".join(query.strip().split())
+    if not cleaned:
+        return []
+    pattern = f"%{cleaned}%"
+    params: dict = {
+        "org": org_id,
+        "q": cleaned,
+        "pattern": pattern,
+        "limit": limit,
+    }
+    exclude_clause = ""
+    if exclude_user_id:
+        exclude_clause = "AND user_id <> CAST(:exclude AS text)"
+        params["exclude"] = exclude_user_id
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text(f"""
+                SELECT user_id,
+                       coalesce(name, email) AS name,
+                       email,
+                       role,
+                       CASE
+                         WHEN lower(email) = lower(:q) THEN 0
+                         WHEN lower(coalesce(name, '')) = lower(:q) THEN 1
+                         WHEN lower(email) LIKE lower(:pattern) THEN 2
+                         WHEN lower(coalesce(name, '')) LIKE lower(:pattern) THEN 3
+                         ELSE 4
+                       END AS rank_score
+                FROM users
+                WHERE org_id = CAST(:org AS text)
+                  {exclude_clause}
+                  AND (
+                    lower(email) LIKE lower(:pattern)
+                    OR lower(coalesce(name, '')) LIKE lower(:pattern)
+                  )
+                ORDER BY rank_score, coalesce(name, email)
+                LIMIT :limit
+            """), params)
+        ).mappings().all()
+
+    by_email: dict[str, dict] = {}
+    for row in rows:
+        email = str(row["email"] or "").lower()
+        if not email:
+            continue
+        by_email[email] = {
+            "user_id": row["user_id"],
+            "name": row["name"],
+            "email": row["email"],
+            "role": row["role"],
+            "rank_score": int(row["rank_score"]),
+        }
+
+    directory_hits = await _directory_people_matching_query(org_id, cleaned)
+    directory_emails = [
+        str(hit["email"]).lower()
+        for hit in directory_hits
+        if hit.get("email")
+    ]
+    missing_emails = [email for email in directory_emails if email not in by_email]
+    if missing_emails:
+        link_params: dict = {"org": org_id, "emails": missing_emails}
+        link_exclude = ""
+        if exclude_user_id:
+            link_exclude = "AND user_id <> CAST(:exclude AS text)"
+            link_params["exclude"] = exclude_user_id
+        async with factory() as session:
+            linked = (
+                await session.execute(text(f"""
+                    SELECT user_id, coalesce(name, email) AS name, email, role
+                    FROM users
+                    WHERE org_id = CAST(:org AS text)
+                      {link_exclude}
+                      AND lower(email) = ANY(:emails)
+                """), link_params)
+            ).mappings().all()
+        for row in linked:
+            email = str(row["email"] or "").lower()
+            by_email[email] = {
+                "user_id": row["user_id"],
+                "name": row["name"],
+                "email": row["email"],
+                "role": row["role"],
+                "rank_score": 5,
+            }
+
+    for hit in directory_hits:
+        email = str(hit.get("email") or "").lower()
+        if not email or email not in by_email:
+            continue
+        item = by_email[email]
+        if hit.get("title"):
+            item["title"] = hit["title"]
+        if hit.get("department"):
+            item["department"] = hit["department"]
+        dir_rank = int(hit.get("rank_score") or 5)
+        # Prefer exact title matches (e.g. "CTO") over weak name/email contains.
+        item["rank_score"] = min(int(item.get("rank_score", 5)), dir_rank)
+
+    # Enrich remaining Postgres hits with directory title/department.
+    remaining = [
+        email for email in by_email
+        if "title" not in by_email[email]
+    ]
+    if remaining:
+        try:
+            from database import get_neo4j_driver
+
+            driver = get_neo4j_driver()
+            async with driver.session() as graph:
+                neo = await graph.run(
+                    """
+                    MATCH (p:Person {org_id: $org_id})
+                    WHERE toLower(coalesce(p.canonical_email, p.email, '')) IN $emails
+                    RETURN toLower(coalesce(p.canonical_email, p.email)) AS email,
+                           p.title AS title,
+                           p.department AS department
+                    """,
+                    org_id=org_id,
+                    emails=remaining,
+                )
+                async for rec in neo:
+                    email = str(rec["email"])
+                    if email in by_email:
+                        if rec.get("title"):
+                            by_email[email]["title"] = rec.get("title")
+                        if rec.get("department"):
+                            by_email[email]["department"] = rec.get("department")
+        except Exception:  # noqa: BLE001
+            pass
+
+    ranked = sorted(
+        by_email.values(),
+        key=lambda item: (int(item.get("rank_score", 99)), str(item.get("name") or "")),
+    )
+    results: list[dict] = []
+    for item in ranked[:limit]:
+        results.append({k: v for k, v in item.items() if k != "rank_score"})
+    return results
+
+
+async def send_proposed_expert_message(
+    *,
+    org_id: str,
+    requester_user_id: str,
+    recipient_user_id: str,
+    message: str,
+) -> dict:
+    """Send an Ask-confirmed message via Expert Messages."""
+
+    if recipient_user_id == requester_user_id:
+        raise HTTPException(status_code=400, detail="You cannot message yourself.")
+    review_id = await start_expert_conversation(
+        org_id=org_id,
+        requester_user_id=requester_user_id,
+        expert_user_id=recipient_user_id,
+        message=message,
+    )
+    return {"review_id": review_id, "status": "sent"}
+
+
+async def _load_thread_for_ingest(org_id: str, review_id: str) -> dict | None:
+    factory = get_session_factory()
+    async with factory() as session:
+        thread = (
+            await session.execute(text("""
+                SELECT r.review_id, r.title, r.created_by, r.owner_user_id,
+                       requester.email AS requester_email,
+                       coalesce(requester.name, requester.email) AS requester_name,
+                       expert.email AS expert_email,
+                       coalesce(expert.name, expert.email) AS expert_name
+                FROM knowledge_reviews r
+                LEFT JOIN users requester ON requester.user_id = r.created_by
+                LEFT JOIN users expert ON expert.user_id = r.owner_user_id
+                WHERE r.org_id = :org AND r.review_id = :review
+                  AND r.review_type = 'expert_request'
+            """), {"org": org_id, "review": review_id})
+        ).mappings().one_or_none()
+        if thread is None:
+            return None
+        messages = (
+            await session.execute(text("""
+                SELECT m.message_id, m.sender_user_id, m.body, m.created_at,
+                       coalesce(u.name, u.email) AS sender_name,
+                       u.email AS sender_email
+                FROM expert_messages m
+                JOIN users u ON u.user_id = m.sender_user_id
+                WHERE m.org_id = :org AND m.review_id = :review
+                ORDER BY m.created_at
+            """), {"org": org_id, "review": review_id})
+        ).mappings().all()
+    return {"thread": dict(thread), "messages": [dict(m) for m in messages]}
+
+
+async def ingest_expert_thread(org_id: str, review_id: str) -> None:
+    """Re-ingest a full Expert Messages thread into the knowledge graph."""
+
+    payload = await _load_thread_for_ingest(org_id, review_id)
+    if payload is None or not payload["messages"]:
+        return
+
+    thread = payload["thread"]
+    rows = payload["messages"]
+    participants_by_id: dict[str, Participant] = {}
+    for row in rows:
+        sender_id = str(row["sender_user_id"])
+        participants_by_id[sender_id] = Participant(
+            id=sender_id,
+            name=str(row["sender_name"] or row["sender_email"] or sender_id),
+        )
+    for user_id, name in (
+        (thread.get("created_by"), thread.get("requester_name")),
+        (thread.get("owner_user_id"), thread.get("expert_name")),
+    ):
+        if user_id and str(user_id) not in participants_by_id:
+            participants_by_id[str(user_id)] = Participant(
+                id=str(user_id),
+                name=str(name or user_id),
+            )
+
+    messages = [
+        IncomingMessage(
+            id=str(row["message_id"]),
+            sender=str(row["sender_user_id"]),
+            timestamp=row["created_at"],
+            text=str(row["body"]),
+        )
+        for row in rows
+    ]
+    conversation_id = f"expert_messages:{review_id}"
+    title = str(thread.get("title") or "Expert Messages conversation")
+    conversation = Conversation(
+        source="expert_messages",
+        conversation_id=conversation_id,
+        title=title,
+        participants=list(participants_by_id.values()),
+        messages=messages,
+    )
+    visible_to = sorted({
+        token
+        for token in (
+            thread.get("requester_email"),
+            thread.get("expert_email"),
+            f"user:{thread.get('created_by')}" if thread.get("created_by") else None,
+            f"user:{thread.get('owner_user_id')}" if thread.get("owner_user_id") else None,
+        )
+        if token
+    })
+    transcript = "\n".join(
+        f"{row['sender_name']}: {row['body']}" for row in rows
+    ).encode("utf-8")
+    version = str(rows[-1]["message_id"])
+    document = DocumentInput(
+        data=transcript,
+        source="expert_messages",
+        source_label=title,
+        original_filename=f"{conversation_id}.txt",
+        mime_type="text/plain",
+        visible_to=visible_to,
+        title=title,
+        source_application="Expert Messages",
+        source_location=conversation_id,
+        version=version,
+    )
+    await ingest_external_source(
+        org_id=org_id,
+        provider="expert_messages",
+        external_id=review_id,
+        version=version,
+        conversation=conversation,
+        document=document,
+    )
 
 
 async def list_expert_requests(org_id: str, user_id: str) -> list[dict]:

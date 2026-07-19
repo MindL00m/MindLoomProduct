@@ -19,7 +19,6 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPE
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from answerer import generate_answer
 from auth import create_org, get_org_summary, get_user_access_tokens, google_signin, require_org_id
 from config import get_settings
 from database import close_pools
@@ -317,14 +316,21 @@ async def query(
         retrieval = await retrieve(
             request.question, request.history, org_id, access_tokens
         )
-        response = await generate_answer(
-            request.question,
-            retrieval,
-            request.history,
-            org_id,
-            request.ephemeral_documents,
+        from ask_agent import run_ask_agent
+
+        response = await run_ask_agent(
+            question=request.question,
+            retrieval=retrieval,
+            history=request.history,
+            org_id=org_id,
+            user_id=user_id,
+            ephemeral_documents=request.ephemeral_documents,
         )
-        if response.routed and response.expert:
+        if (
+            response.proposed_message is None
+            and response.routed
+            and response.expert
+        ):
             from review_workflows import create_expert_request
             request_id = await create_expert_request(
                 org_id=org_id,

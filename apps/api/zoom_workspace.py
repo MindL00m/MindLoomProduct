@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import HTTPException
@@ -36,12 +36,15 @@ async def start_zoom_oauth(org_id: str, user_id: str) -> str:
     if not settings.zoom_oauth_enabled:
         raise HTTPException(status_code=503, detail="Zoom OAuth is not configured.")
     state = _store_oauth_state(org_id, user_id)
-    return str(httpx.URL("https://zoom.us/oauth/authorize").copy_add_params({
-        "response_type": "code",
-        "client_id": settings.zoom_client_id,
-        "redirect_uri": settings.zoom_oauth_redirect_uri,
-        "state": state,
-    }))
+    params = urlencode(
+        {
+            "response_type": "code",
+            "client_id": settings.zoom_client_id,
+            "redirect_uri": settings.zoom_oauth_redirect_uri,
+            "state": state,
+        }
+    )
+    return f"https://zoom.us/oauth/authorize?{params}"
 
 
 async def handle_zoom_callback(code: str, state: str) -> str:

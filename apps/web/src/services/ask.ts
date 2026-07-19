@@ -41,6 +41,22 @@ export interface Expert {
   relationship_count: number;
 }
 
+export interface MessageablePerson {
+  user_id: string;
+  name: string;
+  email: string;
+  title?: string | null;
+  department?: string | null;
+}
+
+export interface ProposedExpertMessage {
+  recipient_user_id: string;
+  recipient_name: string;
+  recipient_email: string;
+  message: string;
+  candidates?: MessageablePerson[];
+}
+
 export interface QueryResponse {
   answer: string;
   sources: Source[];
@@ -49,6 +65,7 @@ export interface QueryResponse {
   confidence: "high" | "medium" | "low";
   routed: boolean;
   routed_reason?: string | null;
+  proposed_message?: ProposedExpertMessage | null;
 }
 
 export interface ChatMessage {

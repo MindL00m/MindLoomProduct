@@ -4,6 +4,16 @@
 .env.*
 !.env.example
 !**/.env.example
+*.pem
+*.key
+*credentials*.json
+*service-account*.json
+secrets/
+**/secrets/
+
+# ---- Legacy / local-only trees ----
+# Orphan local folder (not part of the apps/ monorepo layout).
+/backend/
 
 # ---- Python ----
 __pycache__/
@@ -37,6 +47,7 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+.cursor/
 
 # ---- Logs ----
 *.log

@@ -10,8 +10,9 @@ from capture_service import (
     review_skill_file,
     save_capture,
     summarize_capture,
+    update_skill_file,
 )
-from models import CaptureCreate, CaptureRecord, SkillFileDraft, SkillFileReview
+from models import CaptureCreate, CaptureRecord, SkillFileDraft, SkillFileReview, SkillFileUpdate
 
 router = APIRouter(prefix="/captures", tags=["browser captures"])
 
@@ -52,6 +53,16 @@ async def analyze_session(session_id: str) -> SkillFileDraft:
 @router.get("/skill-files")
 async def skill_files() -> list[dict[str, object]]:
     return list_skill_files()
+
+
+@router.patch("/skill-files/{skill_id}", response_model=SkillFileDraft)
+async def patch_skill(skill_id: str, update: SkillFileUpdate) -> SkillFileDraft:
+    try:
+        return await update_skill_file(skill_id, update)
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
 
 
 @router.post("/skill-files/{skill_id}/review", response_model=SkillFileDraft)

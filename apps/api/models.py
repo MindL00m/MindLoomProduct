@@ -94,6 +94,47 @@ class SkillFileReview(BaseModel):
     expert_notes: str = ""
 
 
+class SkillFileUpdate(BaseModel):
+    """Rename or edit a Skill File without changing approval status."""
+
+    title: Optional[str] = None
+    purpose: Optional[str] = None
+    application: Optional[str] = None
+    expert_notes: Optional[str] = None
+
+
+WorkflowRunStatus = Literal["queued", "running", "succeeded", "failed", "needs_input"]
+
+
+class WorkflowRunStep(BaseModel):
+    """One agent-visible payload emitted during a workflow run."""
+
+    text: str = ""
+    screenshot_url: Optional[str] = None
+
+
+class WorkflowRun(BaseModel):
+    """A single execution of an approved workflow via the OpenClaw browser agent."""
+
+    run_id: str
+    skill_id: str
+    skill_title: str
+    application: str = ""
+    status: WorkflowRunStatus = "queued"
+    model: str = ""
+    browser_profile: str = ""
+    prompt: str = ""
+    result_text: str = ""
+    summary: str = ""
+    stop_reason: str = ""
+    steps: list[WorkflowRunStep] = Field(default_factory=list)
+    screenshots: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    org_id: str = "default"
+
+
 class Message(BaseModel):
     """A single, fully-resolved chat message."""
 

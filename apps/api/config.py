@@ -88,6 +88,53 @@ class Settings(BaseSettings):
         description="Vision-capable model used to summarize approved captures.",
     )
 
+    openclaw_skills_dir: str = Field(
+        "~/.openclaw/loom-skills",
+        description=(
+            "Filesystem root into which approved extension workflows are exported "
+            "as OpenClaw SKILL.md skill directories. Register this same path in the "
+            "OpenClaw host's skills.load.extraDirs so the agent can run them."
+        ),
+    )
+    openclaw_cli: str = Field(
+        "openclaw",
+        description="Path to the OpenClaw CLI used to drive gateway agent turns for workflow runs.",
+    )
+    openclaw_agent_id: str = Field(
+        "main",
+        description="OpenClaw agent id whose workspace/auth is used to run workflows.",
+    )
+    openclaw_run_model: str = Field(
+        "GPT",
+        description=(
+            "Model (or configured alias) used for browser-driving workflow runs. "
+            "Defaults to the stronger 'GPT' alias; capture/Ask keep gpt-4o-mini."
+        ),
+    )
+    openclaw_browser_profile: str = Field(
+        "openclaw",
+        description=(
+            "OpenClaw browser profile for workflow runs: 'openclaw' (managed Chrome) "
+            "or 'user' (attached to the signed-in browser session)."
+        ),
+    )
+    openclaw_run_timeout_seconds: int = Field(
+        600,
+        description="Hard timeout applied to a single OpenClaw workflow run turn.",
+    )
+    openclaw_gateway_url: str = Field(
+        default="",
+        description=(
+            "Optional OpenClaw gateway WebSocket URL override (e.g. "
+            "ws://host.docker.internal:18789 when Loom runs in Docker). Empty uses "
+            "the CLI's local gateway config."
+        ),
+    )
+    openclaw_token: str = Field(
+        default="",
+        description="Optional OpenClaw gateway token, paired with openclaw_gateway_url.",
+    )
+
     google_client_id: str = Field(
         default="",
         description="Google OAuth client ID for Calendar and other workspace apps.",

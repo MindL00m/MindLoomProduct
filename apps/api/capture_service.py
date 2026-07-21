@@ -24,7 +24,9 @@ from models import (
     Participant,
     SkillFileDraft,
     SkillFileReview,
+    SkillFileUpdate,
 )
+from openclaw_export import sync_skill_file
 from pipeline import DocumentInput
 from source_registry import ingest_external_source
 
@@ -300,6 +302,31 @@ async def create_skill_file_from_expert_answer(
     return draft
 
 
+async def update_skill_file(skill_id: str, update: SkillFileUpdate) -> SkillFileDraft:
+    """Update Skill File metadata without changing approval status."""
+
+    current_data = next(
+        (row for row in list_skill_files() if row["skill_id"] == skill_id),
+        None,
+    )
+    if current_data is None:
+        raise ValueError("Skill File was not found.")
+    current = SkillFileDraft.model_validate(current_data)
+    updates = update.model_dump(exclude_none=True)
+    if "title" in updates:
+        title = str(updates["title"]).strip()
+        if not title:
+            raise ValueError("Skill name cannot be empty.")
+        updates["title"] = title
+    updates["updated_at"] = datetime.now(timezone.utc)
+    updated = current.model_copy(update=updates)
+    _, _, _, path = _paths()
+    _append_jsonl(path, updated.model_dump(mode="json"))
+    # Renaming an already-approved workflow must refresh its derived SKILL.md.
+    sync_skill_file(updated)
+    return updated
+
+
 async def review_skill_file(skill_id: str, review: SkillFileReview) -> SkillFileDraft:
     current_data = next(
         (row for row in list_skill_files() if row["skill_id"] == skill_id),
@@ -313,6 +340,9 @@ async def review_skill_file(skill_id: str, review: SkillFileReview) -> SkillFile
     updated = current.model_copy(update=updates)
     _, _, _, path = _paths()
     _append_jsonl(path, updated.model_dump(mode="json"))
+    # Bridge to OpenClaw: approved extension workflows become runnable SKILL.md
+    # files; rejection removes any previously exported skill.
+    sync_skill_file(updated)
     if updated.status == "approved":
         text = "\n".join([
             f"Skill: {updated.title}",

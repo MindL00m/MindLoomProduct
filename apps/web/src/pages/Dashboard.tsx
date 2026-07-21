@@ -9,6 +9,7 @@ import {
   Upload,
   X,
   MessagesSquare,
+  Workflow,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import UploadData from "@/pages/UploadData";
@@ -17,17 +18,20 @@ import KnowledgeGraphView from "@/pages/KnowledgeGraphView";
 import HomePage from "@/pages/HomePage";
 import ExpertMessages from "@/pages/ExpertMessages";
 import StatusView from "@/pages/StatusView";
+import WorkflowsView from "@/pages/WorkflowsView";
 import { useOnboarding } from "@/store/onboarding";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
 import { getOrgSummary, type OrgSummary } from "@/services/auth";
 import { getExpertInboxCount } from "@/services/reviews";
+import { isExtensionSkill, listSkillFiles } from "@/services/skillFiles";
 
 type ViewId =
   | "home"
   | "status"
   | "ask"
   | "messages"
+  | "workflows"
   | "upload"
   | "graph";
 
@@ -36,6 +40,7 @@ const NAV: { id: ViewId; label: string; icon: typeof Home }[] = [
   { id: "status", label: "Status", icon: Activity },
   { id: "ask", label: "Ask", icon: MessageSquareText },
   { id: "messages", label: "Expert Messages", icon: MessagesSquare },
+  { id: "workflows", label: "Workflows", icon: Workflow },
   { id: "upload", label: "Upload", icon: Upload },
   { id: "graph", label: "Knowledge Graph", icon: Network },
 ];
@@ -52,6 +57,7 @@ export default function Dashboard() {
   const [view, setView] = useState<ViewId>("home");
   const [orgSummary, setOrgSummary] = useState<OrgSummary | null>(null);
   const [expertNotifications, setExpertNotifications] = useState(0);
+  const [workflowNotifications, setWorkflowNotifications] = useState(0);
   const isAdmin = role === "admin";
   const availableNav = NAV.filter(
     (item) => isAdmin || item.id !== "graph",
@@ -68,6 +74,7 @@ export default function Dashboard() {
     }
     if (tabParam === "status") setView("status");
     if (tabParam === "messages") setView("messages");
+    if (tabParam === "workflows") setView("workflows");
   }, [tabParam, isAdmin]);
 
   useEffect(() => {
@@ -78,6 +85,22 @@ export default function Dashboard() {
 
   useEffect(() => {
     const refresh = () => void getExpertInboxCount().then(setExpertNotifications);
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const refresh = () =>
+      void listSkillFiles()
+        .then((rows) =>
+          setWorkflowNotifications(
+            rows.filter(
+              (skill) => isExtensionSkill(skill) && skill.status === "proposed",
+            ).length,
+          ),
+        )
+        .catch(() => setWorkflowNotifications(0));
     refresh();
     const timer = window.setInterval(refresh, 30_000);
     return () => window.clearInterval(timer);
@@ -138,6 +161,11 @@ export default function Dashboard() {
               {item.id === "messages" && expertNotifications > 0 && (
                 <span className="ml-auto min-w-5 rounded-full bg-destructive px-1.5 text-center text-xs text-destructive-foreground">
                   {expertNotifications > 99 ? "99+" : expertNotifications}
+                </span>
+              )}
+              {item.id === "workflows" && workflowNotifications > 0 && (
+                <span className="ml-auto min-w-5 rounded-full bg-destructive px-1.5 text-center text-xs text-destructive-foreground">
+                  {workflowNotifications > 99 ? "99+" : workflowNotifications}
                 </span>
               )}
             </button>
@@ -223,6 +251,12 @@ export default function Dashboard() {
         {view === "messages" && (
           <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
             <ExpertMessages onCountChange={setExpertNotifications} />
+          </main>
+        )}
+
+        {view === "workflows" && (
+          <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+            <WorkflowsView />
           </main>
         )}
 

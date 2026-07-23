@@ -1,55 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle,
   Check,
   Eye,
   Loader2,
-  Play,
   RefreshCw,
   Workflow,
   X,
 } from "lucide-react";
 import {
-  getWorkflowRun,
   isExtensionSkill,
-  isRunTerminal,
   listSkillFiles,
-  listWorkflowRuns,
   reviewSkillFile,
-  runWorkflow,
   updateSkillFile,
   type SkillFile,
-  type WorkflowRun,
-  type WorkflowRunStatus,
 } from "@/services/skillFiles";
 import { cn } from "@/lib/utils";
-
-function runStatusStyles(status: WorkflowRunStatus): string {
-  if (status === "succeeded") return "bg-emerald-50 text-emerald-800 border-emerald-200";
-  if (status === "failed") return "bg-destructive/10 text-destructive border-destructive/20";
-  if (status === "needs_input") return "bg-amber-50 text-amber-900 border-amber-200";
-  return "bg-sky-50 text-sky-800 border-sky-200";
-}
-
-function runStatusLabel(status: WorkflowRunStatus): string {
-  if (status === "needs_input") return "needs input";
-  return status;
-}
-
-function RunStatusChip({ run }: { run: WorkflowRun }) {
-  const active = !isRunTerminal(run.status);
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-        runStatusStyles(run.status),
-      )}
-    >
-      {active && <Loader2 className="size-3 animate-spin" />}
-      Run: {runStatusLabel(run.status)}
-    </span>
-  );
-}
 
 function statusStyles(status: SkillFile["status"]): string {
   if (status === "approved") return "bg-emerald-50 text-emerald-800 border-emerald-200";
@@ -120,8 +85,6 @@ export default function WorkflowsView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
   const [viewing, setViewing] = useState<SkillFile | null>(null);
-  const [runs, setRuns] = useState<Record<string, WorkflowRun | null>>({});
-  const [viewingRun, setViewingRun] = useState<WorkflowRun | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,19 +96,6 @@ export default function WorkflowsView() {
       setDraftNames(
         Object.fromEntries(extensionSkills.map((skill) => [skill.skill_id, skill.title])),
       );
-      const runEntries = await Promise.all(
-        extensionSkills
-          .filter((skill) => skill.status === "approved")
-          .map(async (skill) => {
-            try {
-              const skillRuns = await listWorkflowRuns(skill.skill_id);
-              return [skill.skill_id, skillRuns[0] ?? null] as const;
-            } catch {
-              return [skill.skill_id, null] as const;
-            }
-          }),
-      );
-      setRuns(Object.fromEntries(runEntries));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load workflows.");
     } finally {
@@ -156,48 +106,6 @@ export default function WorkflowsView() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  const activeRunIds = useMemo(
-    () =>
-      Object.values(runs)
-        .filter((run): run is WorkflowRun => run !== null && !isRunTerminal(run.status))
-        .map((run) => run.run_id),
-    [runs],
-  );
-
-  useEffect(() => {
-    if (activeRunIds.length === 0) return;
-    const timer = setInterval(() => {
-      void Promise.all(
-        activeRunIds.map(async (runId) => {
-          try {
-            const updated = await getWorkflowRun(runId);
-            setRuns((prev) => ({ ...prev, [updated.skill_id]: updated }));
-            setViewingRun((current) =>
-              current && current.run_id === updated.run_id ? updated : current,
-            );
-          } catch {
-            /* transient poll error; try again next tick */
-          }
-        }),
-      );
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [activeRunIds]);
-
-  async function runSkill(skill: SkillFile) {
-    setBusyId(skill.skill_id);
-    setError(null);
-    try {
-      const run = await runWorkflow(skill.skill_id);
-      setRuns((prev) => ({ ...prev, [skill.skill_id]: run }));
-      setViewingRun(run);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start workflow run.");
-    } finally {
-      setBusyId(null);
-    }
-  }
 
   const proposedCount = useMemo(
     () => skills.filter((skill) => skill.status === "proposed").length,
@@ -298,8 +206,6 @@ export default function WorkflowsView() {
             const busy = busyId === skill.skill_id;
             const draftName = draftNames[skill.skill_id] ?? skill.title;
             const dirty = draftName.trim() !== skill.title;
-            const run = runs[skill.skill_id] ?? null;
-            const runActive = run !== null && !isRunTerminal(run.status);
             return (
               <article
                 key={skill.skill_id}
@@ -365,35 +271,6 @@ export default function WorkflowsView() {
                   </button>
                 </div>
 
-                {skill.status === "approved" && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                    <button
-                      type="button"
-                      disabled={busy || runActive}
-                      onClick={() => void runSkill(skill)}
-                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
-                    >
-                      {runActive ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Play className="size-3.5" />
-                      )}
-                      {runActive ? "Running…" : "Run"}
-                    </button>
-                    {run && <RunStatusChip run={run} />}
-                    {run && (
-                      <button
-                        type="button"
-                        onClick={() => setViewingRun(run)}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground"
-                      >
-                        <Eye className="size-3.5" />
-                        View last run
-                      </button>
-                    )}
-                  </div>
-                )}
-
                 {skill.status === "proposed" && (
                   <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
                     <button
@@ -455,85 +332,6 @@ export default function WorkflowsView() {
             <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-4 py-4 font-mono text-xs leading-relaxed text-foreground">
               {formatSkillDocument(viewing)}
             </pre>
-          </div>
-        </div>
-      )}
-
-      {viewingRun && (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-foreground/40 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Workflow run log"
-          onClick={() => setViewingRun(null)}
-        >
-          <div
-            className="flex max-h-[85dvh] w-full max-w-3xl flex-col rounded-lg border border-border bg-background shadow-lg"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-foreground">{viewingRun.skill_title}</h3>
-                <RunStatusChip run={viewingRun} />
-              </div>
-              <button
-                type="button"
-                aria-label="Close"
-                onClick={() => setViewingRun(null)}
-                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto px-4 py-4 text-sm leading-relaxed text-foreground">
-              <p className="text-xs text-muted-foreground">
-                Model {viewingRun.model || "—"} · browser profile {viewingRun.browser_profile || "—"}
-                {viewingRun.stop_reason ? ` · stop: ${viewingRun.stop_reason}` : ""}
-              </p>
-
-              {viewingRun.error && (
-                <div className="mt-3 flex items-start gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                  <span className="whitespace-pre-wrap break-words">{viewingRun.error}</span>
-                </div>
-              )}
-
-              {!isRunTerminal(viewingRun.status) && (
-                <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Running in a real browser via OpenClaw…
-                </p>
-              )}
-
-              {viewingRun.result_text && (
-                <div className="mt-3">
-                  <p className="text-xs font-medium text-muted-foreground">Result</p>
-                  <p className="mt-1 whitespace-pre-wrap">{viewingRun.result_text}</p>
-                </div>
-              )}
-
-              {viewingRun.steps.length > 0 && (
-                <div className="mt-4">
-                  <p className="text-xs font-medium text-muted-foreground">Transcript</p>
-                  <ol className="mt-1 space-y-2">
-                    {viewingRun.steps.map((step, index) => (
-                      <li key={index} className="rounded-md border border-border bg-card px-3 py-2">
-                        {step.text && <p className="whitespace-pre-wrap">{step.text}</p>}
-                        {step.screenshot_url && (
-                          <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-                            📷 {step.screenshot_url}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-
-              {viewingRun.steps.length === 0 && !viewingRun.result_text && !viewingRun.error && (
-                <p className="mt-3 text-sm text-muted-foreground">No output captured yet.</p>
-              )}
-            </div>
           </div>
         </div>
       )}

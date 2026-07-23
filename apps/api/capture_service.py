@@ -26,7 +26,6 @@ from models import (
     SkillFileReview,
     SkillFileUpdate,
 )
-from openclaw_export import sync_skill_file
 from pipeline import DocumentInput
 from source_registry import ingest_external_source
 
@@ -322,8 +321,6 @@ async def update_skill_file(skill_id: str, update: SkillFileUpdate) -> SkillFile
     updated = current.model_copy(update=updates)
     _, _, _, path = _paths()
     _append_jsonl(path, updated.model_dump(mode="json"))
-    # Renaming an already-approved workflow must refresh its derived SKILL.md.
-    sync_skill_file(updated)
     return updated
 
 
@@ -340,9 +337,6 @@ async def review_skill_file(skill_id: str, review: SkillFileReview) -> SkillFile
     updated = current.model_copy(update=updates)
     _, _, _, path = _paths()
     _append_jsonl(path, updated.model_dump(mode="json"))
-    # Bridge to OpenClaw: approved extension workflows become runnable SKILL.md
-    # files; rejection removes any previously exported skill.
-    sync_skill_file(updated)
     if updated.status == "approved":
         text = "\n".join([
             f"Skill: {updated.title}",

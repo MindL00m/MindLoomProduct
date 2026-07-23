@@ -84,7 +84,6 @@ from api.routes.connection_setup import router as connection_setup_router
 from api.routes.reviews import router as reviews_router
 from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
-from api.routes.workflows import router as workflows_router
 from api.routes.zoom import router as zoom_router
 from subscriptions import find_subscription
 
@@ -118,8 +117,14 @@ app.include_router(connection_setup_router)
 app.include_router(reviews_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)
-app.include_router(workflows_router)
 app.include_router(zoom_router)
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    """Unauthenticated liveness probe for platform healthchecks."""
+
+    return {"status": "ok"}
 
 
 @app.post("/auth/google/signin", response_model=AuthSessionResponse)

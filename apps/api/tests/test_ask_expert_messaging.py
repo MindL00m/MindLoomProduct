@@ -123,7 +123,7 @@ async def test_propose_tool_does_not_send(monkeypatch):
             "email": "priya@example.com",
         }
     }
-    result, proposal = await ask_agent._run_tool(
+    result, proposal, pr = await ask_agent._run_tool(
         name="propose_expert_message",
         arguments={
             "recipient_user_id": "u-expert",
@@ -134,6 +134,7 @@ async def test_propose_tool_does_not_send(monkeypatch):
         people_cache=people_cache,
     )
     assert started["called"] is False
+    assert pr is None
     assert result["status"] == "proposed"
     assert isinstance(proposal, ProposedExpertMessage)
     assert proposal.recipient_user_id == "u-expert"

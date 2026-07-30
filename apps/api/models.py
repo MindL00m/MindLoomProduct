@@ -198,13 +198,19 @@ class StatusEvidence(BaseModel):
     summary: str = ""
     source: str = ""
     source_label: str = ""
+    knowledge_type: str = ""
+    end_time: Optional[datetime] = None
+    excerpt: str = ""
 
 
 class StatusProjectItem(BaseModel):
     entity_id: str
     name: str
     work_status: WorkStatus = "open"
+    current_status: str = ""
     last_signal_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    recent_updates: list[StatusEvidence] = Field(default_factory=list)
     evidence: list[StatusEvidence] = Field(default_factory=list)
 
 
@@ -214,7 +220,9 @@ class StatusIssueItem(BaseModel):
     kind: IssueKind
     status: IssueStatus = "open"
     project: Optional[str] = None
+    created_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
     evidence: list[StatusEvidence] = Field(default_factory=list)
 
 
@@ -226,6 +234,7 @@ class StatusActionItem(BaseModel):
     project: Optional[str] = None
     created_at: Optional[datetime] = None
     last_signal_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
     evidence: list[StatusEvidence] = Field(default_factory=list)
 
 
@@ -235,6 +244,17 @@ class OpenStatusResponse(BaseModel):
     projects: list[StatusProjectItem] = Field(default_factory=list)
     issues: list[StatusIssueItem] = Field(default_factory=list)
     action_items: list[StatusActionItem] = Field(default_factory=list)
+
+
+StatusItemKind = Literal["project", "issue", "action_item"]
+
+
+class FinishStatusItemResponse(BaseModel):
+    """Result of marking a status-board item finished."""
+
+    kind: StatusItemKind
+    item_id: str
+    status: str
 
 
 class IngestionResult(BaseModel):
@@ -705,6 +725,29 @@ class ProposedExpertMessage(BaseModel):
     candidates: list[MessageablePerson] = Field(default_factory=list)
 
 
+class ProposedPullRequest(BaseModel):
+    """Draft single-file GitHub change awaiting Ask approval before opening a PR."""
+
+    owner: str
+    repo: str
+    path: str
+    base_branch: str
+    branch_name: str
+    old_content: str
+    new_content: str
+    file_sha: Optional[str] = Field(
+        default=None,
+        description="Blob SHA of the existing file; null when creating a new file.",
+    )
+    pr_title: str
+    pr_body: str = ""
+    commit_message: str = ""
+    html_url: Optional[str] = Field(
+        default=None,
+        description="GitHub URL for the current file, when it already exists.",
+    )
+
+
 class QueryResponse(BaseModel):
     """An answer generated from retrieved context, with routing metadata."""
 
@@ -725,6 +768,10 @@ class QueryResponse(BaseModel):
     proposed_message: Optional[ProposedExpertMessage] = Field(
         default=None,
         description="Draft Expert Message awaiting explicit user approval in Ask.",
+    )
+    proposed_pull_request: Optional[ProposedPullRequest] = Field(
+        default=None,
+        description="Draft GitHub file change awaiting explicit user approval in Ask.",
     )
 
 

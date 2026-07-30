@@ -85,24 +85,35 @@ export function OrgChart({ people, selectedId, onSelect }: OrgChartProps) {
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(
     null,
   );
+  const svgRef = useRef<SVGSVGElement>(null);
   function onPointerDown(e: React.PointerEvent) {
+    // Ignore non-primary buttons; node cards stopPropagation themselves.
+    if (e.button !== 0) return;
     drag.current = {
       x: e.clientX,
       y: e.clientY,
       tx: transform.x,
       ty: transform.y,
     };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
+    // Capture on the SVG so moves keep firing even over foreignObject HTML
+    // (which otherwise can fire pointerleave on the SVG mid-drag).
+    svgRef.current?.setPointerCapture?.(e.pointerId);
   }
   function onPointerMove(e: React.PointerEvent) {
-    if (!drag.current) return;
+    // Snapshot before setState: React may run the updater after endPan has
+    // already cleared drag.current (e.g. pointerup / pointercancel).
+    const d = drag.current;
+    if (!d) return;
     setTransform((t) => ({
       ...t,
-      x: drag.current!.tx + (e.clientX - drag.current!.x),
-      y: drag.current!.ty + (e.clientY - drag.current!.y),
+      x: d.tx + (e.clientX - d.x),
+      y: d.ty + (e.clientY - d.y),
     }));
   }
-  function endPan() {
+  function endPan(e?: React.PointerEvent) {
+    if (e && svgRef.current?.hasPointerCapture?.(e.pointerId)) {
+      svgRef.current.releasePointerCapture(e.pointerId);
+    }
     drag.current = null;
   }
 
@@ -156,11 +167,12 @@ export function OrgChart({ people, selectedId, onSelect }: OrgChartProps) {
       </div>
 
       <svg
+        ref={svgRef}
         className="size-full cursor-grab touch-none active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPan}
-        onPointerLeave={endPan}
+        onPointerCancel={endPan}
         onWheel={onWheel}
       >
         <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>

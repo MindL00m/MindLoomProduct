@@ -10,6 +10,7 @@ import {
   X,
   MessagesSquare,
   Workflow,
+  Users,
 } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import UploadData from "@/pages/UploadData";
@@ -19,6 +20,7 @@ import HomePage from "@/pages/HomePage";
 import ExpertMessages from "@/pages/ExpertMessages";
 import StatusView from "@/pages/StatusView";
 import WorkflowsView from "@/pages/WorkflowsView";
+import WorkspacesView from "@/pages/WorkspacesView";
 import { useOnboarding } from "@/store/onboarding";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
@@ -31,6 +33,7 @@ type ViewId =
   | "status"
   | "ask"
   | "messages"
+  | "workspaces"
   | "workflows"
   | "upload"
   | "graph";
@@ -40,6 +43,7 @@ const NAV: { id: ViewId; label: string; icon: typeof Home }[] = [
   { id: "status", label: "Status", icon: Activity },
   { id: "ask", label: "Ask", icon: MessageSquareText },
   { id: "messages", label: "Expert Messages", icon: MessagesSquare },
+  { id: "workspaces", label: "Workspaces", icon: Users },
   { id: "workflows", label: "Workflows", icon: Workflow },
   { id: "upload", label: "Upload", icon: Upload },
   { id: "graph", label: "Knowledge Graph", icon: Network },
@@ -74,6 +78,7 @@ export default function Dashboard() {
     }
     if (tabParam === "status") setView("status");
     if (tabParam === "messages") setView("messages");
+    if (tabParam === "workspaces") setView("workspaces");
     if (tabParam === "workflows") setView("workflows");
   }, [tabParam, isAdmin]);
 
@@ -237,7 +242,7 @@ export default function Dashboard() {
         )}
 
         {view === "status" && (
-          <main className="flex-1 p-4 lg:p-8">
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 lg:p-8">
             <StatusView />
           </main>
         )}
@@ -251,6 +256,12 @@ export default function Dashboard() {
         {view === "messages" && (
           <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
             <ExpertMessages onCountChange={setExpertNotifications} />
+          </main>
+        )}
+
+        {view === "workspaces" && (
+          <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
+            <WorkspacesView />
           </main>
         )}
 

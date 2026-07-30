@@ -57,6 +57,21 @@ export interface ProposedExpertMessage {
   candidates?: MessageablePerson[];
 }
 
+export interface ProposedPullRequest {
+  owner: string;
+  repo: string;
+  path: string;
+  base_branch: string;
+  branch_name: string;
+  old_content: string;
+  new_content: string;
+  file_sha?: string | null;
+  pr_title: string;
+  pr_body?: string;
+  commit_message?: string;
+  html_url?: string | null;
+}
+
 export interface QueryResponse {
   answer: string;
   sources: Source[];
@@ -66,6 +81,7 @@ export interface QueryResponse {
   routed: boolean;
   routed_reason?: string | null;
   proposed_message?: ProposedExpertMessage | null;
+  proposed_pull_request?: ProposedPullRequest | null;
 }
 
 export interface ChatMessage {

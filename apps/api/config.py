@@ -155,6 +155,19 @@ class Settings(BaseSettings):
         default="dev-client-state",
         description="Shared secret used to validate Microsoft Graph subscription callbacks.",
     )
+    github_token: str = Field(
+        default="",
+        description=(
+            "GitHub personal access token (classic or fine-grained) used by the "
+            "Ask agent to list repositories and read file contents."
+        ),
+    )
+
+    @property
+    def github_enabled(self) -> bool:
+        """True when a GitHub token is configured for the Ask agent."""
+
+        return bool(self.github_token.strip())
 
     @property
     def google_oauth_enabled(self) -> bool:

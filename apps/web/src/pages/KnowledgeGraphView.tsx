@@ -111,10 +111,21 @@ export default function KnowledgeGraphView() {
     () => (selectedId ? edges.filter((e) => e.source === selectedId) : []),
     [edges, selectedId],
   );
-  const outgoingIds = useMemo(() => new Set(outgoing.map((e) => e.id)), [outgoing]);
-  const highlightedTargets = useMemo(
-    () => new Set(outgoing.map((e) => e.target)),
-    [outgoing],
+  const incoming = useMemo(
+    () => (selectedId ? edges.filter((e) => e.target === selectedId) : []),
+    [edges, selectedId],
+  );
+  const relatedEdgeIds = useMemo(
+    () => new Set([...outgoing, ...incoming].map((e) => e.id)),
+    [outgoing, incoming],
+  );
+  const highlightedNodes = useMemo(
+    () =>
+      new Set([
+        ...outgoing.map((e) => e.target),
+        ...incoming.map((e) => e.source),
+      ]),
+    [outgoing, incoming],
   );
 
   const width =
@@ -174,8 +185,8 @@ export default function KnowledgeGraphView() {
             {truncated && " · truncated at 400 nodes"}
           </p>
           <p className="text-xs text-muted-foreground">
-            Dev/debug view — click a node to inspect metadata and highlight outgoing
-            edges.
+            Dev/debug view — click a node to inspect metadata and highlight connected
+            edges (incoming and outgoing).
           </p>
         </div>
         <SecondaryButton size="sm" onClick={() => void load()}>
@@ -213,8 +224,8 @@ export default function KnowledgeGraphView() {
               const from = byId.get(edge.source);
               const to = byId.get(edge.target);
               if (!from || !to) return null;
-              const isOutgoing = outgoingIds.has(edge.id);
-              const dimmed = selectedId != null && !isOutgoing;
+              const isRelated = relatedEdgeIds.has(edge.id);
+              const dimmed = selectedId != null && !isRelated;
               return (
                 <g key={edge.id}>
                   <line
@@ -222,12 +233,12 @@ export default function KnowledgeGraphView() {
                     y1={from.y}
                     x2={to.x}
                     y2={to.y}
-                    stroke={isOutgoing ? "#0f766e" : "#cbd5e1"}
-                    strokeWidth={isOutgoing ? 2.5 : 1}
-                    strokeOpacity={dimmed ? 0.12 : isOutgoing ? 1 : 0.55}
-                    markerEnd={isOutgoing ? "url(#arrow)" : undefined}
+                    stroke={isRelated ? "#0f766e" : "#cbd5e1"}
+                    strokeWidth={isRelated ? 2.5 : 1}
+                    strokeOpacity={dimmed ? 0.12 : isRelated ? 1 : 0.55}
+                    markerEnd={isRelated ? "url(#arrow)" : undefined}
                   />
-                  {isOutgoing && (
+                  {isRelated && (
                     <text
                       x={(from.x + to.x) / 2}
                       y={(from.y + to.y) / 2 - 4}
@@ -257,7 +268,7 @@ export default function KnowledgeGraphView() {
             {/* Nodes */}
             {layout.map((node) => {
               const isSelected = node.id === selectedId;
-              const isTarget = highlightedTargets.has(node.id);
+              const isRelated = highlightedNodes.has(node.id);
               return (
                 <g
                   key={node.id}
@@ -268,9 +279,9 @@ export default function KnowledgeGraphView() {
                   <circle
                     r={isSelected ? NODE_R + 3 : NODE_R}
                     fill={node.color}
-                    stroke={isSelected ? "#0f172a" : isTarget ? "#0f766e" : "#fff"}
-                    strokeWidth={isSelected || isTarget ? 2.5 : 1.5}
-                    opacity={selectedId && !isSelected && !isTarget ? 0.45 : 1}
+                    stroke={isSelected ? "#0f172a" : isRelated ? "#0f766e" : "#fff"}
+                    strokeWidth={isSelected || isRelated ? 2.5 : 1.5}
+                    opacity={selectedId && !isSelected && !isRelated ? 0.45 : 1}
                   />
                   <text
                     x={NODE_R + 8}
@@ -304,6 +315,29 @@ export default function KnowledgeGraphView() {
                 </p>
               </div>
 
+              {incoming.length > 0 ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Incoming edges ({incoming.length})
+                  </p>
+                  <ul className="mt-2 space-y-2">
+                    {incoming.map((edge) => {
+                      const source = byId.get(edge.source);
+                      return (
+                        <li
+                          key={edge.id}
+                          className="rounded-md border border-teal-200 bg-teal-50/50 px-2 py-1.5 text-xs"
+                        >
+                          <span>{source?.caption ?? edge.source}</span>
+                          <span className="text-teal-800"> → </span>
+                          <span className="font-semibold text-teal-900">{edge.type}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+
               {outgoing.length > 0 ? (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -325,9 +359,15 @@ export default function KnowledgeGraphView() {
                     })}
                   </ul>
                 </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">No outgoing edges.</p>
-              )}
+              ) : null}
+
+              {incoming.length === 0 && outgoing.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No edges in this view. Entities normally have incoming{" "}
+                  <span className="font-medium">RELATES_TO</span> links from Chunks
+                  (those may be truncated if the graph is capped).
+                </p>
+              ) : null}
 
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -352,7 +392,7 @@ export default function KnowledgeGraphView() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center text-center text-sm text-muted-foreground">
               <Network className="mb-2 size-8 opacity-40" />
-              Click a node to inspect its metadata and outgoing edges.
+              Click a node to inspect its metadata and connected edges.
             </div>
           )}
         </aside>

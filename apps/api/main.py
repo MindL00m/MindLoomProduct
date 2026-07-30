@@ -72,6 +72,13 @@ from models import (
     TeamsSyncStartResponse,
 )
 from api.routes.captures import router as captures_router
+from api.routes.connection_setup import router as connection_setup_router
+from api.routes.github import router as github_router
+from api.routes.reviews import router as reviews_router
+from api.routes.status import router as status_router
+from api.routes.whatsapp import router as whatsapp_router
+from api.routes.workspaces import router as workspaces_router
+from api.routes.zoom import router as zoom_router
 from file_extract import extract_file_text
 from pipeline import run_ingestion_background, run_pdf_ingestion_background
 from retrieval import retrieve
@@ -80,11 +87,6 @@ from storage import fetch_knowledge_graph_debug, fetch_org_graph, upsert_directo
 from jobs import job_store
 from durable_jobs import enqueue, get_job
 from document_ingestion import ensure_supported_document
-from api.routes.connection_setup import router as connection_setup_router
-from api.routes.reviews import router as reviews_router
-from api.routes.status import router as status_router
-from api.routes.whatsapp import router as whatsapp_router
-from api.routes.zoom import router as zoom_router
 from subscriptions import find_subscription
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -114,9 +116,11 @@ app.add_middleware(
 )
 app.include_router(captures_router)
 app.include_router(connection_setup_router)
+app.include_router(github_router)
 app.include_router(reviews_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)
+app.include_router(workspaces_router)
 app.include_router(zoom_router)
 
 

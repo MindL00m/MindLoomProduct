@@ -1,5 +1,7 @@
 """Unit tests for Status board coercion helpers."""
 
+import pytest
+
 from models import (
     ActionItemUpdate,
     ChunkMetadata,
@@ -7,6 +9,7 @@ from models import (
     ProjectUpdate,
     TypedEntity,
 )
+from status_board import _evidence_list, mark_status_item_finished
 from storage import (
     _canonical_key,
     _coerce_action_updates,
@@ -77,3 +80,62 @@ def test_explicit_issue_updates_win() -> None:
     assert len(updates) == 1
     assert updates[0].title == "Explicit issue"
     assert updates[0].status == "closed"
+
+
+def test_evidence_list_includes_excerpt_fields() -> None:
+    items = _evidence_list(
+        [
+            {
+                "chunk_id": "c1",
+                "summary": "Vendor slipped",
+                "source": "gmail",
+                "source_label": "Thread",
+                "knowledge_type": "problem_report",
+                "excerpt": "The vendor delayed Alpha.",
+            }
+        ]
+    )
+    assert len(items) == 1
+    assert items[0].chunk_id == "c1"
+    assert items[0].knowledge_type == "problem_report"
+    assert items[0].excerpt == "The vendor delayed Alpha."
+
+
+def test_merge_project_updates_prefers_newer_status() -> None:
+    from datetime import datetime, timezone
+
+    from status_board import derive_current_status, merge_project_updates
+    from models import StatusEvidence
+
+    older = StatusEvidence(
+        chunk_id="c-old",
+        summary="Kickoff scheduled",
+        knowledge_type="status_update",
+        end_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    newer = StatusEvidence(
+        chunk_id="c-new",
+        summary="Vendor delayed Alpha launch by one week",
+        knowledge_type="problem_report",
+        end_time=datetime(2026, 7, 20, tzinfo=timezone.utc),
+    )
+    duplicate = StatusEvidence(
+        chunk_id="c-new",
+        summary="stale duplicate",
+        end_time=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    merged = merge_project_updates([older, duplicate], [newer])
+    assert [item.chunk_id for item in merged] == ["c-new", "c-old"]
+    assert derive_current_status(merged) == "Vendor delayed Alpha launch by one week"
+
+
+def test_derive_current_status_empty() -> None:
+    from status_board import derive_current_status
+
+    assert "No recent updates" in derive_current_status([])
+
+
+@pytest.mark.asyncio
+async def test_mark_status_item_finished_requires_id() -> None:
+    with pytest.raises(ValueError, match="Item id is required"):
+        await mark_status_item_finished("org", "user", "project", "   ")

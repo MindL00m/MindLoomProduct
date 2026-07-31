@@ -138,7 +138,7 @@ async def test_run_tool_dispatches_github_list(monkeypatch) -> None:
         return {"count": 0, "repositories": [], "owner": owner, "per_page": per_page}
 
     monkeypatch.setattr("github_client.list_repos", fake_list_repos)
-    result, proposal, pr = await ask_agent._run_tool(
+    result, proposal, pr, ws = await ask_agent._run_tool(
         name="github_list_repos",
         arguments={"owner": "acme", "per_page": 10},
         org_id="org-1",
@@ -147,6 +147,7 @@ async def test_run_tool_dispatches_github_list(monkeypatch) -> None:
     )
     assert proposal is None
     assert pr is None
+    assert ws is None
     assert result["owner"] == "acme"
     assert result["per_page"] == 10
 
@@ -168,7 +169,7 @@ async def test_propose_github_pr_builds_draft(monkeypatch) -> None:
     monkeypatch.setattr("github_client.get_repo", fake_get_repo)
     monkeypatch.setattr("github_client.get_file_contents", fake_get_file)
 
-    result, proposal, pr = await ask_agent._run_tool(
+    result, proposal, pr, ws = await ask_agent._run_tool(
         name="propose_github_pr",
         arguments={
             "owner": "acme",
@@ -182,6 +183,7 @@ async def test_propose_github_pr_builds_draft(monkeypatch) -> None:
         people_cache={},
     )
     assert proposal is None
+    assert ws is None
     assert result["status"] == "proposed"
     assert pr is not None
     assert pr.old_content == "hello\n"
@@ -209,7 +211,7 @@ async def test_propose_github_pr_does_not_create_pr(monkeypatch) -> None:
     monkeypatch.setattr("github_client.get_file_contents", fake_get_file)
     monkeypatch.setattr("github_client.create_pull_request_with_file", fake_create)
 
-    _, _, pr = await ask_agent._run_tool(
+    _, _, pr, ws = await ask_agent._run_tool(
         name="propose_github_pr",
         arguments={
             "owner": "acme",
@@ -223,6 +225,7 @@ async def test_propose_github_pr_does_not_create_pr(monkeypatch) -> None:
         people_cache={},
     )
     assert pr is not None
+    assert ws is None
     assert called["create"] is False
 
 

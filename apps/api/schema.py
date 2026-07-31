@@ -214,11 +214,19 @@ _DURABLE_INTEGRATIONS_SQL = [
     name TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'group',
     created_by TEXT REFERENCES users (user_id) ON DELETE SET NULL,
+    purpose TEXT,
+    context_md TEXT,
+    context_synced_at TIMESTAMPTZ,
+    loombot_mode TEXT NOT NULL DEFAULT 'org_knowledge',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )""",
 """CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_org_wide
   ON workspaces (org_id) WHERE kind = 'org_wide'""",
+"""ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS purpose TEXT""",
+"""ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS context_md TEXT""",
+"""ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS context_synced_at TIMESTAMPTZ""",
+"""ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS loombot_mode TEXT NOT NULL DEFAULT 'org_knowledge'""",
 """CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,

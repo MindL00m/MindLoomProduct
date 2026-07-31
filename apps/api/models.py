@@ -748,6 +748,34 @@ class ProposedPullRequest(BaseModel):
     )
 
 
+class ProposedWorkspaceMember(BaseModel):
+    """A signed-in user included in a proposed project workspace."""
+
+    user_id: str
+    name: str
+    email: str
+    reason: str = ""
+
+
+class ProposedWorkspaceUnmatched(BaseModel):
+    """A KG person who could not be linked to a signed-in Loom user."""
+
+    name: str
+    email: Optional[str] = None
+    reason: str = ""
+
+
+class ProposedWorkspace(BaseModel):
+    """Draft project workspace awaiting Ask approval before creation."""
+
+    name: str
+    purpose: str
+    context_md: str
+    loombot_mode: Literal["context_only", "org_knowledge"] = "context_only"
+    members: list[ProposedWorkspaceMember] = Field(default_factory=list)
+    unmatched_people: list[ProposedWorkspaceUnmatched] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """An answer generated from retrieved context, with routing metadata."""
 
@@ -772,6 +800,10 @@ class QueryResponse(BaseModel):
     proposed_pull_request: Optional[ProposedPullRequest] = Field(
         default=None,
         description="Draft GitHub file change awaiting explicit user approval in Ask.",
+    )
+    proposed_workspace: Optional[ProposedWorkspace] = Field(
+        default=None,
+        description="Draft project workspace awaiting explicit user approval in Ask.",
     )
 
 

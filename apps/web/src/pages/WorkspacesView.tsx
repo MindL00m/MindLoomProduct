@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, Loader2, Plus, Send, Users } from "lucide-react";
+import { Bot, FileText, Loader2, Plus, RefreshCw, Send, Users, X } from "lucide-react";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { listMessageContacts, type MessageContact } from "@/services/reviews";
@@ -7,6 +7,7 @@ import {
   createWorkspace,
   listWorkspaceMessages,
   listWorkspaces,
+  resyncWorkspaceContext,
   sendWorkspaceMessage,
   type Workspace,
   type WorkspaceMessage,
@@ -22,12 +23,16 @@ export default function WorkspacesView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resyncing, setResyncing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [resyncError, setResyncError] = useState<string | null>(null);
 
   const active = workspaces.find((row) => row.workspace_id === activeId) ?? null;
+  const isContextOnly = active?.loombot_mode === "context_only";
 
   const loadWorkspaces = useCallback(async () => {
     const rows = await listWorkspaces();
@@ -54,6 +59,12 @@ export default function WorkspacesView() {
     if (!active) return "";
     if (active.kind === "org_wide") {
       return `Everyone in the organization · ${active.member_count} members`;
+    }
+    if (active.loombot_mode === "context_only") {
+      const synced = active.context_synced_at
+        ? ` · Synced ${new Date(active.context_synced_at).toLocaleString()}`
+        : "";
+      return `${active.member_count} members · Loombot answers from this workspace’s CONTEXT.md${synced}`;
     }
     return `${active.member_count} members · Mention @Loombot to ask the company brain`;
   }, [active]);
@@ -87,6 +98,24 @@ export default function WorkspacesView() {
       setActiveId(created.workspace_id);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function resync() {
+    if (!activeId || !isContextOnly) return;
+    setResyncing(true);
+    setResyncError(null);
+    try {
+      const updated = await resyncWorkspaceContext(activeId);
+      setWorkspaces((rows) =>
+        rows.map((row) =>
+          row.workspace_id === updated.workspace_id ? { ...row, ...updated } : row,
+        ),
+      );
+    } catch (err) {
+      setResyncError(err instanceof Error ? err.message : "Resync failed.");
+    } finally {
+      setResyncing(false);
     }
   }
 
@@ -175,9 +204,39 @@ export default function WorkspacesView() {
       <section className="flex min-w-0 flex-1 flex-col">
         {active ? (
           <>
-            <header className="border-b border-border px-5 py-3">
-              <p className="font-medium">{active.name}</p>
-              <p className="text-xs text-muted-foreground">{subtitle}</p>
+            <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-3">
+              <div className="min-w-0">
+                <p className="font-medium">{active.name}</p>
+                <p className="text-xs text-muted-foreground">{subtitle}</p>
+                {resyncError && (
+                  <p className="mt-1 text-xs text-destructive">{resyncError}</p>
+                )}
+              </div>
+              {isContextOnly && (
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                    onClick={() => setShowContext(true)}
+                  >
+                    <FileText className="size-3.5" />
+                    CONTEXT.md
+                  </button>
+                  <button
+                    type="button"
+                    disabled={resyncing}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                    onClick={() => void resync()}
+                  >
+                    {resyncing ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-3.5" />
+                    )}
+                    Resync
+                  </button>
+                </div>
+              )}
             </header>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 p-5">
               {messages.length === 0 && (
@@ -190,7 +249,9 @@ export default function WorkspacesView() {
                   >
                     @Loombot
                   </button>{" "}
-                  a question from company knowledge.
+                  {isContextOnly
+                    ? "a question from this workspace’s CONTEXT.md."
+                    : "a question from company knowledge."}
                 </p>
               )}
               {messages.map((item) => {
@@ -247,13 +308,19 @@ export default function WorkspacesView() {
                   @Loombot
                 </button>
                 <span className="text-xs text-muted-foreground">
-                  Mention the bot to answer from company knowledge
+                  {isContextOnly
+                    ? "Mention the bot to answer from CONTEXT.md"
+                    : "Mention the bot to answer from company knowledge"}
                 </span>
               </div>
               <div className="flex items-end gap-2">
                 <textarea
                   className="max-h-32 min-h-11 flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm"
-                  placeholder="Write a message… use @Loombot to ask the company brain"
+                  placeholder={
+                    isContextOnly
+                      ? "Write a message… use @Loombot to ask from CONTEXT.md"
+                      : "Write a message… use @Loombot to ask the company brain"
+                  }
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={(event) => {
@@ -334,6 +401,44 @@ export default function WorkspacesView() {
                 Create workspace
               </PrimaryButton>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showContext && active && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Workspace CONTEXT.md"
+          onClick={() => setShowContext(false)}
+        >
+          <div
+            className="flex max-h-[85dvh] w-full max-w-3xl flex-col rounded-lg border border-border bg-background shadow-lg"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">CONTEXT.md</h3>
+                <p className="text-xs text-muted-foreground">
+                  {active.name}
+                  {active.context_synced_at
+                    ? ` · Synced ${new Date(active.context_synced_at).toLocaleString()}`
+                    : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close"
+                onClick={() => setShowContext(false)}
+                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-4 py-4 font-mono text-xs leading-relaxed text-foreground">
+              {active.context_md?.trim() || "(CONTEXT.md is empty. Use Resync to rebuild it.)"}
+            </pre>
           </div>
         </div>
       )}

@@ -11,6 +11,7 @@ import {
   Paperclip,
   Sparkles,
   Trash2,
+  Users,
   UserRound,
   X,
 } from "lucide-react";
@@ -22,11 +23,13 @@ import {
   type EphemeralDocument,
   type ProposedExpertMessage,
   type ProposedPullRequest,
+  type ProposedWorkspace,
   type QueryResponse,
   type Source,
 } from "@/services/ask";
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedExpertMessage } from "@/services/reviews";
+import { createWorkspace } from "@/services/workspaces";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
@@ -154,6 +157,10 @@ export default function AskView() {
         proposalState: response.proposed_message ? "pending" : undefined,
         proposedPullRequest: response.proposed_pull_request ?? null,
         prProposalState: response.proposed_pull_request ? "pending" : undefined,
+        proposedWorkspace: response.proposed_workspace ?? null,
+        workspaceProposalState: response.proposed_workspace
+          ? "pending"
+          : undefined,
       });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -518,6 +525,14 @@ function TurnView({
               prProposalState={turn.prProposalState}
               prProposalUrl={turn.prProposalUrl}
               prProposalError={turn.prProposalError}
+              proposedWorkspace={
+                turn.proposedWorkspace ??
+                turn.response.proposed_workspace ??
+                null
+              }
+              workspaceProposalState={turn.workspaceProposalState}
+              workspaceProposalId={turn.workspaceProposalId}
+              workspaceProposalError={turn.workspaceProposalError}
               onProposalPatch={onProposalPatch}
             />
           )}
@@ -642,6 +657,10 @@ function AnswerView({
   prProposalState,
   prProposalUrl,
   prProposalError,
+  proposedWorkspace,
+  workspaceProposalState,
+  workspaceProposalId,
+  workspaceProposalError,
   onProposalPatch,
 }: {
   response: QueryResponse;
@@ -653,6 +672,10 @@ function AnswerView({
   prProposalState?: Turn["prProposalState"];
   prProposalUrl?: string;
   prProposalError?: string;
+  proposedWorkspace?: ProposedWorkspace | null;
+  workspaceProposalState?: Turn["workspaceProposalState"];
+  workspaceProposalId?: string;
+  workspaceProposalError?: string;
   onProposalPatch: (patch: Partial<Turn>) => void;
 }) {
   const cited = new Set<string>();
@@ -664,6 +687,8 @@ function AnswerView({
   const proposal = proposedMessage ?? response.proposed_message ?? null;
   const prProposal =
     proposedPullRequest ?? response.proposed_pull_request ?? null;
+  const wsProposal =
+    proposedWorkspace ?? response.proposed_workspace ?? null;
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -690,6 +715,16 @@ function AnswerView({
           state={prProposalState}
           prUrl={prProposalUrl}
           error={prProposalError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
+      {wsProposal && (
+        <ProposedWorkspaceCard
+          proposal={wsProposal}
+          state={workspaceProposalState}
+          workspaceId={workspaceProposalId}
+          error={workspaceProposalError}
           onPatch={onProposalPatch}
         />
       )}
@@ -731,6 +766,156 @@ function AnswerView({
           </ol>
         </div>
       )}
+    </div>
+  );
+}
+
+function ProposedWorkspaceCard({
+  proposal,
+  state,
+  workspaceId,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedWorkspace;
+  state?: Turn["workspaceProposalState"];
+  workspaceId?: string;
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [showContext, setShowContext] = useState(false);
+  const members = proposal.members ?? [];
+  const unmatched = proposal.unmatched_people ?? [];
+
+  async function approve() {
+    onPatch({
+      workspaceProposalState: "sending",
+      workspaceProposalError: undefined,
+    });
+    try {
+      const created = await createWorkspace({
+        name: proposal.name,
+        member_user_ids: members.map((m) => m.user_id),
+        purpose: proposal.purpose,
+        context_md: proposal.context_md,
+        loombot_mode: proposal.loombot_mode ?? "context_only",
+      });
+      onPatch({
+        workspaceProposalState: "sent",
+        workspaceProposalId: created.workspace_id,
+        workspaceProposalError: undefined,
+      });
+    } catch (err) {
+      onPatch({
+        workspaceProposalState: "pending",
+        workspaceProposalError:
+          err instanceof Error ? err.message : "Create failed.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Proposed workspace discarded.
+      </div>
+    );
+  }
+
+  if (status === "sent") {
+    return (
+      <div className="rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <p className="font-medium">Workspace created: {proposal.name}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Loombot will answer from CONTEXT.md only.
+          {workspaceId ? ` (${workspaceId.slice(0, 8)}…)` : ""}
+        </p>
+        <a
+          href="/dashboard?tab=workspaces"
+          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          Open Workspaces
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="proposed-workspace-card"
+      className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+    >
+      <div className="flex items-start gap-2">
+        <Users className="mt-0.5 size-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-foreground">Create workspace?</p>
+          <p className="mt-1 font-medium text-foreground">{proposal.name}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Purpose: {proposal.purpose}
+          </p>
+          <div className="mt-2 space-y-1">
+            <p className="text-xs font-medium text-foreground">
+              Members ({members.length})
+            </p>
+            {members.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Only you will be added (no other signed-in matches).
+              </p>
+            ) : (
+              <ul className="space-y-0.5 text-xs text-muted-foreground">
+                {members.map((m) => (
+                  <li key={m.user_id}>
+                    <span className="text-foreground">{m.name}</span> — {m.email}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {unmatched.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {unmatched.length} person(s) mentioned in CONTEXT.md but not
+                signed into Loom.
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="mt-2 text-xs font-medium text-primary hover:underline"
+            onClick={() => setShowContext((v) => !v)}
+          >
+            {showContext ? "Hide CONTEXT.md" : "Preview CONTEXT.md"}
+          </button>
+          {showContext && (
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+              {proposal.context_md}
+            </pre>
+          )}
+          {error && (
+            <p className="mt-2 text-xs text-destructive">{error}</p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={status === "sending"}
+              onClick={() => void approve()}
+              className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              {status === "sending" ? "Creating…" : "Approve & create"}
+            </button>
+            <button
+              type="button"
+              disabled={status === "sending"}
+              onClick={() => onPatch({ workspaceProposalState: "cancelled" })}
+              className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Nothing is created until you approve. Loombot will use CONTEXT.md only.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

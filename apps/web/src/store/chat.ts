@@ -20,6 +20,12 @@ export interface Turn {
   prProposalState?: "pending" | "sending" | "sent" | "cancelled";
   prProposalUrl?: string;
   prProposalError?: string;
+  /** Copied from the API so the workspace approve card survives store quirks. */
+  proposedWorkspace?: QueryResponse["proposed_workspace"];
+  /** Local UI state for Ask-proposed project workspaces. */
+  workspaceProposalState?: "pending" | "sending" | "sent" | "cancelled";
+  workspaceProposalId?: string;
+  workspaceProposalError?: string;
 }
 
 export type AttachmentScope = "chat" | "graph";

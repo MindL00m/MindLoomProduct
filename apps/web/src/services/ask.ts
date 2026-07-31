@@ -72,6 +72,28 @@ export interface ProposedPullRequest {
   html_url?: string | null;
 }
 
+export interface ProposedWorkspaceMember {
+  user_id: string;
+  name: string;
+  email: string;
+  reason?: string;
+}
+
+export interface ProposedWorkspaceUnmatched {
+  name: string;
+  email?: string | null;
+  reason?: string;
+}
+
+export interface ProposedWorkspace {
+  name: string;
+  purpose: string;
+  context_md: string;
+  loombot_mode?: "context_only" | "org_knowledge";
+  members?: ProposedWorkspaceMember[];
+  unmatched_people?: ProposedWorkspaceUnmatched[];
+}
+
 export interface QueryResponse {
   answer: string;
   sources: Source[];
@@ -82,6 +104,7 @@ export interface QueryResponse {
   routed_reason?: string | null;
   proposed_message?: ProposedExpertMessage | null;
   proposed_pull_request?: ProposedPullRequest | null;
+  proposed_workspace?: ProposedWorkspace | null;
 }
 
 export interface ChatMessage {

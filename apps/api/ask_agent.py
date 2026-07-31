@@ -17,6 +17,9 @@ from models import (
     MessageablePerson,
     ProposedExpertMessage,
     ProposedPullRequest,
+    ProposedWorkspace,
+    ProposedWorkspaceMember,
+    ProposedWorkspaceUnmatched,
     QueryResponse,
     RetrievalResult,
 )
@@ -28,8 +31,9 @@ _MODEL = "gpt-4o-mini"
 _MAX_TOOL_ROUNDS = 5
 
 _AGENT_SYSTEM = """\
-You are Loom, a company knowledge assistant that can draft Expert Messages and
-work with GitHub repositories when a token is configured.
+You are Loom, a company knowledge assistant that can draft Expert Messages,
+work with GitHub repositories when a token is configured, and propose project
+workspaces with a CONTEXT.md file for Loombot.
 
 You have retrieval context below for factual questions. Use it for knowledge answers
 and cite sources with [SOURCE: chunk_id] when applicable.
@@ -58,8 +62,19 @@ GitHub rules:
 - Summarize tool results clearly; quote short snippets when useful.
 - If a tool returns a GITHUB_TOKEN configuration error, tell the user to set
   GITHUB_TOKEN in the project .env and restart the API.
-- For ordinary knowledge questions that are not messaging or GitHub, answer from
-  context without tools.
+
+Workspace rules:
+- When the user asks to create, make, set up, or spin up a workspace for a project
+  or topic, you MUST call propose_workspace.
+- Use a clear workspace name and a purpose that captures the project/topic.
+- Optionally pass member_queries for specific people by name/email/title; the tool
+  also resolves people from knowledge-graph experts for the purpose.
+- propose_workspace does NOT create the workspace. The UI shows members + CONTEXT.md
+  for approval. Your final text should only say a draft workspace is ready.
+- Never claim a workspace was created.
+
+- For ordinary knowledge questions that are not messaging, GitHub, or workspace
+  creation, answer from context without tools.
 
 Context:
 {context_string}
@@ -244,6 +259,41 @@ _TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_workspace",
+            "description": (
+                "Draft a project workspace with members and a CONTEXT.md file "
+                "scraped from company knowledge. Does NOT create the workspace."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Workspace display name (e.g. Project X).",
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "description": (
+                            "Topic/intent used to scrape knowledge and seed CONTEXT.md "
+                            "(e.g. 'Project X migration')."
+                        ),
+                    },
+                    "member_queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional name/email/title queries for people to include "
+                            "as members, in addition to graph experts."
+                        ),
+                    },
+                },
+                "required": ["name", "purpose"],
+            },
+        },
+    },
 ]
 
 
@@ -298,6 +348,23 @@ def _wants_github(question: str) -> bool:
         "edit the file",
         "fix the file",
         "change the file",
+    )
+    return any(token in lowered for token in triggers)
+
+
+def _wants_workspace(question: str) -> bool:
+    lowered = question.lower()
+    triggers = (
+        "create a workspace",
+        "create workspace",
+        "make a workspace",
+        "make workspace",
+        "set up a workspace",
+        "setup a workspace",
+        "spin up a workspace",
+        "new workspace",
+        "workspace for",
+        "start a workspace",
     )
     return any(token in lowered for token in triggers)
 
@@ -492,7 +559,12 @@ async def _run_tool(
     org_id: str,
     user_id: str,
     people_cache: dict[str, dict],
-) -> tuple[Any, ProposedExpertMessage | None, ProposedPullRequest | None]:
+) -> tuple[
+    Any,
+    ProposedExpertMessage | None,
+    ProposedPullRequest | None,
+    ProposedWorkspace | None,
+]:
     if name == "lookup_person":
         query = str(arguments.get("query") or "").strip()
         people = await lookup_messageable_people(
@@ -511,13 +583,13 @@ async def _run_tool(
                 }
                 for p in people
             ]
-        }, None, None
+        }, None, None, None
 
     if name == "propose_expert_message":
         recipient_user_id = str(arguments.get("recipient_user_id") or "").strip()
         message = str(arguments.get("message") or "").strip()
         if not recipient_user_id or not message:
-            return {"error": "recipient_user_id and message are required."}, None, None
+            return {"error": "recipient_user_id and message are required."}, None, None, None
         person = people_cache.get(recipient_user_id)
         if person is None:
             from database import get_session_factory
@@ -542,7 +614,7 @@ async def _run_tool(
         if person is None:
             return {
                 "error": "Recipient is not a signed-in org member. Look them up again."
-            }, None, None
+            }, None, None, None
         proposal = ProposedExpertMessage(
             recipient_user_id=str(person["user_id"]),
             recipient_name=str(person["name"]),
@@ -565,7 +637,7 @@ async def _run_tool(
             "recipient_name": proposal.recipient_name,
             "recipient_email": proposal.recipient_email,
             "message": proposal.message,
-        }, proposal, None
+        }, proposal, None, None
 
     if name == "github_list_repos":
         from github_client import list_repos
@@ -579,13 +651,13 @@ async def _run_tool(
         return await list_repos(
             owner=str(owner).strip() if owner else None,
             per_page=per_page_int,
-        ), None, None
+        ), None, None, None
 
     if name == "github_get_repo":
         from github_client import get_repo
 
         owner, repo = _split_owner_repo(arguments)
-        return await get_repo(owner, repo), None, None
+        return await get_repo(owner, repo), None, None, None
 
     if name == "github_get_file":
         from github_client import get_file_contents
@@ -598,13 +670,54 @@ async def _run_tool(
             repo,
             path,
             ref=str(ref).strip() if ref else None,
-        ), None, None
+        ), None, None, None
 
     if name == "propose_github_pr":
         result, pr = await _propose_github_pr(arguments)
-        return result, None, pr
+        return result, None, pr, None
 
-    return {"error": f"Unknown tool: {name}"}, None, None
+    if name == "propose_workspace":
+        from workspace_context import propose_workspace_draft
+
+        member_queries = arguments.get("member_queries") or []
+        if not isinstance(member_queries, list):
+            member_queries = [str(member_queries)]
+        result = await propose_workspace_draft(
+            org_id=org_id,
+            user_id=user_id,
+            name=str(arguments.get("name") or ""),
+            purpose=str(arguments.get("purpose") or ""),
+            member_queries=[str(q) for q in member_queries],
+        )
+        if result.get("error") or "draft" not in result:
+            return result, None, None, None
+        draft = result["draft"]
+        workspace = ProposedWorkspace(
+            name=str(draft["name"]),
+            purpose=str(draft["purpose"]),
+            context_md=str(draft["context_md"]),
+            loombot_mode="context_only",
+            members=[
+                ProposedWorkspaceMember(
+                    user_id=str(m["user_id"]),
+                    name=str(m["name"]),
+                    email=str(m["email"]),
+                    reason=str(m.get("reason") or ""),
+                )
+                for m in draft.get("members") or []
+            ],
+            unmatched_people=[
+                ProposedWorkspaceUnmatched(
+                    name=str(p.get("name") or "Unknown"),
+                    email=p.get("email"),
+                    reason=str(p.get("reason") or ""),
+                )
+                for p in draft.get("unmatched_people") or []
+            ],
+        )
+        return result, None, None, workspace
+
+    return {"error": f"Unknown tool: {name}"}, None, None, None
 
 
 async def run_ask_agent(
@@ -616,11 +729,12 @@ async def run_ask_agent(
     user_id: str,
     ephemeral_documents: list[EphemeralDocument] | None = None,
 ) -> QueryResponse:
-    """Answer via RAG, using tools for messaging or GitHub when needed."""
+    """Answer via RAG, using tools for messaging, GitHub, or workspaces when needed."""
 
     wants_msg = _wants_messaging(question)
     wants_gh = _wants_github(question)
-    if not wants_msg and not wants_gh:
+    wants_ws = _wants_workspace(question)
+    if not wants_msg and not wants_gh and not wants_ws:
         return await generate_answer(
             question, retrieval, history, org_id, ephemeral_documents
         )
@@ -657,6 +771,7 @@ async def run_ask_agent(
     people_cache: dict[str, dict] = {}
     proposal: ProposedExpertMessage | None = None
     pr_proposal: ProposedPullRequest | None = None
+    ws_proposal: ProposedWorkspace | None = None
     used_github = False
 
     for round_idx in range(_MAX_TOOL_ROUNDS):
@@ -667,7 +782,12 @@ async def run_ask_agent(
             "temperature": 0,
         }
         # Force the first turn to use tools so the model cannot skip them.
-        if round_idx == 0 and proposal is None and pr_proposal is None:
+        if (
+            round_idx == 0
+            and proposal is None
+            and pr_proposal is None
+            and ws_proposal is None
+        ):
             create_kwargs["tool_choice"] = "required"
         elif wants_msg and proposal is None and people_cache and len(people_cache) == 1:
             create_kwargs["tool_choice"] = {
@@ -698,6 +818,11 @@ async def run_ask_agent(
                     f"{pr_proposal.repo}` — `{pr_proposal.path}`. "
                     "Review the diff and approve to open the PR."
                 )
+            elif ws_proposal is not None:
+                answer = (
+                    f"I prepared a workspace draft for **{ws_proposal.name}**. "
+                    "Review the members and CONTEXT.md, then approve to create it."
+                )
             else:
                 answer = (choice.content or "").strip() or base.answer
             return QueryResponse(
@@ -707,13 +832,14 @@ async def run_ask_agent(
                 expert_request_created=False,
                 confidence=(
                     "high"
-                    if proposal or pr_proposal or used_github
+                    if proposal or pr_proposal or ws_proposal or used_github
                     else base.confidence
                 ),
                 routed=False,
                 routed_reason=None,
                 proposed_message=proposal,
                 proposed_pull_request=pr_proposal,
+                proposed_workspace=ws_proposal,
             )
 
         messages.append(
@@ -742,7 +868,7 @@ async def run_ask_agent(
                 "propose_github_pr"
             ):
                 used_github = True
-            result, maybe_proposal, maybe_pr = await _run_tool(
+            result, maybe_proposal, maybe_pr, maybe_ws = await _run_tool(
                 name=call.function.name,
                 arguments=args if isinstance(args, dict) else {},
                 org_id=org_id,
@@ -753,6 +879,8 @@ async def run_ask_agent(
                 proposal = maybe_proposal
             if maybe_pr is not None:
                 pr_proposal = maybe_pr
+            if maybe_ws is not None:
+                ws_proposal = maybe_ws
             messages.append(
                 {
                     "role": "tool",
@@ -760,9 +888,11 @@ async def run_ask_agent(
                     "content": json.dumps(result),
                 }
             )
-        if proposal is not None and not wants_gh:
+        if proposal is not None and not wants_gh and not wants_ws:
             break
-        if pr_proposal is not None and not wants_msg:
+        if pr_proposal is not None and not wants_msg and not wants_ws:
+            break
+        if ws_proposal is not None and not wants_msg and not wants_gh:
             break
 
     if wants_msg:
@@ -788,6 +918,7 @@ async def run_ask_agent(
             routed_reason=None,
             proposed_message=proposal,
             proposed_pull_request=pr_proposal,
+            proposed_workspace=ws_proposal,
         )
 
     if pr_proposal is not None:
@@ -806,6 +937,25 @@ async def run_ask_agent(
             routed_reason=None,
             proposed_message=None,
             proposed_pull_request=pr_proposal,
+            proposed_workspace=ws_proposal,
+        )
+
+    if ws_proposal is not None:
+        answer = (
+            f"I prepared a workspace draft for **{ws_proposal.name}**. "
+            "Review the members and CONTEXT.md, then approve to create it."
+        )
+        return QueryResponse(
+            answer=answer,
+            sources=base.sources,
+            expert=None,
+            expert_request_created=False,
+            confidence="high",
+            routed=False,
+            routed_reason=None,
+            proposed_message=None,
+            proposed_pull_request=None,
+            proposed_workspace=ws_proposal,
         )
 
     if used_github or wants_gh:
@@ -836,6 +986,7 @@ async def run_ask_agent(
             routed_reason=None,
             proposed_message=None,
             proposed_pull_request=None,
+            proposed_workspace=None,
         )
 
     answer = (
@@ -852,4 +1003,5 @@ async def run_ask_agent(
         routed_reason=None,
         proposed_message=None,
         proposed_pull_request=None,
+        proposed_workspace=None,
     )

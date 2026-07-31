@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Database,
   FileText,
+  GitPullRequest,
   Loader2,
   MessageSquare,
   MessageSquarePlus,
@@ -10,6 +11,7 @@ import {
   Paperclip,
   Sparkles,
   Trash2,
+  Users,
   UserRound,
   X,
 } from "lucide-react";
@@ -20,10 +22,14 @@ import {
   type ChatMessage,
   type EphemeralDocument,
   type ProposedExpertMessage,
+  type ProposedPullRequest,
+  type ProposedWorkspace,
   type QueryResponse,
   type Source,
 } from "@/services/ask";
+import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedExpertMessage } from "@/services/reviews";
+import { createWorkspace } from "@/services/workspaces";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
@@ -149,6 +155,12 @@ export default function AskView() {
         response,
         proposedMessage: response.proposed_message ?? null,
         proposalState: response.proposed_message ? "pending" : undefined,
+        proposedPullRequest: response.proposed_pull_request ?? null,
+        prProposalState: response.proposed_pull_request ? "pending" : undefined,
+        proposedWorkspace: response.proposed_workspace ?? null,
+        workspaceProposalState: response.proposed_workspace
+          ? "pending"
+          : undefined,
       });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -505,6 +517,22 @@ function TurnView({
               proposalState={turn.proposalState}
               proposalReviewId={turn.proposalReviewId}
               proposalError={turn.proposalError}
+              proposedPullRequest={
+                turn.proposedPullRequest ??
+                turn.response.proposed_pull_request ??
+                null
+              }
+              prProposalState={turn.prProposalState}
+              prProposalUrl={turn.prProposalUrl}
+              prProposalError={turn.prProposalError}
+              proposedWorkspace={
+                turn.proposedWorkspace ??
+                turn.response.proposed_workspace ??
+                null
+              }
+              workspaceProposalState={turn.workspaceProposalState}
+              workspaceProposalId={turn.workspaceProposalId}
+              workspaceProposalError={turn.workspaceProposalError}
               onProposalPatch={onProposalPatch}
             />
           )}
@@ -625,6 +653,14 @@ function AnswerView({
   proposalState,
   proposalReviewId,
   proposalError,
+  proposedPullRequest,
+  prProposalState,
+  prProposalUrl,
+  prProposalError,
+  proposedWorkspace,
+  workspaceProposalState,
+  workspaceProposalId,
+  workspaceProposalError,
   onProposalPatch,
 }: {
   response: QueryResponse;
@@ -632,6 +668,14 @@ function AnswerView({
   proposalState?: Turn["proposalState"];
   proposalReviewId?: string;
   proposalError?: string;
+  proposedPullRequest?: ProposedPullRequest | null;
+  prProposalState?: Turn["prProposalState"];
+  prProposalUrl?: string;
+  prProposalError?: string;
+  proposedWorkspace?: ProposedWorkspace | null;
+  workspaceProposalState?: Turn["workspaceProposalState"];
+  workspaceProposalId?: string;
+  workspaceProposalError?: string;
   onProposalPatch: (patch: Partial<Turn>) => void;
 }) {
   const cited = new Set<string>();
@@ -641,6 +685,10 @@ function AnswerView({
     cited.add(match[1].trim());
   }
   const proposal = proposedMessage ?? response.proposed_message ?? null;
+  const prProposal =
+    proposedPullRequest ?? response.proposed_pull_request ?? null;
+  const wsProposal =
+    proposedWorkspace ?? response.proposed_workspace ?? null;
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -657,6 +705,26 @@ function AnswerView({
           state={proposalState}
           reviewId={proposalReviewId}
           error={proposalError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
+      {prProposal && (
+        <ProposedPullRequestCard
+          proposal={prProposal}
+          state={prProposalState}
+          prUrl={prProposalUrl}
+          error={prProposalError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
+      {wsProposal && (
+        <ProposedWorkspaceCard
+          proposal={wsProposal}
+          state={workspaceProposalState}
+          workspaceId={workspaceProposalId}
+          error={workspaceProposalError}
           onPatch={onProposalPatch}
         />
       )}
@@ -698,6 +766,445 @@ function AnswerView({
           </ol>
         </div>
       )}
+    </div>
+  );
+}
+
+function ProposedWorkspaceCard({
+  proposal,
+  state,
+  workspaceId,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedWorkspace;
+  state?: Turn["workspaceProposalState"];
+  workspaceId?: string;
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [showContext, setShowContext] = useState(false);
+  const members = proposal.members ?? [];
+  const unmatched = proposal.unmatched_people ?? [];
+
+  async function approve() {
+    onPatch({
+      workspaceProposalState: "sending",
+      workspaceProposalError: undefined,
+    });
+    try {
+      const created = await createWorkspace({
+        name: proposal.name,
+        member_user_ids: members.map((m) => m.user_id),
+        purpose: proposal.purpose,
+        context_md: proposal.context_md,
+        loombot_mode: proposal.loombot_mode ?? "context_only",
+      });
+      onPatch({
+        workspaceProposalState: "sent",
+        workspaceProposalId: created.workspace_id,
+        workspaceProposalError: undefined,
+      });
+    } catch (err) {
+      onPatch({
+        workspaceProposalState: "pending",
+        workspaceProposalError:
+          err instanceof Error ? err.message : "Create failed.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Proposed workspace discarded.
+      </div>
+    );
+  }
+
+  if (status === "sent") {
+    return (
+      <div className="rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <p className="font-medium">Workspace created: {proposal.name}</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Loombot will answer from CONTEXT.md only.
+          {workspaceId ? ` (${workspaceId.slice(0, 8)}…)` : ""}
+        </p>
+        <a
+          href="/dashboard?tab=workspaces"
+          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          Open Workspaces
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      data-testid="proposed-workspace-card"
+      className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+    >
+      <div className="flex items-start gap-2">
+        <Users className="mt-0.5 size-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-foreground">Create workspace?</p>
+          <p className="mt-1 font-medium text-foreground">{proposal.name}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Purpose: {proposal.purpose}
+          </p>
+          <div className="mt-2 space-y-1">
+            <p className="text-xs font-medium text-foreground">
+              Members ({members.length})
+            </p>
+            {members.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Only you will be added (no other signed-in matches).
+              </p>
+            ) : (
+              <ul className="space-y-0.5 text-xs text-muted-foreground">
+                {members.map((m) => (
+                  <li key={m.user_id}>
+                    <span className="text-foreground">{m.name}</span> — {m.email}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {unmatched.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {unmatched.length} person(s) mentioned in CONTEXT.md but not
+                signed into Loom.
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="mt-2 text-xs font-medium text-primary hover:underline"
+            onClick={() => setShowContext((v) => !v)}
+          >
+            {showContext ? "Hide CONTEXT.md" : "Preview CONTEXT.md"}
+          </button>
+          {showContext && (
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+              {proposal.context_md}
+            </pre>
+          )}
+          {error && (
+            <p className="mt-2 text-xs text-destructive">{error}</p>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={status === "sending"}
+              onClick={() => void approve()}
+              className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              {status === "sending" ? "Creating…" : "Approve & create"}
+            </button>
+            <button
+              type="button"
+              disabled={status === "sending"}
+              onClick={() => onPatch({ workspaceProposalState: "cancelled" })}
+              className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Nothing is created until you approve. Loombot will use CONTEXT.md only.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type DiffLine = { type: "same" | "add" | "del"; text: string };
+
+/** Minimal line-based LCS unified diff for the PR approval modal. */
+function buildUnifiedDiff(oldText: string, newText: string): DiffLine[] {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  const n = a.length;
+  const m = b.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () =>
+    Array(m + 1).fill(0),
+  );
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      dp[i][j] =
+        a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const lines: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      lines.push({ type: "same", text: a[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      lines.push({ type: "del", text: a[i] });
+      i += 1;
+    } else {
+      lines.push({ type: "add", text: b[j] });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    lines.push({ type: "del", text: a[i] });
+    i += 1;
+  }
+  while (j < m) {
+    lines.push({ type: "add", text: b[j] });
+    j += 1;
+  }
+  return lines;
+}
+
+function ProposedPullRequestCard({
+  proposal,
+  state,
+  prUrl,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedPullRequest;
+  state?: Turn["prProposalState"];
+  prUrl?: string;
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [open, setOpen] = useState(status === "pending");
+
+  useEffect(() => {
+    if (status === "pending") setOpen(true);
+  }, [status, proposal.path, proposal.branch_name]);
+
+  async function approve() {
+    onPatch({ prProposalState: "sending", prProposalError: undefined });
+    try {
+      const result = await approveProposedPullRequest(proposal);
+      onPatch({
+        prProposalState: "sent",
+        prProposalUrl: result.pr_url,
+        prProposalError: undefined,
+      });
+      setOpen(false);
+    } catch (err) {
+      onPatch({
+        prProposalState: "pending",
+        prProposalError: err instanceof Error ? err.message : "PR failed.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Proposed pull request discarded.
+      </div>
+    );
+  }
+
+  if (status === "sent") {
+    return (
+      <div className="rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <p className="font-medium">Pull request opened</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {proposal.pr_title} · {proposal.owner}/{proposal.repo}
+        </p>
+        {prUrl && (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+          >
+            View on GitHub
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div
+        data-testid="proposed-pull-request-card"
+        className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+      >
+        <div className="flex items-start gap-2">
+          <GitPullRequest className="mt-0.5 size-4 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-foreground">Review proposed PR?</p>
+            <p className="mt-1 text-muted-foreground">
+              <span className="font-medium text-foreground">
+                {proposal.owner}/{proposal.repo}
+              </span>{" "}
+              · <code className="text-xs">{proposal.path}</code>
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {proposal.base_branch} ← {proposal.branch_name}
+            </p>
+            <p className="mt-2 font-medium text-foreground">{proposal.pr_title}</p>
+            {error && (
+              <p className="mt-2 text-xs text-destructive">{error}</p>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setOpen(true)}
+                className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+              >
+                Review diff
+              </button>
+              <button
+                type="button"
+                disabled={status === "sending"}
+                onClick={() => onPatch({ prProposalState: "cancelled" })}
+                className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Nothing is pushed until you approve the diff.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {open && (
+        <PullRequestDiffModal
+          proposal={proposal}
+          sending={status === "sending"}
+          error={error}
+          onClose={() => setOpen(false)}
+          onApprove={() => void approve()}
+          onCancel={() => {
+            setOpen(false);
+            onPatch({ prProposalState: "cancelled" });
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function PullRequestDiffModal({
+  proposal,
+  sending,
+  error,
+  onClose,
+  onApprove,
+  onCancel,
+}: {
+  proposal: ProposedPullRequest;
+  sending: boolean;
+  error?: string;
+  onClose: () => void;
+  onApprove: () => void;
+  onCancel: () => void;
+}) {
+  const lines = buildUnifiedDiff(proposal.old_content, proposal.new_content);
+  const isNew = !proposal.file_sha;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Proposed pull request diff"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[85dvh] w-full max-w-3xl flex-col rounded-lg border border-border bg-background shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">
+              {proposal.pr_title}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {proposal.owner}/{proposal.repo} ·{" "}
+              <code>{proposal.path}</code>
+              {isNew ? " (new file)" : ""}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {proposal.base_branch} ← {proposal.branch_name}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {proposal.pr_body ? (
+          <p className="border-b border-border px-4 py-2 text-xs text-muted-foreground whitespace-pre-wrap">
+            {proposal.pr_body}
+          </p>
+        ) : null}
+
+        <div className="min-h-0 flex-1 overflow-auto bg-muted/30 font-mono text-xs leading-5">
+          {lines.length === 0 ? (
+            <p className="px-4 py-6 text-muted-foreground">No changes.</p>
+          ) : (
+            <pre className="px-0 py-2">
+              {lines.map((line, idx) => (
+                <div
+                  key={`${line.type}-${idx}`}
+                  className={cn(
+                    "whitespace-pre-wrap break-all px-4",
+                    line.type === "add" && "bg-emerald-500/15 text-emerald-900",
+                    line.type === "del" && "bg-rose-500/15 text-rose-900",
+                    line.type === "same" && "text-muted-foreground",
+                  )}
+                >
+                  <span className="select-none opacity-60">
+                    {line.type === "add" ? "+" : line.type === "del" ? "-" : " "}
+                  </span>
+                  {line.text}
+                </div>
+              ))}
+            </pre>
+          )}
+        </div>
+
+        {error && (
+          <p className="border-t border-border px-4 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <button
+            type="button"
+            disabled={sending}
+            onClick={onCancel}
+            className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={sending}
+            onClick={onApprove}
+            className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+          >
+            {sending ? "Opening PR…" : "Approve & open PR"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

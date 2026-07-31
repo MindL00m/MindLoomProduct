@@ -83,6 +83,21 @@ async def create_expert_request(
         ).mappings().one_or_none()
         if expert is None:
             return None
+        expert_user_id = str(expert["user_id"])
+        existing_pair = await consolidate_expert_pair(
+            org_id=org_id,
+            user_a=requester_user_id,
+            user_b=expert_user_id,
+        )
+        if existing_pair:
+            await send_expert_message(
+                org_id=org_id,
+                user_id=requester_user_id,
+                review_id=existing_pair,
+                body=question,
+                message_type="routed_question",
+            )
+            return existing_pair
         existing = (
             await session.execute(text("""
                 SELECT review_id FROM knowledge_reviews
@@ -91,7 +106,7 @@ async def create_expert_request(
                   AND status IN ('open','answered','drafted')
                 LIMIT 1
             """), {
-                "org": org_id, "owner": str(expert["user_id"]),
+                "org": org_id, "owner": expert_user_id,
                 "title": f"Expert question: {question}",
             })
         ).scalar_one_or_none()
@@ -104,7 +119,7 @@ async def create_expert_request(
             f"Company Brain could not answer this question and suggested {expert_name}. "
             "Reply in Messages. Loom will turn the useful answer into a reviewable knowledge draft."
         ),
-        created_by=requester_user_id, owner_user_id=str(expert["user_id"]),
+        created_by=requester_user_id, owner_user_id=expert_user_id,
         source_ids=source_ids, due_at=_now() + timedelta(days=7),
     )
     await send_expert_message(
@@ -133,6 +148,95 @@ async def create_expert_request(
     return review_id
 
 
+async def _pair_thread_ids(
+    session,
+    *,
+    org_id: str,
+    user_a: str,
+    user_b: str,
+) -> list[str]:
+    """All expert_request review ids between two users (either direction), oldest first."""
+
+    rows = (
+        await session.execute(text("""
+            SELECT review_id FROM knowledge_reviews
+            WHERE org_id=:org AND review_type='expert_request'
+              AND (
+                (created_by=:a AND owner_user_id=:b)
+                OR (created_by=:b AND owner_user_id=:a)
+              )
+            ORDER BY created_at ASC, review_id ASC
+        """), {"org": org_id, "a": user_a, "b": user_b})
+    ).scalars().all()
+    return [str(row) for row in rows]
+
+
+async def consolidate_expert_pair(
+    *,
+    org_id: str,
+    user_a: str,
+    user_b: str,
+) -> str | None:
+    """Merge every thread between two people into the oldest one. Returns that id."""
+
+    if user_a == user_b:
+        return None
+    factory = get_session_factory()
+    async with factory() as session:
+        ids = await _pair_thread_ids(
+            session, org_id=org_id, user_a=user_a, user_b=user_b
+        )
+        if not ids:
+            return None
+        canonical = ids[0]
+        extras = ids[1:]
+        if extras:
+            for extra_id in extras:
+                await session.execute(text("""
+                    UPDATE expert_messages SET review_id=:canonical
+                    WHERE org_id=:org AND review_id=:extra
+                """), {"canonical": canonical, "org": org_id, "extra": extra_id})
+                await session.execute(text("""
+                    UPDATE knowledge_reviews
+                    SET status='resolved',
+                        resolution_note='Merged into canonical expert conversation',
+                        resolved_at=now(),
+                        updated_at=now()
+                    WHERE org_id=:org AND review_id=:extra
+                """), {"org": org_id, "extra": extra_id})
+            await session.execute(text("""
+                UPDATE knowledge_reviews SET updated_at=now()
+                WHERE org_id=:org AND review_id=:canonical
+            """), {"org": org_id, "canonical": canonical})
+            await session.commit()
+        return canonical
+
+
+async def _consolidate_all_pairs_for_user(org_id: str, user_id: str) -> None:
+    """Collapse duplicate person-pair threads before listing the inbox."""
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text("""
+                SELECT created_by, owner_user_id FROM knowledge_reviews
+                WHERE org_id=:org AND review_type='expert_request'
+                  AND (created_by=:user OR owner_user_id=:user)
+                  AND status <> 'resolved'
+            """), {"org": org_id, "user": user_id})
+        ).mappings().all()
+    seen: set[frozenset[str]] = set()
+    for row in rows:
+        a, b = str(row["created_by"]), str(row["owner_user_id"])
+        if not a or not b:
+            continue
+        key = frozenset({a, b})
+        if key in seen or len(key) < 2:
+            continue
+        seen.add(key)
+        await consolidate_expert_pair(org_id=org_id, user_a=a, user_b=b)
+
+
 async def start_expert_conversation(
     *,
     org_id: str,
@@ -140,6 +244,8 @@ async def start_expert_conversation(
     expert_user_id: str,
     message: str,
 ) -> str:
+    if requester_user_id == expert_user_id:
+        raise HTTPException(status_code=400, detail="You cannot message yourself.")
     factory = get_session_factory()
     async with factory() as session:
         expert = (
@@ -150,15 +256,39 @@ async def start_expert_conversation(
         ).mappings().one_or_none()
     if expert is None:
         raise HTTPException(status_code=404, detail="Expert was not found.")
-    review_id = await create_review(
+
+    # One chat per person pair: reuse (and merge) any existing threads.
+    review_id = await consolidate_expert_pair(
         org_id=org_id,
-        review_type="expert_request",
-        title=f"Conversation with {expert['name']}",
-        description="A direct employee-to-expert knowledge conversation.",
-        created_by=requester_user_id,
-        owner_user_id=expert_user_id,
-        due_at=_now() + timedelta(days=7),
+        user_a=requester_user_id,
+        user_b=expert_user_id,
     )
+    if review_id is None:
+        review_id = await create_review(
+            org_id=org_id,
+            review_type="expert_request",
+            title=f"Conversation with {expert['name']}",
+            description="A direct employee-to-expert knowledge conversation.",
+            created_by=requester_user_id,
+            owner_user_id=expert_user_id,
+            due_at=_now() + timedelta(days=7),
+        )
+    else:
+        # Re-open if a prior merge left it resolved, or keep active chats open.
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(text("""
+                UPDATE knowledge_reviews
+                SET status='open',
+                    resolution_note=NULL,
+                    resolved_at=NULL,
+                    resolved_by=NULL,
+                    updated_at=now()
+                WHERE org_id=:org AND review_id=:id
+                  AND status IN ('resolved', 'rejected')
+            """), {"org": org_id, "id": review_id})
+            await session.commit()
+
     await send_expert_message(
         org_id=org_id,
         user_id=requester_user_id,
@@ -238,6 +368,7 @@ async def send_expert_message(
 
 
 async def list_expert_threads(org_id: str, user_id: str) -> list[dict]:
+    await _consolidate_all_pairs_for_user(org_id, user_id)
     factory = get_session_factory()
     async with factory() as session:
         rows = (
@@ -262,6 +393,7 @@ async def list_expert_threads(org_id: str, user_id: str) -> list[dict]:
                 ) unread ON true
                 WHERE r.org_id=:org AND r.review_type='expert_request'
                   AND (r.created_by=:user OR r.owner_user_id=:user)
+                  AND coalesce(r.resolution_note, '') <> 'Merged into canonical expert conversation'
                 ORDER BY coalesce(last_message.created_at, r.updated_at) DESC
             """), {"org": org_id, "user": user_id})
         ).mappings().all()

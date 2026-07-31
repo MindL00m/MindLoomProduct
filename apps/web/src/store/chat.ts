@@ -14,6 +14,18 @@ export interface Turn {
   proposalState?: "pending" | "sending" | "sent" | "cancelled";
   proposalReviewId?: string;
   proposalError?: string;
+  /** Copied from the API so the PR diff modal survives store quirks. */
+  proposedPullRequest?: QueryResponse["proposed_pull_request"];
+  /** Local UI state for Ask-proposed GitHub PRs. */
+  prProposalState?: "pending" | "sending" | "sent" | "cancelled";
+  prProposalUrl?: string;
+  prProposalError?: string;
+  /** Copied from the API so the workspace approve card survives store quirks. */
+  proposedWorkspace?: QueryResponse["proposed_workspace"];
+  /** Local UI state for Ask-proposed project workspaces. */
+  workspaceProposalState?: "pending" | "sending" | "sent" | "cancelled";
+  workspaceProposalId?: string;
+  workspaceProposalError?: string;
 }
 
 export type AttachmentScope = "chat" | "graph";

@@ -117,7 +117,18 @@ export default function ExpertMessages({
   }
 
   async function startConversation() {
-    if (!newExpert || !newMessage.trim()) return;
+    if (!newExpert) return;
+    const existing = threads.find(
+      (thread) =>
+        thread.owner_user_id === newExpert || thread.created_by === newExpert,
+    );
+    if (existing && !newMessage.trim()) {
+      setShowNew(false);
+      setNewExpert("");
+      setActiveId(existing.review_id);
+      return;
+    }
+    if (!newMessage.trim()) return;
     setBusy(true);
     try {
       const result = await startExpertThread(newExpert, newMessage);
@@ -347,10 +358,27 @@ export default function ExpertMessages({
             <div className="flex justify-end gap-2">
               <SecondaryButton onClick={() => setShowNew(false)}>Cancel</SecondaryButton>
               <PrimaryButton
-                disabled={busy || !newExpert || !newMessage.trim()}
+                disabled={
+                  busy
+                  || !newExpert
+                  || (
+                    !newMessage.trim()
+                    && !threads.some(
+                      (thread) =>
+                        thread.owner_user_id === newExpert
+                        || thread.created_by === newExpert,
+                    )
+                  )
+                }
                 onClick={() => void startConversation()}
               >
-                Start chat
+                {threads.some(
+                  (thread) =>
+                    thread.owner_user_id === newExpert
+                    || thread.created_by === newExpert,
+                ) && !newMessage.trim()
+                  ? "Open chat"
+                  : "Send message"}
               </PrimaryButton>
             </div>
           </div>

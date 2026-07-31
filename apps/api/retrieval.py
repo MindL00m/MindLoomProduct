@@ -4,7 +4,9 @@ Given a natural-language question, this module concurrently:
 
 * embeds the question and runs a pgvector cosine-similarity search over chunks, and
 * extracts named entities from the question and traverses the Neo4j graph to
-  surface people connected to those entities.
+  surface people connected to those entities **and** chunks linked to those
+  entities via ``RELATES_TO`` (so Ask can answer about calendar/topic entities
+  even when pure vector similarity misses).
 
 The two pipelines are independent and overlap via :func:`asyncio.gather`; within
 each pipeline the search step runs after its prerequisite (embedding / entity
@@ -16,7 +18,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+import re
 from collections import Counter
+from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
 from sqlalchemy import text
@@ -48,9 +53,10 @@ Standalone query:"""
 _CONDENSE_HISTORY_TURNS = 6
 
 _ENTITY_PROMPT = """\
-Extract named entities from this question. Return only a JSON array of strings. 
-No preamble, no markdown. Only include proper nouns: equipment names, 
-people names, project names, system names, locations.
+Extract named entities from this question. Return only a JSON array of strings.
+No preamble, no markdown. Include proper nouns: people, projects, systems,
+locations, nicknames, and titled characters (e.g. "Mr.Greedy", "Alpha Launch").
+Preserve the spelling from the question when possible.
 
 Question: {question}"""
 
@@ -94,11 +100,100 @@ _VECTOR_SQL = text(
     """
 )
 
+_CHUNKS_BY_ID_SQL = text(
+    """
+    SELECT
+        c.chunk_id,
+        c.raw_text,
+        c.summary,
+        c.speakers,
+        c.start_time,
+        c.end_time,
+        c.knowledge_type,
+        c.confidence,
+        CAST(:entity_similarity AS double precision) AS similarity_score,
+        exp(-greatest(extract(epoch FROM (now() - c.end_time)), 0) / 63072000.0)
+          AS freshness_score,
+        (
+          CASE c.knowledge_type
+            WHEN 'decision' THEN 1.0
+            WHEN 'question_answer' THEN 0.9
+            WHEN 'problem_report' THEN 0.75
+            WHEN 'status_update' THEN 0.6
+            ELSE 0.15
+          END
+        ) * (
+          CASE c.confidence WHEN 'high' THEN 1.0 WHEN 'medium' THEN 0.7 ELSE 0.4 END
+        ) AS authority_score
+    FROM chunks c
+    WHERE c.org_id = :org_id
+      AND c.chunk_id = ANY(:chunk_ids)
+      AND (
+        cardinality(c.visible_to) = 0
+        OR c.visible_to && CAST(:access_tokens AS text[])
+      )
+    """
+)
+
+# Exact-ish lexical fallback: match entity names inside chunk text even when
+# vector similarity is low and/or Neo4j RELATES_TO edges are missing.
+_LEXICAL_ENTITY_SQL = text(
+    """
+    SELECT
+        c.chunk_id,
+        c.raw_text,
+        c.summary,
+        c.speakers,
+        c.start_time,
+        c.end_time,
+        c.knowledge_type,
+        c.confidence,
+        CAST(:entity_similarity AS double precision) AS similarity_score,
+        exp(-greatest(extract(epoch FROM (now() - c.end_time)), 0) / 63072000.0)
+          AS freshness_score,
+        (
+          CASE c.knowledge_type
+            WHEN 'decision' THEN 1.0
+            WHEN 'question_answer' THEN 0.9
+            WHEN 'problem_report' THEN 0.75
+            WHEN 'status_update' THEN 0.6
+            ELSE 0.15
+          END
+        ) * (
+          CASE c.confidence WHEN 'high' THEN 1.0 WHEN 'medium' THEN 0.7 ELSE 0.4 END
+        ) AS authority_score
+    FROM chunks c
+    WHERE c.org_id = :org_id
+      AND (
+        cardinality(c.visible_to) = 0
+        OR c.visible_to && CAST(:access_tokens AS text[])
+      )
+      AND (
+        regexp_replace(lower(c.raw_text), '[^a-z0-9]+', '', 'g')
+          LIKE '%' || :normalized || '%'
+        OR regexp_replace(lower(c.summary), '[^a-z0-9]+', '', 'g')
+          LIKE '%' || :normalized || '%'
+        OR lower(c.raw_text) LIKE '%' || :raw_lower || '%'
+        OR lower(c.summary) LIKE '%' || :raw_lower || '%'
+      )
+    ORDER BY c.end_time DESC NULLS LAST
+    LIMIT :limit
+    """
+)
+
 # Query 1 — activity on chunks (ANSWERED / MENTIONED_IN).
 _ACTIVITY_CYPHER = """
 MATCH (p:Person {org_id: $org_id})-[r:ANSWERED|MENTIONED_IN]->(c:Chunk {org_id: $org_id})-[:RELATES_TO]->(e:Entity {org_id: $org_id})
-WHERE e.canonical_name CONTAINS $entity_name
-  AND (size(c.visible_to) = 0 OR any(token IN c.visible_to WHERE token IN $access_tokens))
+WHERE (
+  toLower(e.canonical_name) CONTAINS $entity_name
+  OR toLower(coalesce(e.name, '')) CONTAINS $entity_name
+  OR replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+       CONTAINS replace(replace($entity_name, ' ', ''), '.', '')
+  OR replace(replace($entity_name, ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+)
+  AND (size(c.visible_to) = 0 OR any(vis IN coalesce(c.visible_to, []) WHERE
+        any(token IN $access_tokens WHERE toLower(token) = toLower(vis))))
 WITH p, count(r) as rel_count, collect(type(r)) as rel_types
 RETURN p.name as name, p.canonical_email as email, rel_count, rel_types
 ORDER BY rel_count DESC
@@ -107,10 +202,18 @@ LIMIT 3
 
 _OWNS_CYPHER = """
 MATCH (p:Person {org_id: $org_id})-[r:OWNS]->(e:Entity {org_id: $org_id})
-WHERE e.canonical_name CONTAINS $entity_name
+WHERE (
+  toLower(e.canonical_name) CONTAINS $entity_name
+  OR toLower(coalesce(e.name, '')) CONTAINS $entity_name
+  OR replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+       CONTAINS replace(replace($entity_name, ' ', ''), '.', '')
+  OR replace(replace($entity_name, ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+)
   AND (
     r.visible_to IS NULL OR size(r.visible_to) = 0
-    OR any(token IN r.visible_to WHERE token IN $access_tokens)
+    OR any(vis IN coalesce(r.visible_to, []) WHERE
+         any(token IN $access_tokens WHERE toLower(token) = toLower(vis)))
   )
 WITH p, count(r) as rel_count, collect(type(r)) as rel_types
 RETURN p.name as name, p.canonical_email as email, rel_count, rel_types
@@ -124,8 +227,72 @@ MATCH (c:Chunk {org_id: $org_id, chunk_id: chunk_id})
 OPTIONAL MATCH (c)-[:RELATES_TO]->(e:Entity {org_id: $org_id})
 WHERE any(term IN $entities WHERE
   toLower(e.canonical_name) CONTAINS toLower(term)
-  OR toLower(term) CONTAINS toLower(e.canonical_name))
+  OR toLower(term) CONTAINS toLower(e.canonical_name)
+  OR toLower(coalesce(e.name, '')) CONTAINS toLower(term)
+  OR replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(term), ' ', ''), '.', '')
+  OR replace(replace(toLower(term), ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(e.canonical_name), ' ', ''), '.', ''))
 RETURN chunk_id, count(DISTINCT e) AS matches
+"""
+
+# Chunks linked to entities named in the question — return full Neo4j payload so
+# Ask still works when Postgres was reset / drifted while Neo4j retained data.
+_ENTITY_CHUNKS_CYPHER = """
+MATCH (e:Entity {org_id: $org_id})
+WHERE any(term IN $entity_terms WHERE
+  toLower(e.canonical_name) CONTAINS toLower(term)
+  OR toLower(term) CONTAINS toLower(e.canonical_name)
+  OR toLower(coalesce(e.name, '')) CONTAINS toLower(term)
+  OR toLower(term) CONTAINS toLower(coalesce(e.name, ''))
+  OR replace(replace(toLower(e.canonical_name), ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(term), ' ', ''), '.', '')
+  OR replace(replace(toLower(term), ' ', ''), '.', '')
+       CONTAINS replace(replace(toLower(e.canonical_name), ' ', ''), '.', ''))
+MATCH (c:Chunk {org_id: $org_id})-[:RELATES_TO]->(e)
+WHERE size(coalesce(c.visible_to, [])) = 0
+   OR any(vis IN coalesce(c.visible_to, []) WHERE
+        any(token IN $access_tokens WHERE toLower(token) = toLower(vis)))
+RETURN DISTINCT
+  c.chunk_id AS chunk_id,
+  coalesce(c.raw_text, '') AS raw_text,
+  coalesce(c.summary, '') AS summary,
+  coalesce(c.knowledge_type, 'noise') AS knowledge_type,
+  coalesce(c.confidence, 'low') AS confidence,
+  c.start_time AS start_time,
+  c.end_time AS end_time,
+  coalesce(c.source, '') AS source,
+  coalesce(c.source_label, '') AS source_label
+LIMIT $limit
+"""
+
+_NEO4J_LEXICAL_CHUNKS_CYPHER = """
+MATCH (c:Chunk {org_id: $org_id})
+WHERE (
+  replace(replace(toLower(coalesce(c.raw_text, '')), ' ', ''), '.', '')
+    CONTAINS $normalized
+  OR replace(replace(toLower(coalesce(c.summary, '')), ' ', ''), '.', '')
+    CONTAINS $normalized
+  OR toLower(coalesce(c.raw_text, '')) CONTAINS $raw_lower
+  OR toLower(coalesce(c.summary, '')) CONTAINS $raw_lower
+)
+AND (
+  size(coalesce(c.visible_to, [])) = 0
+  OR any(vis IN coalesce(c.visible_to, []) WHERE
+       any(token IN $access_tokens WHERE toLower(token) = toLower(vis)))
+)
+RETURN DISTINCT
+  c.chunk_id AS chunk_id,
+  coalesce(c.raw_text, '') AS raw_text,
+  coalesce(c.summary, '') AS summary,
+  coalesce(c.knowledge_type, 'noise') AS knowledge_type,
+  coalesce(c.confidence, 'low') AS confidence,
+  c.start_time AS start_time,
+  c.end_time AS end_time,
+  coalesce(c.source, '') AS source,
+  coalesce(c.source_label, '') AS source_label
+ORDER BY coalesce(c.end_time, datetime('1970-01-01T00:00:00Z')) DESC
+LIMIT $limit
 """
 
 # Human-readable phrasing for each relationship type, as (singular, plural noun).
@@ -135,6 +302,22 @@ _REL_PHRASES: dict[str, tuple[str, str, str]] = {
     "MENTIONED_IN": ("mentioned in", "chunk", "chunks"),
     "ASKED": ("asked", "question", "questions"),
 }
+
+# Explicit entity-link hits get a strong similarity so they survive ranking even
+# when the calendar/title text would score poorly against the question embedding.
+_ENTITY_LINK_SIMILARITY = 0.88
+
+_HEURISTIC_ABOUT = re.compile(
+    r"(?:about|regarding|concerning)\s+(?:the\s+)?(?:entity\s+)?[\"']?([^\"'?]+)[\"']?",
+    re.IGNORECASE,
+)
+_HEURISTIC_WHO_WHAT = re.compile(
+    r"(?:who|what)\s+(?:is|are|was|were)\s+(?:the\s+)?(?:entity\s+)?[\"']?([^\"'?]+)[\"']?",
+    re.IGNORECASE,
+)
+_HEURISTIC_TITLE = re.compile(
+    r"\b((?:Mr|Mrs|Ms|Dr)\.?\s*[A-Za-z][A-Za-z0-9_-]*)\b",
+)
 
 
 def _client() -> AsyncOpenAI:
@@ -151,6 +334,62 @@ def _format_vector(vector: list[float]) -> str:
     """Render an embedding as the pgvector text literal '[a,b,c]'."""
 
     return "[" + ",".join(str(value) for value in vector) + "]"
+
+
+def normalize_entity_key(name: str) -> str:
+    """Collapse case/space/punctuation so 'Mr.Greedy' ≡ 'Mr. Greedy'."""
+
+    return re.sub(r"[^a-z0-9]+", "", name.strip().lower())
+
+
+def _clean_heuristic_candidate(raw: str) -> str | None:
+    candidate = raw.strip(" \t\n\r.,:;!?")
+    candidate = re.split(
+        r"\s+(?:and|or|that|which|who|from|in|on|with)\s+",
+        candidate,
+        maxsplit=1,
+    )[0].strip()
+    if not candidate or len(candidate) > 80:
+        return None
+    # Ignore generic pronouns / filler.
+    if candidate.lower() in {"it", "this", "that", "they", "he", "she", "someone"}:
+        return None
+    return candidate
+
+
+def _heuristic_entities(question: str) -> list[str]:
+    """Cheap fallback entities when the user names something explicitly."""
+
+    found: list[str] = []
+    for pattern in (_HEURISTIC_WHO_WHAT, _HEURISTIC_ABOUT):
+        match = pattern.search(question)
+        if not match:
+            continue
+        candidate = _clean_heuristic_candidate(match.group(1))
+        if candidate:
+            found.append(candidate)
+    for match in _HEURISTIC_TITLE.finditer(question):
+        candidate = _clean_heuristic_candidate(match.group(1))
+        if candidate:
+            found.append(candidate)
+    return _merge_entity_names(found)
+
+
+def _merge_entity_names(*groups: list[str]) -> list[str]:
+    """Dedupe entity strings while treating punctuation variants as the same."""
+
+    by_key: dict[str, str] = {}
+    for group in groups:
+        for name in group:
+            cleaned = name.strip()
+            if not cleaned:
+                continue
+            key = normalize_entity_key(cleaned) or cleaned.lower()
+            # Prefer the longer / more punctuated original spelling for display.
+            existing = by_key.get(key)
+            if existing is None or len(cleaned) > len(existing):
+                by_key[key] = cleaned
+    return list(by_key.values())
 
 
 async def _embed_question(question: str) -> list[float]:
@@ -216,9 +455,10 @@ async def _condense_query(question: str, history: list[ChatMessage]) -> str:
 async def _extract_entities(question: str) -> list[str]:
     """Task 2 — extract named entities from the question via gpt-4o-mini.
 
-    Never raises: on any failure it logs and returns an empty list.
+    Never raises: on any failure it logs and returns heuristic entities only.
     """
 
+    heuristic = _heuristic_entities(question)
     try:
         response = await _client().chat.completions.create(
             model=_EXTRACTION_MODEL,
@@ -226,10 +466,38 @@ async def _extract_entities(question: str) -> list[str]:
             temperature=0,
         )
         content = response.choices[0].message.content or ""
-        return _parse_entities(content)
+        return _merge_entity_names(_parse_entities(content), heuristic)
     except Exception as exc:  # noqa: BLE001 - retrieval must not fail on extraction
         logger.warning("Entity extraction failed for question; returning none: %s", exc)
-        return []
+        return heuristic
+
+
+def _rows_to_chunks(rows: object, *, score_boost: float = 0.0) -> list[ChunkResult]:
+    chunks: list[ChunkResult] = []
+    for row in rows:  # type: ignore[attr-defined]
+        similarity = float(row["similarity_score"])
+        freshness = float(row["freshness_score"])
+        authority = float(row["authority_score"])
+        retrieval = (
+            0.78 * similarity + 0.12 * freshness + 0.10 * authority + score_boost
+        )
+        chunks.append(
+            ChunkResult(
+                chunk_id=row["chunk_id"],
+                raw_text=row["raw_text"],
+                summary=row["summary"],
+                speakers=list(row["speakers"] or []),
+                start_time=row["start_time"],
+                end_time=row["end_time"],
+                knowledge_type=row["knowledge_type"],
+                confidence=row["confidence"],
+                similarity_score=similarity,
+                freshness_score=freshness,
+                authority_score=authority,
+                retrieval_score=min(retrieval, 1.0),
+            )
+        )
+    return chunks
 
 
 async def _vector_search(
@@ -253,29 +521,198 @@ async def _vector_search(
         result = await session.execute(_VECTOR_SQL, params)
         rows = result.mappings().all()
 
-    chunks = [
-        ChunkResult(
-            chunk_id=row["chunk_id"],
-            raw_text=row["raw_text"],
-            summary=row["summary"],
-            speakers=list(row["speakers"] or []),
-            start_time=row["start_time"],
-            end_time=row["end_time"],
-            knowledge_type=row["knowledge_type"],
-            confidence=row["confidence"],
-            similarity_score=float(row["similarity_score"]),
-            freshness_score=float(row["freshness_score"]),
-            authority_score=float(row["authority_score"]),
-            retrieval_score=(
-                0.78 * float(row["similarity_score"])
-                + 0.12 * float(row["freshness_score"])
-                + 0.10 * float(row["authority_score"])
-            ),
-        )
-        for row in rows
-    ]
+    chunks = _rows_to_chunks(rows)
     logger.info("pgvector search returned %d chunk(s)", len(chunks))
     return chunks
+
+
+def _authority_for(knowledge_type: str, confidence: str) -> float:
+    type_score = {
+        "decision": 1.0,
+        "question_answer": 0.9,
+        "problem_report": 0.75,
+        "status_update": 0.6,
+    }.get(knowledge_type, 0.15)
+    conf_score = {"high": 1.0, "medium": 0.7}.get(confidence, 0.4)
+    return type_score * conf_score
+
+
+def _freshness_for(end_time: datetime | None) -> float:
+    if end_time is None:
+        return 0.5
+    stamp = end_time if end_time.tzinfo else end_time.replace(tzinfo=timezone.utc)
+    age = max((datetime.now(timezone.utc) - stamp).total_seconds(), 0.0)
+    return float(math.exp(-age / 63_072_000.0))
+
+
+def _neo4j_rows_to_chunks(
+    rows: list[dict], *, score_boost: float = 0.05
+) -> list[ChunkResult]:
+    """Build ChunkResult rows from Neo4j Chunk properties (no Postgres needed)."""
+
+    chunks: list[ChunkResult] = []
+    for row in rows:
+        chunk_id = str(row.get("chunk_id") or "")
+        raw_text = str(row.get("raw_text") or "")
+        if not chunk_id or not raw_text.strip():
+            continue
+        knowledge_type = str(row.get("knowledge_type") or "noise")
+        confidence = str(row.get("confidence") or "low")
+        end_time = row.get("end_time")
+        start_time = row.get("start_time")
+        if not isinstance(end_time, datetime):
+            end_time = datetime.now(timezone.utc)
+        if not isinstance(start_time, datetime):
+            start_time = end_time
+        similarity = _ENTITY_LINK_SIMILARITY
+        freshness = _freshness_for(end_time)
+        authority = _authority_for(knowledge_type, confidence)
+        retrieval = min(
+            0.78 * similarity + 0.12 * freshness + 0.10 * authority + score_boost,
+            1.0,
+        )
+        summary = str(row.get("summary") or "")
+        source_label = str(row.get("source_label") or "")
+        if not summary and source_label:
+            summary = source_label
+        chunks.append(
+            ChunkResult(
+                chunk_id=chunk_id,
+                raw_text=raw_text,
+                summary=summary,
+                speakers=[],
+                start_time=start_time,
+                end_time=end_time,
+                knowledge_type=knowledge_type,
+                confidence=confidence,
+                similarity_score=similarity,
+                freshness_score=freshness,
+                authority_score=authority,
+                retrieval_score=retrieval,
+            )
+        )
+    return chunks
+
+
+async def _entity_linked_chunks(
+    entities: list[str],
+    org_id: str,
+    access_tokens: list[str] | None = None,
+    *,
+    limit: int = 20,
+) -> list[ChunkResult]:
+    """Return chunks linked via RELATES_TO, hydrated from Neo4j."""
+
+    if not entities:
+        return []
+    driver = get_neo4j_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            _ENTITY_CHUNKS_CYPHER,
+            org_id=org_id,
+            entity_terms=entities,
+            access_tokens=access_tokens or [],
+            limit=limit,
+        )
+        rows = [record.data() async for record in result]
+    chunks = _neo4j_rows_to_chunks(rows, score_boost=0.08)
+    logger.info("Neo4j entity-linked retrieval returned %d chunk(s)", len(chunks))
+    return chunks
+
+
+async def _load_chunks_by_ids(
+    chunk_ids: list[str],
+    org_id: str,
+    access_tokens: list[str] | None = None,
+) -> list[ChunkResult]:
+    """Hydrate Postgres chunk rows for entity-linked Neo4j hits."""
+
+    if not chunk_ids:
+        return []
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            _CHUNKS_BY_ID_SQL,
+            {
+                "org_id": org_id,
+                "chunk_ids": list(chunk_ids),
+                "access_tokens": access_tokens or [],
+                "entity_similarity": _ENTITY_LINK_SIMILARITY,
+            },
+        )
+        rows = result.mappings().all()
+    chunks = _rows_to_chunks(rows, score_boost=0.05)
+    logger.info("Postgres entity-linked hydration returned %d chunk(s)", len(chunks))
+    return chunks
+
+
+async def _lexical_entity_search(
+    entities: list[str],
+    org_id: str,
+    access_tokens: list[str] | None = None,
+    *,
+    limit_per_entity: int = 8,
+) -> list[ChunkResult]:
+    """Find chunks whose text mentions an entity (Postgres + Neo4j)."""
+
+    if not entities:
+        return []
+    session_factory = get_session_factory()
+    collected: list[ChunkResult] = []
+    seen: set[str] = set()
+    async with session_factory() as session:
+        for entity in entities:
+            normalized = normalize_entity_key(entity)
+            raw_lower = entity.strip().lower()
+            if len(normalized) < 3 and len(raw_lower) < 3:
+                continue
+            result = await session.execute(
+                _LEXICAL_ENTITY_SQL,
+                {
+                    "org_id": org_id,
+                    "access_tokens": access_tokens or [],
+                    "entity_similarity": _ENTITY_LINK_SIMILARITY,
+                    "normalized": normalized or raw_lower,
+                    "raw_lower": raw_lower,
+                    "limit": limit_per_entity,
+                },
+            )
+            for chunk in _rows_to_chunks(result.mappings().all(), score_boost=0.08):
+                if chunk.chunk_id in seen:
+                    continue
+                seen.add(chunk.chunk_id)
+                collected.append(chunk)
+
+    # Neo4j lexical fallback covers graph-only / drifted stores.
+    driver = get_neo4j_driver()
+    async with driver.session() as graph:
+        for entity in entities:
+            normalized = normalize_entity_key(entity)
+            raw_lower = entity.strip().lower()
+            if len(normalized) < 3 and len(raw_lower) < 3:
+                continue
+            result = await graph.run(
+                _NEO4J_LEXICAL_CHUNKS_CYPHER,
+                org_id=org_id,
+                access_tokens=access_tokens or [],
+                normalized=normalized or raw_lower,
+                raw_lower=raw_lower,
+                limit=limit_per_entity,
+            )
+            for chunk in _neo4j_rows_to_chunks(
+                [record.data() async for record in result], score_boost=0.08
+            ):
+                if chunk.chunk_id in seen:
+                    continue
+                seen.add(chunk.chunk_id)
+                collected.append(chunk)
+
+    logger.info(
+        "Lexical entity search for %s returned %d chunk(s)",
+        entities,
+        len(collected),
+    )
+    return collected
 
 
 async def _graph_chunk_scores(
@@ -422,7 +859,7 @@ async def retrieve(
     standalone search query so references ("it", "that project") resolve against
     earlier turns. Retrieval then runs two independent pipelines concurrently:
       * embed the query -> pgvector similarity search (chunks), and
-      * extract entities -> Neo4j traversal (experts).
+      * extract entities -> Neo4j traversal (experts + entity-linked chunks).
 
     Args:
         question: The natural-language question to answer.
@@ -439,18 +876,28 @@ async def retrieve(
         query_vector = await _embed_question(search_query)
         return await _vector_search(query_vector, org_id, access_tokens)
 
-    async def _expert_pipeline() -> tuple[list[str], list[ExpertResult]]:
+    async def _entity_pipeline() -> tuple[list[str], list[ExpertResult], list[ChunkResult]]:
         entities = await _extract_entities(search_query)
-        experts = await _expert_search(entities, org_id, access_tokens)
-        return entities, experts
+        # Always fold heuristic names from the raw question too ("who is Mr. Greedy").
+        entities = _merge_entity_names(entities, _heuristic_entities(question))
+        experts_task = asyncio.create_task(
+            _expert_search(entities, org_id, access_tokens)
+        )
+        linked_chunks, lexical_chunks = await asyncio.gather(
+            _entity_linked_chunks(entities, org_id, access_tokens),
+            _lexical_entity_search(entities, org_id, access_tokens),
+        )
+        experts = await experts_task
+        return entities, experts, [*linked_chunks, *lexical_chunks]
 
-    chunks, (entities, experts) = await asyncio.gather(
+    vector_chunks, (entities, experts, entity_chunks) = await asyncio.gather(
         _chunk_pipeline(),
-        _expert_pipeline(),
+        _entity_pipeline(),
     )
-    graph_scores = await _graph_chunk_scores(chunks, entities, org_id)
+    merged = [*vector_chunks, *entity_chunks]
+    graph_scores = await _graph_chunk_scores(merged, entities, org_id)
     chunks = _rerank_chunks(
-        chunks, graph_scores, get_settings().retrieval_chunk_limit
+        merged, graph_scores, get_settings().retrieval_chunk_limit
     )
 
     return RetrievalResult(chunks=chunks, experts=experts, entities_found=entities)

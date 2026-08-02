@@ -1,8 +1,8 @@
 # Loom
 
 Loom builds a searchable company knowledge base from organization directories,
-documents, conversations, connected workspace apps, and user-approved browser
-captures.
+documents, conversations, connected workspace apps, desktop activity summaries,
+and user-approved browser captures.
 
 ## Repository layout
 
@@ -10,6 +10,7 @@ captures.
 apps/
 ├── web/                 # Main React + TypeScript user interface
 ├── api/                 # Main Python API and all server-side processing
+├── desktop-agent/       # macOS Accessibility capture agent (menu bar)
 └── browser-extension/   # Chrome extension for approved work captures
 docker-compose.yml       # Complete local stack
 test_api.py              # Small manual API smoke test
@@ -19,14 +20,15 @@ There is intentionally one frontend and one backend:
 
 - `apps/web` owns everything a user sees.
 - `apps/api` owns authentication, organizations, ingestion, AI search, connected
-  apps, databases, and screenshot capture processing.
+  apps, embeddings, screenshot capture, and desktop activity session processing.
+- `apps/desktop-agent` is a macOS client that uploads on-device task summaries only.
 - `apps/browser-extension` is a client of the main API; it is not a separate
   backend.
 
 ## How data flows
 
 ```text
-React app / browser extension / connected apps
+React app / desktop agent / browser extension / connected apps
                        |
                        v
                 Loom Python API
@@ -40,9 +42,14 @@ React app / browser extension / connected apps
      jobs, text and search     relationships
 ```
 
-Browser screenshots are captured locally, shown for approval, and uploaded only
-after approval. The API saves them under its configured private capture storage
-and creates vision summaries in the background.
+The macOS desktop agent captures Accessibility interaction events from an
+explicit app allowlist, aggregates them on-device into task summaries, and
+uploads only those summaries (`POST /captures/activity-sessions`). Skill Files
+are drafted from aggregates (no pixels). See [`apps/desktop-agent/README.md`](apps/desktop-agent/README.md).
+
+Browser screenshots are still supported: captured locally, shown for approval,
+and uploaded only after approval. The API saves them under its configured
+private capture storage and creates vision summaries in the background.
 
 Manual document ingestion supports PDF, Word (`.docx`), PowerPoint (`.pptx`),
 Excel (`.xlsx`), CSV, text, Markdown, JSONL, and operational logs. Connector and
@@ -95,6 +102,16 @@ uvicorn main:app --reload
 # In a second terminal:
 python -m worker
 ```
+
+Desktop capture agent (macOS):
+
+```bash
+cd apps/desktop-agent
+swift run MindLoomAgent
+```
+
+See [`apps/desktop-agent/README.md`](apps/desktop-agent/README.md) for Accessibility
+permission, allowlist setup, and the Skill File smoke path.
 
 Tests:
 

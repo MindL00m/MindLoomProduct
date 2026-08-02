@@ -11,6 +11,7 @@ import {
   isExtensionSkill,
   listSkillFiles,
   reviewSkillFile,
+  skillSourceLabel,
   updateSkillFile,
   type SkillFile,
 } from "@/services/skillFiles";
@@ -28,6 +29,9 @@ function summarize(skill: SkillFile): string {
   if (skill.steps.length > 0) {
     return `Workflow with ${skill.steps.length} step${skill.steps.length === 1 ? "" : "s"}.`;
   }
+  if (skill.source === "desktop_ax") {
+    return "Captured desktop workflow awaiting review.";
+  }
   return "Captured browser workflow awaiting review.";
 }
 
@@ -36,6 +40,7 @@ function formatSkillDocument(skill: SkillFile): string {
     `# ${skill.title}`,
     "",
     `Status: ${skill.status}`,
+    `Source: ${skillSourceLabel(skill)}`,
     `Application: ${skill.application || "—"}`,
     `Session: ${skill.session_id}`,
     `Updated: ${new Date(skill.updated_at).toLocaleString()}`,
@@ -170,7 +175,7 @@ export default function WorkflowsView() {
         <div>
           <h2 className="text-lg font-semibold text-foreground">Workflows</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Name and review Skill Files created from the browser extension.
+            Name and review Skill Files from the desktop capture agent or browser extension.
             {proposedCount > 0
               ? ` ${proposedCount} awaiting approval.`
               : ""}
@@ -195,9 +200,9 @@ export default function WorkflowsView() {
       {skills.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border px-6 py-16 text-center">
           <Workflow className="mx-auto size-8 text-muted-foreground" />
-          <p className="mt-3 text-sm font-medium text-foreground">No extension skills yet</p>
+          <p className="mt-3 text-sm font-medium text-foreground">No workflow skills yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Approve screenshots in the Chrome extension and create a Skill File to see it here.
+            End a desktop capture session with “Create Skill File”, or create one from the Chrome extension.
           </p>
         </div>
       ) : (
@@ -212,16 +217,21 @@ export default function WorkflowsView() {
                 className="flex flex-col rounded-lg border border-border bg-card p-4 shadow-sm"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <span
-                    className={cn(
-                      "rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize",
-                      statusStyles(skill.status),
-                    )}
-                  >
-                    {skill.status}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize",
+                        statusStyles(skill.status),
+                      )}
+                    >
+                      {skill.status}
+                    </span>
+                    <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                      {skillSourceLabel(skill)}
+                    </span>
+                  </div>
                   <span className="text-[11px] text-muted-foreground">
-                    {skill.application || "Browser"}
+                    {skill.application || skillSourceLabel(skill)}
                   </span>
                 </div>
 

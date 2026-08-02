@@ -62,6 +62,66 @@ class CaptureSummary(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ActivityFieldInteraction(BaseModel):
+    """On-device field interaction metadata — never includes field values."""
+
+    role: str = ""
+    label: str = ""
+    duration_ms: int = Field(default=0, alias="durationMs", ge=0)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivityTaskStats(BaseModel):
+    event_count: int = Field(default=0, alias="eventCount", ge=0)
+    active_ms: int = Field(default=0, alias="activeMs", ge=0)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivityTaskSummary(BaseModel):
+    """Aggregated on-device task segment from the macOS Accessibility agent."""
+
+    task_id: str = Field(alias="taskId")
+    started_at: datetime = Field(alias="startedAt")
+    ended_at: datetime = Field(alias="endedAt")
+    primary_app: str = Field(default="", alias="primaryApp")
+    apps: list[str] = Field(default_factory=list)
+    step_hints: list[str] = Field(default_factory=list, alias="stepHints")
+    field_interactions: list[ActivityFieldInteraction] = Field(
+        default_factory=list, alias="fieldInteractions"
+    )
+    stats: ActivityTaskStats = Field(default_factory=ActivityTaskStats)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivitySessionCreate(BaseModel):
+    """Desktop agent upload: task summaries only (no raw events or pixels)."""
+
+    session_id: str = Field(alias="sessionId")
+    org_id: str = Field(default="default", alias="orgId")
+    user_id: str = Field(default="desktop-user", alias="userId")
+    source: Literal["desktop_ax"] = "desktop_ax"
+    started_at: datetime = Field(alias="startedAt")
+    ended_at: datetime = Field(alias="endedAt")
+    tasks: list[ActivityTaskSummary] = Field(default_factory=list)
+    note: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivitySessionRecord(ActivitySessionCreate):
+    """Persisted activity session row."""
+
+    received_at: datetime = Field(alias="receivedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+SkillSource = Literal["browser", "desktop_ax", "expert"]
+
+
 class SkillFileDraft(BaseModel):
     skill_id: str
     session_id: str
@@ -75,6 +135,7 @@ class SkillFileDraft(BaseModel):
     decision_guidance: list[str] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
     source_capture_ids: list[str] = Field(default_factory=list)
+    source: SkillSource = "browser"
     status: Literal["proposed", "approved", "rejected"] = "proposed"
     expert_notes: str = ""
     created_at: datetime

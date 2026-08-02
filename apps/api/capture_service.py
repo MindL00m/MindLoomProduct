@@ -16,6 +16,8 @@ from PIL import Image
 
 from config import get_settings
 from models import (
+    ActivitySessionCreate,
+    ActivitySessionRecord,
     CaptureCreate,
     CaptureRecord,
     CaptureSummary,
@@ -44,8 +46,23 @@ title, purpose, application, context, steps, important_fields, warnings,
 decision_guidance, follow_up_questions. Every list value must be a list of strings.
 Never invent confidential values that are blurred or absent."""
 
+ACTIVITY_WORKFLOW_PROMPT = """Analyze this ordered sequence of on-device desktop activity
+task summaries as one work workflow. The summaries were produced from macOS
+Accessibility interaction events (app focus, window/control identity, action type,
+duration). Field values and keystroke content were never captured — only that a
+field was interacted with and for how long.
 
-def _paths() -> tuple[Path, Path, Path, Path]:
+Infer the application, goal, ordered steps, important field labels (not values),
+warnings, decision guidance, and links to projects/processes/systems suggested by
+app and control names. Ask only concise follow-up questions needed to resolve
+material uncertainty. Return JSON with: title, purpose, application, context,
+steps, important_fields, warnings, decision_guidance, follow_up_questions.
+Every list value must be a list of strings.
+Never invent confidential field values, identifiers, or typed content that were
+not present in the summaries."""
+
+
+def _paths() -> tuple[Path, Path, Path, Path, Path]:
     root = Path(get_settings().capture_storage_root).resolve()
     images = root / "images"
     images.mkdir(parents=True, exist_ok=True)
@@ -54,6 +71,7 @@ def _paths() -> tuple[Path, Path, Path, Path]:
         root / "captures.jsonl",
         root / "summaries.jsonl",
         root / "skill_files.jsonl",
+        root / "activity_sessions.jsonl",
     )
 
 
@@ -80,7 +98,7 @@ def save_capture(payload: CaptureCreate) -> CaptureRecord:
     except (ValueError, TypeError) as exc:
         raise ValueError("Invalid base64 image data URL.") from exc
 
-    images, captures_path, _, _ = _paths()
+    images, captures_path, _, _, _ = _paths()
     safe_id = "".join(c for c in payload.id if c.isalnum() or c in "-_")
     if not safe_id:
         raise ValueError("Capture id contains no safe characters.")
@@ -105,13 +123,93 @@ def save_capture(payload: CaptureCreate) -> CaptureRecord:
 
 
 def list_captures() -> list[dict[str, Any]]:
-    _, path, _, _ = _paths()
+    _, path, _, _, _ = _paths()
     return _read_jsonl(path)
 
 
 def list_summaries() -> list[dict[str, Any]]:
-    _, _, path, _ = _paths()
+    _, _, path, _, _ = _paths()
     return _read_jsonl(path)
+
+
+def save_activity_session(payload: ActivitySessionCreate) -> ActivitySessionRecord:
+    """Persist on-device task summaries from the desktop Accessibility agent."""
+
+    if not payload.session_id.strip():
+        raise ValueError("sessionId is required.")
+    if not payload.tasks:
+        raise ValueError("At least one task summary is required.")
+    if payload.ended_at < payload.started_at:
+        raise ValueError("endedAt must be >= startedAt.")
+
+    record = ActivitySessionRecord(
+        session_id=payload.session_id,
+        org_id=payload.org_id,
+        user_id=payload.user_id,
+        source=payload.source,
+        started_at=payload.started_at,
+        ended_at=payload.ended_at,
+        tasks=payload.tasks,
+        note=payload.note,
+        received_at=datetime.now(timezone.utc),
+    )
+    _, _, _, _, path = _paths()
+    _append_jsonl(path, record.model_dump(mode="json", by_alias=True))
+    return record
+
+
+def list_activity_sessions() -> list[dict[str, Any]]:
+    _, _, _, _, path = _paths()
+    latest: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(path):
+        latest[str(row.get("sessionId") or row.get("session_id"))] = row
+    return sorted(
+        latest.values(),
+        key=lambda row: str(row.get("receivedAt") or row.get("received_at") or ""),
+        reverse=True,
+    )
+
+
+def _get_activity_session(session_id: str) -> ActivitySessionRecord:
+    for row in list_activity_sessions():
+        sid = str(row.get("sessionId") or row.get("session_id") or "")
+        if sid == session_id:
+            return ActivitySessionRecord.model_validate(row)
+    raise ValueError("No activity session was found for this session id.")
+
+
+def _format_activity_session_for_prompt(session: ActivitySessionRecord) -> str:
+    lines = [
+        f"Session: {session.session_id}",
+        f"Source: {session.source}",
+        f"Window: {session.started_at.isoformat()} → {session.ended_at.isoformat()}",
+        f"Note: {session.note or '(none)'}",
+        "",
+    ]
+    for index, task in enumerate(session.tasks, 1):
+        lines.extend([
+            f"## Task {index}: {task.task_id}",
+            f"Primary app: {task.primary_app}",
+            f"Apps: {', '.join(task.apps) if task.apps else task.primary_app}",
+            f"Time: {task.started_at.isoformat()} → {task.ended_at.isoformat()}",
+            f"Events: {task.stats.event_count}; active_ms: {task.stats.active_ms}",
+            "Step hints:",
+        ])
+        if task.step_hints:
+            lines.extend(f"- {hint}" for hint in task.step_hints)
+        else:
+            lines.append("- (none)")
+        lines.append("Field interactions (labels only, no values):")
+        if task.field_interactions:
+            for field in task.field_interactions:
+                lines.append(
+                    f"- role={field.role or '?'} label={field.label or '[redacted]'} "
+                    f"durationMs={field.duration_ms}"
+                )
+        else:
+            lines.append("- (none)")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _jpeg_data_url(filepath: str) -> str:
@@ -165,7 +263,7 @@ async def summarize_capture(record: CaptureRecord) -> None:
         summary = CaptureSummary.model_validate_json(
             response.choices[0].message.content or "{}"
         )
-        _, _, summaries_path, _ = _paths()
+        _, _, summaries_path, _, _ = _paths()
         _append_jsonl(summaries_path, {**record.model_dump(), **summary.model_dump()})
         logger.info("Capture summary completed: %s", record.id)
     except Exception:  # noqa: BLE001
@@ -173,7 +271,7 @@ async def summarize_capture(record: CaptureRecord) -> None:
 
 
 def list_skill_files() -> list[dict[str, Any]]:
-    _, _, _, path = _paths()
+    _, _, _, path, _ = _paths()
     latest: dict[str, dict[str, Any]] = {}
     for row in _read_jsonl(path):
         latest[str(row["skill_id"])] = row
@@ -232,12 +330,62 @@ async def analyze_capture_session(session_id: str) -> SkillFileDraft:
         decision_guidance=[str(item) for item in payload.get("decision_guidance") or []],
         follow_up_questions=[str(item) for item in payload.get("follow_up_questions") or []],
         source_capture_ids=[item.id for item in captures],
+        source="browser",
         created_at=now,
         updated_at=now,
         org_id=captures[0].org_id,
         created_by=captures[0].user_id,
     )
-    _, _, _, path = _paths()
+    _, _, _, path, _ = _paths()
+    _append_jsonl(path, draft.model_dump(mode="json"))
+    return draft
+
+
+async def analyze_activity_session(session_id: str) -> SkillFileDraft:
+    """Draft a Skill File from desktop activity task summaries (text-only, no vision)."""
+
+    session = _get_activity_session(session_id)
+    settings = get_settings()
+    client = AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        timeout=settings.openai_request_timeout_seconds,
+    )
+    response = await client.chat.completions.create(
+        model=settings.capture_vision_model,
+        messages=[
+            {"role": "system", "content": ACTIVITY_WORKFLOW_PROMPT},
+            {"role": "user", "content": _format_activity_session_for_prompt(session)},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=1200,
+    )
+    payload = json.loads(response.choices[0].message.content or "{}")
+    now = datetime.now(timezone.utc)
+    primary_apps = [task.primary_app for task in session.tasks if task.primary_app]
+    draft = SkillFileDraft(
+        skill_id=str(uuid4()),
+        session_id=session_id,
+        title=str(payload.get("title") or "Captured desktop workflow"),
+        purpose=str(payload.get("purpose") or ""),
+        application=str(
+            payload.get("application")
+            or (primary_apps[0] if primary_apps else "Desktop")
+        ),
+        context=[str(item) for item in payload.get("context") or []],
+        steps=[str(item) for item in payload.get("steps") or []],
+        important_fields=[str(item) for item in payload.get("important_fields") or []],
+        warnings=[str(item) for item in payload.get("warnings") or []],
+        decision_guidance=[str(item) for item in payload.get("decision_guidance") or []],
+        follow_up_questions=[str(item) for item in payload.get("follow_up_questions") or []],
+        source_capture_ids=[task.task_id for task in session.tasks],
+        source="desktop_ax",
+        created_at=now,
+        updated_at=now,
+        org_id=session.org_id,
+        created_by=session.user_id,
+    )
+    _, _, _, path, _ = _paths()
     _append_jsonl(path, draft.model_dump(mode="json"))
     return draft
 
@@ -291,12 +439,13 @@ async def create_skill_file_from_expert_answer(
         decision_guidance=[str(item) for item in payload.get("decision_guidance") or []],
         follow_up_questions=[str(item) for item in payload.get("follow_up_questions") or []],
         source_capture_ids=[],
+        source="expert",
         created_at=now,
         updated_at=now,
         org_id=org_id,
         created_by=expert_user_id,
     )
-    _, _, _, path = _paths()
+    _, _, _, path, _ = _paths()
     _append_jsonl(path, draft.model_dump(mode="json"))
     return draft
 
@@ -319,7 +468,7 @@ async def update_skill_file(skill_id: str, update: SkillFileUpdate) -> SkillFile
         updates["title"] = title
     updates["updated_at"] = datetime.now(timezone.utc)
     updated = current.model_copy(update=updates)
-    _, _, _, path = _paths()
+    _, _, _, path, _ = _paths()
     _append_jsonl(path, updated.model_dump(mode="json"))
     return updated
 
@@ -335,7 +484,7 @@ async def review_skill_file(skill_id: str, review: SkillFileReview) -> SkillFile
     updates = review.model_dump(exclude_none=True)
     updates["updated_at"] = datetime.now(timezone.utc)
     updated = current.model_copy(update=updates)
-    _, _, _, path = _paths()
+    _, _, _, path, _ = _paths()
     _append_jsonl(path, updated.model_dump(mode="json"))
     if updated.status == "approved":
         text = "\n".join([

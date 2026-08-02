@@ -1,18 +1,29 @@
-"""Browser capture HTTP routes."""
+"""Browser and desktop activity capture HTTP routes."""
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from capture_service import (
+    analyze_activity_session,
     analyze_capture_session,
+    list_activity_sessions,
     list_captures,
     list_skill_files,
     list_summaries,
     review_skill_file,
+    save_activity_session,
     save_capture,
     summarize_capture,
     update_skill_file,
 )
-from models import CaptureCreate, CaptureRecord, SkillFileDraft, SkillFileReview, SkillFileUpdate
+from models import (
+    ActivitySessionCreate,
+    ActivitySessionRecord,
+    CaptureCreate,
+    CaptureRecord,
+    SkillFileDraft,
+    SkillFileReview,
+    SkillFileUpdate,
+)
 
 router = APIRouter(prefix="/captures", tags=["browser captures"])
 
@@ -40,6 +51,31 @@ async def get_captures() -> list[dict[str, object]]:
 @router.get("/summaries")
 async def get_capture_summaries() -> list[dict[str, object]]:
     return list_summaries()
+
+
+@router.post("/activity-sessions", response_model=ActivitySessionRecord, status_code=201)
+async def create_activity_session(session: ActivitySessionCreate) -> ActivitySessionRecord:
+    """Persist on-device desktop activity task summaries (no raw events or pixels)."""
+
+    try:
+        return save_activity_session(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/activity-sessions")
+async def get_activity_sessions() -> list[dict[str, object]]:
+    return list_activity_sessions()
+
+
+@router.post("/activity-sessions/{session_id}/analyze", response_model=SkillFileDraft)
+async def analyze_activity(session_id: str) -> SkillFileDraft:
+    """Draft a Skill File from desktop activity aggregates (text-only)."""
+
+    try:
+        return await analyze_activity_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/sessions/{session_id}/analyze", response_model=SkillFileDraft)

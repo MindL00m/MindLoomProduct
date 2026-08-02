@@ -1,5 +1,7 @@
 import { apiFetch } from "@/lib/api";
 
+export type SkillSource = "browser" | "desktop_ax" | "expert";
+
 export interface SkillFile {
   skill_id: string;
   session_id: string;
@@ -13,14 +15,23 @@ export interface SkillFile {
   decision_guidance: string[];
   follow_up_questions: string[];
   source_capture_ids: string[];
+  source?: SkillSource;
   status: "proposed" | "approved" | "rejected";
   expert_notes: string;
   updated_at: string;
   created_at?: string;
 }
 
+/** Workflow skills from browser extension or desktop AX agent (excludes expert Q&A). */
 export function isExtensionSkill(skill: SkillFile): boolean {
+  if (skill.source === "expert") return false;
   return !skill.session_id.startsWith("expert-request:");
+}
+
+export function skillSourceLabel(skill: SkillFile): string {
+  if (skill.source === "desktop_ax") return "Desktop";
+  if (skill.source === "expert") return "Expert";
+  return "Browser";
 }
 
 export async function listSkillFiles(): Promise<SkillFile[]> {

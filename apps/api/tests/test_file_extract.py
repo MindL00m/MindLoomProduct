@@ -8,7 +8,7 @@ from zipfile import ZipFile
 
 import fitz  # PyMuPDF
 
-from file_extract import extract_file_text
+from brain.file_extract import extract_file_text
 
 
 def _simple_pdf(text: str) -> bytes:

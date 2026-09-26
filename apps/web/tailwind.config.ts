@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Loom palette.
+ * MindLoom palette.
  *   brand (rust)    #b85c2c
  *   cream           #f2e6cf
  *

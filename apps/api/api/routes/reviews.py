@@ -6,8 +6,8 @@ from typing import Literal
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from integrations import require_admin_context, require_user_context
-from review_workflows import (
+from weaver.integrations import require_admin_context, require_user_context
+from keeper.review_workflows import (
     answer_expert_request,
     create_review,
     expert_notification_count,
@@ -176,7 +176,7 @@ async def answer_request_media(
         if not data:
             raise HTTPException(status_code=400, detail="Attached response is empty.")
         from openai import AsyncOpenAI
-        from config import get_settings
+        from core.config import get_settings
 
         settings = get_settings()
         client = AsyncOpenAI(

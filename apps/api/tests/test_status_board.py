@@ -2,15 +2,15 @@
 
 import pytest
 
-from models import (
+from core.models import (
     ActionItemUpdate,
     ChunkMetadata,
     IssueUpdate,
     ProjectUpdate,
     TypedEntity,
 )
-from status_board import _evidence_list, mark_status_item_finished
-from storage import (
+from lens.status_board import _evidence_list, mark_status_item_finished
+from brain.storage import (
     _canonical_key,
     _coerce_action_updates,
     _coerce_issue_updates,
@@ -104,8 +104,8 @@ def test_evidence_list_includes_excerpt_fields() -> None:
 def test_merge_project_updates_prefers_newer_status() -> None:
     from datetime import datetime, timezone
 
-    from status_board import derive_current_status, merge_project_updates
-    from models import StatusEvidence
+    from lens.status_board import derive_current_status, merge_project_updates
+    from core.models import StatusEvidence
 
     older = StatusEvidence(
         chunk_id="c-old",
@@ -130,7 +130,7 @@ def test_merge_project_updates_prefers_newer_status() -> None:
 
 
 def test_derive_current_status_empty() -> None:
-    from status_board import derive_current_status
+    from lens.status_board import derive_current_status
 
     assert "No recent updates" in derive_current_status([])
 

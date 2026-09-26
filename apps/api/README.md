@@ -1,24 +1,33 @@
-# Loom API
+# MindLoom API
 
-This is Loom's only backend. It owns the HTTP API, organization isolation,
+This is MindLoom's only backend. It owns the HTTP API, organization isolation,
 document and conversation ingestion, retrieval and AI answers, PostgreSQL,
 Neo4j, Google and Microsoft integrations, and approved browser captures.
 
-The source is grouped by responsibility through clearly named modules:
+The source is grouped by agent, matching how the product is described:
 
-- `main.py` — HTTP routes and application startup
-- `pipeline.py`, parsers, chunkers, and extractors — ingestion
-- `retrieval.py` and `answerer.py` — question answering
-- `auth.py` and `integrations.py` — identity and connections
-- `storage.py`, `database.py`, and `db/` — persistence
-- `capture_service.py` — screenshot persistence and vision summaries
-- `connection_setup.py` — controlled workspace discovery, policies, previews,
-  initial imports, watches, and periodic safety checks
-- `tests/` — automated backend tests
+```text
+main.py      HTTP app, startup and the remaining top-level routes
+worker.py    Durable Redis ingestion worker (python -m worker)
+api/routes/  HTTP routers for captures, reviews, status, workspaces, ...
+core/        Shared infrastructure: config, databases, models, jobs, HTTP helpers
+brain/       The MindLoom Brain: ingestion pipeline, parsers, chunkers, file text,
+             extraction, embeddings, storage and retrieval
+loombot/     Loombot: Ask agent, cited answers, workspaces and CONTEXT.md
+weaver/      Weaver (Capture): Google, Microsoft, Zoom, WhatsApp connectors,
+             connection setup, sync reporting and MindLoom Capture
+keeper/      Keeper (Keep true): tenancy and access, review queues,
+             expert answers, conflicts and expiry schedules
+lens/        Lens (Understand): status board and analysis
+shuttle/     Shuttle (Act): notification delivery and GitHub pull requests
+tests/       Automated backend tests
+db/          PostgreSQL schema, migrations and Neo4j constraints
+```
 
-`main.py` remains the composition point so existing imports and deployment
-commands stay stable. New feature areas should use a dedicated module instead
-of adding their business logic directly to `main.py`.
+`main.py` and `worker.py` stay at the top level so deployment commands
+(`uvicorn main:app`, `python -m worker`) are unchanged. New feature areas go in
+the package of the agent they belong to rather than in `main.py`. Import
+modules by package, for example `from brain.retrieval import retrieve`.
 
 Long imports are queued in Redis, tracked in PostgreSQL, and processed by
 `python -m worker`. Run the API and worker together; Docker Compose does this

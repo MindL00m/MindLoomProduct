@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from blob_storage import LocalBlobStorage
-from documents import (
+from core.blob_storage import LocalBlobStorage
+from brain.documents import (
     InMemoryDocumentRepository,
     compute_content_hash,
     get_citation,
     link_chunk_to_document,
     store_document,
 )
-from models import DerivedFrom
+from core.models import DerivedFrom
 
 ORG_A = "org-a"
 ORG_B = "org-b"
@@ -80,7 +80,7 @@ async def test_citation_scoped_to_org(tmp_path: Path) -> None:
     ok = await get_citation("chunk-1", org_id=ORG_A, repository=repo)
     assert ok.document_id == stored.document.document_id
 
-    from documents import CitationNotFoundError
+    from brain.documents import CitationNotFoundError
 
     with pytest.raises(CitationNotFoundError):
         await get_citation("chunk-1", org_id=ORG_B, repository=repo)

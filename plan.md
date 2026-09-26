@@ -1,16 +1,16 @@
-# Plan: OpenClaw × Loom Workflows
+# Plan: OpenClaw × MindLoom Workflows
 
-Today Loom Skill Files are **approved knowledge** (JSONL → Neo4j). They are not executable. OpenClaw is a **local agent gateway** with a first-class **browser tool** (CDP) and skills as `SKILL.md` folders. The integration is a bridge: **export approved workflows into OpenClaw skills, then run them with the browser tool using the existing `OPENAI_API_KEY`.**
+Today MindLoom Skill Files are **approved knowledge** (JSONL → Neo4j). They are not executable. OpenClaw is a **local agent gateway** with a first-class **browser tool** (CDP) and skills as `SKILL.md` folders. The integration is a bridge: **export approved workflows into OpenClaw skills, then run them with the browser tool using the existing `OPENAI_API_KEY`.**
 
 ## Goal
 
-From Workflows: pick an approved skill → agent follows its steps in a real browser (click/type/navigate) → surface run status back in Loom.
+From Workflows: pick an approved skill → agent follows its steps in a real browser (click/type/navigate) → surface run status back in MindLoom.
 
 ## Recommended architecture
 
 ```mermaid
 flowchart LR
-  Ext[Chrome extension] --> API[Loom API]
+  Ext[Chrome extension] --> API[MindLoom API]
   API --> JSONL[skill_files.jsonl]
   UI[Workflows tab] --> API
   API -->|on approve / sync| Export[SKILL.md exporter]
@@ -22,14 +22,14 @@ flowchart LR
   OC --> RunAPI
 ```
 
-**OpenClaw owns browser execution.** Loom owns capture, approval, naming, and run orchestration/UI. Do not reimplement CDP inside FastAPI.
+**OpenClaw owns browser execution.** MindLoom owns capture, approval, naming, and run orchestration/UI. Do not reimplement CDP inside FastAPI.
 
-## Phase 0 — Local OpenClaw baseline (no Loom changes)
+## Phase 0 — Local OpenClaw baseline (no MindLoom changes)
 
 1. Install OpenClaw on the **host** (not inside the API container): needs Chrome/CDP access.
-2. Auth with the same key Loom already uses:
+2. Auth with the same key MindLoom already uses:
    - Point OpenClaw at `OPENAI_API_KEY` from `apps/api/.env` (env export or OpenClaw API-key auth profile).
-   - Set model to something like `openai/gpt-4o` / `openai/gpt-5.5` depending on account access — keep Loom’s `gpt-4o-mini` for capture/vision; use a stronger model for browser agent turns.
+   - Set model to something like `openai/gpt-4o` / `openai/gpt-5.5` depending on account access — keep MindLoom’s `gpt-4o-mini` for capture/vision; use a stronger model for browser agent turns.
 3. Enable browser:
    - **Attached** (preferred for company apps): control the user’s logged-in Chrome (SSO, cookies).
    - **Managed**: clean OpenClaw Chrome — better isolation, worse for “log into Salesforce as me.”
@@ -39,9 +39,9 @@ flowchart LR
 
 ## Phase 1 — Skill format bridge (core product glue)
 
-OpenClaw skills are directories with YAML frontmatter + markdown body ([AgentSkills / `SKILL.md`](https://docs.openclaw.ai/tools/skills)). Loom fields map cleanly:
+OpenClaw skills are directories with YAML frontmatter + markdown body ([AgentSkills / `SKILL.md`](https://docs.openclaw.ai/tools/skills)). MindLoom fields map cleanly:
 
-| Loom `SkillFileDraft` | OpenClaw `SKILL.md` |
+| MindLoom `SkillFileDraft` | OpenClaw `SKILL.md` |
 |---|---|
 | `title` → slug `name` | frontmatter `name` |
 | `purpose` | frontmatter `description` |
@@ -52,10 +52,10 @@ OpenClaw skills are directories with YAML frontmatter + markdown body ([AgentSki
 
 - On **approve** (and on rename of approved skills), write/update:
   `~/.openclaw/skills/loom-<skill_id>/SKILL.md`
-  or a Loom-owned dir mounted via `skills.load.extraDirs`.
+  or a MindLoom-owned dir mounted via `skills.load.extraDirs`.
 - Only sync `status === "approved"` extension skills (same filter as Workflows).
 - Reject/delete → remove or disable that skill dir.
-- Keep Loom JSONL as source of truth; OpenClaw files are derived artifacts.
+- Keep MindLoom JSONL as source of truth; OpenClaw files are derived artifacts.
 
 Optional: also keep Neo4j ingest as today so Ask can *describe* workflows while OpenClaw *runs* them.
 
@@ -70,7 +70,7 @@ Optional: also keep Neo4j ingest as today so Ask can *describe* workflows while 
 
 **UI:** On each approved Workflows card: **Run**, status chip, link to last run log.
 
-**Hard constraint:** Gateway must reach a browser on a machine with the right session. Typical local setup: OpenClaw Gateway on host + Loom API in Docker talking to `host.docker.internal:<gateway-port>`.
+**Hard constraint:** Gateway must reach a browser on a machine with the right session. Typical local setup: OpenClaw Gateway on host + MindLoom API in Docker talking to `host.docker.internal:<gateway-port>`.
 
 ## Phase 3 — Safety & product polish
 
@@ -78,15 +78,15 @@ Optional: also keep Neo4j ingest as today so Ask can *describe* workflows while 
 - Per-org allowlist of domains / applications from `skill.application`.
 - Human-in-the-loop when skill has `warnings` or empty critical fields.
 - Run transcript + screenshots stored like captures for audit.
-- Don’t put `OPENAI_API_KEY` in the browser or extension; only Loom API ↔ OpenClaw host env.
+- Don’t put `OPENAI_API_KEY` in the browser or extension; only MindLoom API ↔ OpenClaw host env.
 
 ## Env / config (minimal)
 
 | Where | What |
 |---|---|
-| `apps/api/.env` (existing) | `OPENAI_API_KEY` — Loom capture/Ask unchanged |
+| `apps/api/.env` (existing) | `OPENAI_API_KEY` — MindLoom capture/Ask unchanged |
 | Host OpenClaw | Same key for agent turns; `browser.enabled`; skill `extraDirs` or sync path |
-| New Loom settings | `OPENCLAW_GATEWAY_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_SKILLS_DIR`, optional `OPENCLAW_BROWSER_PROFILE=user\|openclaw` |
+| New MindLoom settings | `OPENCLAW_GATEWAY_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_SKILLS_DIR`, optional `OPENCLAW_BROWSER_PROFILE=user\|openclaw` |
 
 Share the key via host env when starting both, or a small wrapper that sources `.env` — avoid duplicating secrets in git.
 
@@ -99,17 +99,17 @@ Share the key via host env when starting both, or a small wrapper that sources `
 
 ## Delivery order
 
-1. **Spike (½–1 day):** OpenClaw + OpenAI key + attached browser; hand-write one `SKILL.md` from an approved Loom skill; run it manually.
+1. **Spike (½–1 day):** OpenClaw + OpenAI key + attached browser; hand-write one `SKILL.md` from an approved MindLoom skill; run it manually.
 2. **Exporter:** approve → write `SKILL.md`; verify OpenClaw lists it.
-3. **Run bridge:** Loom `POST …/runs` → Gateway turn → poll status.
+3. **Run bridge:** MindLoom `POST …/runs` → Gateway turn → poll status.
 4. **Workflows “Run” button** + run history.
 5. Confirmations / domain guards.
 
-## Current Loom context (relevant)
+## Current MindLoom context (relevant)
 
 - Extension captures → `POST /captures` → session analyze → proposed Skill File in `skill_files.jsonl`.
 - Workflows tab reviews extension skills; Expert Messages reviews `expert-request:*` skills.
-- Approve → Neo4j ingest via `provider="skill_file"`. Skills are knowledge artifacts today; there is no browser automation runtime in Loom.
+- Approve → Neo4j ingest via `provider="skill_file"`. Skills are knowledge artifacts today; there is no browser automation runtime in MindLoom.
 - OpenAI usage already centralized on `OPENAI_API_KEY` in `apps/api/.env` (`Settings.openai_api_key`).
 
 ## Open questions before build

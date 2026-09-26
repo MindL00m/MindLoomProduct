@@ -1,9 +1,9 @@
-# Loom Web
+# MindLoom Web
 
-Main Loom web application. It includes organization onboarding, the dashboard,
+Main MindLoom web application. It includes organization onboarding, the dashboard,
 AI question answering, uploads, organization and knowledge graphs, and connected
 apps. Some onboarding operations retain development-mode fallbacks, while the
-main application calls the Loom API in `apps/api`.
+main application calls the MindLoom API in `apps/api`.
 
 ## Stack
 

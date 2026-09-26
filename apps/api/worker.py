@@ -8,11 +8,11 @@ import logging
 
 from redis.asyncio import Redis
 
-from config import get_settings
-from database import close_pools
-from durable_jobs import PROCESSING_QUEUE_NAME, QUEUE_NAME, execute
-from schema import ensure_schema
-from connection_setup import run_periodic_connection_checks
+from core.config import get_settings
+from core.database import close_pools
+from core.durable_jobs import PROCESSING_QUEUE_NAME, QUEUE_NAME, execute
+from core.schema import ensure_schema
+from weaver.connection_setup import run_periodic_connection_checks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

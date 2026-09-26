@@ -95,7 +95,7 @@ export default function AppsView({
   useEffect(() => {
     if (setupProvider) {
       setWizardProvider(setupProvider);
-      setBanner("Authorization complete. Choose the company content Loom may connect.");
+      setBanner("Authorization complete. Choose the company content MindLoom may connect.");
       onOAuthHandled?.();
     } else if (oauthStatus === "connected") {
       setBanner("Workspace authorization completed successfully.");
@@ -148,7 +148,7 @@ export default function AppsView({
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Connected workspaces</h2>
         <p className="mt-1 text-muted-foreground">
-          Choose approved company locations once. Loom imports their knowledge and keeps it current.
+          Choose approved company locations once. MindLoom imports their knowledge and keeps it current.
         </p>
       </div>
 
@@ -161,7 +161,7 @@ export default function AppsView({
           onCancel={() => setWizardProvider(null)}
           onComplete={(jobId) => {
             setWizardProvider(null);
-            setBanner(`Initial import started${jobId ? ` (${jobId})` : ""}. Loom will keep this connection updated.`);
+            setBanner(`Initial import started${jobId ? ` (${jobId})` : ""}. MindLoom will keep this connection updated.`);
             void loadIntegrations();
           }}
         />
@@ -231,7 +231,7 @@ export default function AppsView({
           <div>
             <CardTitle className="text-lg">Manual uploads</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
-              Add files that are not stored in a connected workspace. Uploaded files use the same Loom ingestion pipeline.
+              Add files that are not stored in a connected workspace. Uploaded files use the same MindLoom ingestion pipeline.
             </p>
           </div>
         </CardHeader>

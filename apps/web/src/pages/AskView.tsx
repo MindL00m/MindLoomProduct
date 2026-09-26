@@ -451,7 +451,7 @@ function EmptyState({ onExample }: { onExample: (q: string) => void }) {
         <Sparkles className="size-6" />
       </span>
       <h2 className="mt-4 text-2xl font-semibold tracking-tight">
-        Ask Loom
+        Ask MindLoom
       </h2>
       <p className="mt-1 max-w-md text-muted-foreground">
         Questions are answered strictly from your ingested knowledge, with a
@@ -874,7 +874,7 @@ function ProposedWorkspaceCard({
             {unmatched.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 {unmatched.length} person(s) mentioned in CONTEXT.md but not
-                signed into Loom.
+                signed into MindLoom.
               </p>
             )}
           </div>

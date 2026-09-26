@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import ask_agent
-import review_workflows
-from models import ProposedExpertMessage
+from loombot import ask_agent
+from keeper import review_workflows
+from core.models import ProposedExpertMessage
 
 
 def test_wants_messaging_detects_notify_intent() -> None:
@@ -90,8 +90,7 @@ async def test_lookup_messageable_people_ranks_email_exact(monkeypatch):
 
     monkeypatch.setattr(review_workflows, "get_session_factory", FakeFactory)
 
-    import database
-
+    from core import database
     monkeypatch.setattr(
         database,
         "get_neo4j_driver",
@@ -254,7 +253,7 @@ async def test_send_expert_message_enqueues_ingest(monkeypatch):
         return "job-1"
 
     monkeypatch.setattr(review_workflows, "get_session_factory", FakeFactory)
-    monkeypatch.setattr("durable_jobs.enqueue", fake_enqueue)
+    monkeypatch.setattr("core.durable_jobs.enqueue", fake_enqueue)
 
     result = await review_workflows.send_expert_message(
         org_id="org-1",

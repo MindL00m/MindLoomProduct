@@ -2,16 +2,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-import answerer
-from answerer import _build_context, generate_answer
-from models import (
+from loombot import answerer
+from loombot.answerer import _build_context, generate_answer
+from core.models import (
     ChunkResult,
     Citation,
     RetrievalResult,
     TypedEntity,
     ChunkMetadata,
 )
-from retrieval import _rerank_chunks
+from brain.retrieval import _rerank_chunks
 
 
 def _chunk(chunk_id: str, score: float, *, graph: float = 0.0) -> ChunkResult:

@@ -1,16 +1,28 @@
-# Loom
+# MindLoom
 
-Loom builds a searchable company knowledge base from organization directories,
+MindLoom is an AI organisation brain that learns how your company really works,
+and puts it to work privately. It learns from organization directories,
 documents, conversations, connected workspace apps, and user-approved browser
-captures.
+captures, then answers questions, routes work to experts, and reports status.
+
+People reach the brain through **Loombot**. Four agents keep it running:
+
+| Agent | Job | Backend package |
+|---|---|---|
+| Weaver | Capture: connectors and MindLoom Capture | `apps/api/weaver/` |
+| Keeper | Keep true: access, reviews, expert answers, expiry | `apps/api/keeper/` |
+| Lens | Understand: status board and analysis | `apps/api/lens/` |
+| Shuttle | Act: notifications, pull requests, workflow runs | `apps/api/shuttle/` |
+
+All four read from and write to the MindLoom Brain (`apps/api/brain/`).
 
 ## Repository layout
 
 ```text
 apps/
 ├── web/                 # Main React + TypeScript user interface
-├── api/                 # Main Python API and all server-side processing
-└── browser-extension/   # Chrome extension for approved work captures
+├── api/                 # Main Python API, grouped by agent (see apps/api/README.md)
+└── browser-extension/   # MindLoom Capture: Chrome extension for approved work captures
 docker-compose.yml       # Complete local stack
 test_api.py              # Small manual API smoke test
 ```
@@ -29,7 +41,7 @@ There is intentionally one frontend and one backend:
 React app / browser extension / connected apps
                        |
                        v
-                Loom Python API
+                MindLoom Python API
                        |
                     Redis queue
                        |
@@ -105,6 +117,6 @@ pytest
 
 ## Naming and generated data
 
-The product and all user-facing text use the name **Loom**. Runtime screenshots,
+The product and all user-facing text use the name **MindLoom**. Runtime screenshots,
 summaries, uploaded blobs, build output, credentials, and local dependencies are
 ignored by Git. Only anonymized fixtures should be committed.

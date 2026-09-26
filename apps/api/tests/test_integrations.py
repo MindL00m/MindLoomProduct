@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from integrations import _pop_oauth_state, _store_oauth_state, _oauth_states
+from weaver.integrations import _pop_oauth_state, _store_oauth_state, _oauth_states
 
 
 def test_oauth_state_round_trip():

@@ -2,7 +2,7 @@
 
 import pytest
 
-from whatsapp import decode_export, parse_timezone, preview_export
+from weaver.whatsapp import decode_export, parse_timezone, preview_export
 
 
 EXPORT = """\

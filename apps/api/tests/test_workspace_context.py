@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-import ask_agent
-import workspace_context
-import workspaces
-from models import ExpertResult, ProposedWorkspace, RetrievalResult
+from loombot import ask_agent
+from loombot import workspace_context
+from loombot import workspaces
+from core.models import ExpertResult, ProposedWorkspace, RetrievalResult
 
 
 def test_wants_workspace_detects_create_intent() -> None:
@@ -132,7 +132,7 @@ async def test_loombot_context_only_skips_retrieve(monkeypatch) -> None:
         assert "timeline" in question.lower() or True
         return "From CONTEXT.md: launch is Q3."
 
-    monkeypatch.setattr("retrieval.retrieve", fake_retrieve)
+    monkeypatch.setattr("brain.retrieval.retrieve", fake_retrieve)
     monkeypatch.setattr(workspaces, "_loombot_reply_from_context", fake_context_answer)
 
     answer = await workspaces._loombot_reply(
@@ -196,8 +196,8 @@ async def test_propose_workspace_draft_builds_context(monkeypatch) -> None:
     async def fake_generate(**kwargs):
         return "# Purpose\n\nProject X workspace context\n"
 
-    monkeypatch.setattr("auth.get_user_access_tokens", fake_tokens)
-    monkeypatch.setattr("retrieval.retrieve", fake_retrieve)
+    monkeypatch.setattr("keeper.auth.get_user_access_tokens", fake_tokens)
+    monkeypatch.setattr("brain.retrieval.retrieve", fake_retrieve)
     monkeypatch.setattr(workspace_context, "resolve_members_from_experts", fake_resolve)
     monkeypatch.setattr(workspace_context, "resolve_members_from_queries", fake_queries)
     monkeypatch.setattr(workspace_context, "generate_workspace_context", fake_generate)

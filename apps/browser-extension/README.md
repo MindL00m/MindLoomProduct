@@ -1,7 +1,7 @@
-# Loom Capture
+# MindLoom Capture
 
 Chrome Manifest V3 extension that tracks the active browser tab and optionally
-captures visible-tab screenshots. Approved screenshots are sent to Loom's main
+captures visible-tab screenshots. Approved screenshots are sent to MindLoom's main
 API at `http://localhost:8000`; there is no separate capture backend.
 
 ## Load unpacked in Chrome
@@ -16,7 +16,7 @@ API at `http://localhost:8000`; there is no separate capture backend.
 
 ### Popup
 
-1. Click the **Loom Capture** toolbar icon.
+1. Click the **MindLoom Capture** toolbar icon.
 2. Confirm the popup shows the **Tab ID**, **Title**, and **URL** of your current tab.
 3. Switch to another tab and reopen the popup — values should update.
 4. Toggle **Capture** ON/OFF. State is saved in `chrome.storage.local` and persists across popup closes.
@@ -46,11 +46,11 @@ With **Capture ON**, the background service worker:
 
 ### Background service worker console
 
-1. On `chrome://extensions`, find **Loom Capture** and click **Service worker** (under "Inspect views").
+1. On `chrome://extensions`, find **MindLoom Capture** and click **Service worker** (under "Inspect views").
 2. In the DevTools console, switch between tabs in Chrome.
-   - You should see: `[Loom Capture] Active tab changed: { tabId, url, title }`
+   - You should see: `[MindLoom Capture] Active tab changed: { tabId, url, title }`
 3. Stay on one tab and navigate to a different URL (e.g. click a link or change the address bar).
-   - You should see: `[Loom Capture] Active tab URL changed: { tabId, url, title }`
+   - You should see: `[MindLoom Capture] Active tab URL changed: { tabId, url, title }`
 
 ## Files
 

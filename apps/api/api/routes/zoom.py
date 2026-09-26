@@ -7,13 +7,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 
-from auth import UserRow
-from config import get_settings
-from database import get_session_factory
-from durable_jobs import enqueue
-from integrations import AppConnectionRow, list_integrations, require_admin_context
-from models import IntegrationsListResponse, OAuthAuthorizeResponse
-from zoom_workspace import (
+from keeper.auth import UserRow
+from core.config import get_settings
+from core.database import get_session_factory
+from core.durable_jobs import enqueue
+from weaver.integrations import AppConnectionRow, list_integrations, require_admin_context
+from core.models import IntegrationsListResponse, OAuthAuthorizeResponse
+from weaver.zoom_workspace import (
     PROVIDER_ZOOM,
     connect_zoom_dev,
     handle_zoom_callback,

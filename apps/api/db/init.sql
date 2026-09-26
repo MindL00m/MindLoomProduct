@@ -1,4 +1,4 @@
--- Loom — PostgreSQL schema.
+-- MindLoom — PostgreSQL schema.
 -- Run against the target database before starting the service.
 
 CREATE EXTENSION IF NOT EXISTS vector;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from workspaces import extract_loombot_question
+from loombot.workspaces import extract_loombot_question
 
 
 def test_extract_loombot_question_detects_mention() -> None:

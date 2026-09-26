@@ -14,16 +14,16 @@ from pathlib import Path
 
 import pytest
 
-import pipeline
-from blob_storage import LocalBlobStorage
-from documents import (
+from brain import pipeline
+from core.blob_storage import LocalBlobStorage
+from brain.documents import (
     InMemoryDocumentRepository,
     compute_chunk_locators,
     compute_content_hash,
     get_citation,
 )
-from models import ChunkMetadata, Conversation, IncomingMessage, Participant
-from pipeline import DocumentInput, run_ingestion
+from core.models import ChunkMetadata, Conversation, IncomingMessage, Participant
+from brain.pipeline import DocumentInput, run_ingestion
 
 ORG_ID = "org-test"
 
@@ -223,9 +223,9 @@ async def test_attach_citations_enriches_answer_sources(tmp_path: Path):
 
     from datetime import datetime as _dt
 
-    from answerer import _attach_citations
-    from documents import link_chunk_to_document, store_document
-    from models import ChunkResult, DerivedFrom
+    from loombot.answerer import _attach_citations
+    from brain.documents import link_chunk_to_document, store_document
+    from core.models import ChunkResult, DerivedFrom
 
     repo = InMemoryDocumentRepository()
     storage = LocalBlobStorage(tmp_path)

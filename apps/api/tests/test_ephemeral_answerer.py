@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from answerer import _build_context, _ephemeral_sources, generate_answer
-from models import EphemeralDocument, RetrievalResult
+from loombot.answerer import _build_context, _ephemeral_sources, generate_answer
+from core.models import EphemeralDocument, RetrievalResult
 
 
 def test_build_context_includes_ephemeral_blocks():

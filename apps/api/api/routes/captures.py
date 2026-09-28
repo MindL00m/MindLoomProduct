@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from capture_service import (
+from weaver.capture_service import (
     analyze_capture_session,
     list_captures,
     list_skill_files,
@@ -12,7 +12,7 @@ from capture_service import (
     summarize_capture,
     update_skill_file,
 )
-from models import CaptureCreate, CaptureRecord, SkillFileDraft, SkillFileReview, SkillFileUpdate
+from core.models import CaptureCreate, CaptureRecord, SkillFileDraft, SkillFileReview, SkillFileUpdate
 
 router = APIRouter(prefix="/captures", tags=["browser captures"])
 

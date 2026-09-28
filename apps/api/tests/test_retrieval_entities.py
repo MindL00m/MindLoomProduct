@@ -1,6 +1,6 @@
 """Unit tests for entity-aware retrieval helpers."""
 
-from retrieval import (
+from brain.retrieval import (
     _heuristic_entities,
     _merge_entity_names,
     normalize_entity_key,

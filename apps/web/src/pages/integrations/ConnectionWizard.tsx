@@ -209,7 +209,7 @@ export function ConnectionWizard({
             <h3 className="font-medium">Who can search this information?</h3>
             {[
               ["respect_source_permissions", "Respect source permissions", "Recommended — users only see content they can access at the source."],
-              ["organization", "Everyone in the organization", "All Loom users in this organization can search it."],
+              ["organization", "Everyone in the organization", "All MindLoom users in this organization can search it."],
               ["selected", "Selected people or departments", "Restrict search to an explicit audience."],
             ].map(([value, title, description]) => (
               <label key={value} className="flex gap-3 rounded-md border border-border p-3">

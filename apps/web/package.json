@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Loom web application.",
+  "description": "MindLoom web application.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

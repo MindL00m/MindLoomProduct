@@ -1,4 +1,4 @@
-# Build the Loom React application, then serve only its production output.
+# Build the MindLoom React application, then serve only its production output.
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./

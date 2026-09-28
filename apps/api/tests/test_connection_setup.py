@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from connection_setup import _dev_resources, visibility_for_policy
+from weaver.connection_setup import _dev_resources, visibility_for_policy
 
 
 def _policy(access_mode: str, users=None, departments=None):

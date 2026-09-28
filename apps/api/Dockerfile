@@ -1,4 +1,4 @@
-# Main Loom backend: API, ingestion, retrieval, integrations, and captures.
+# Main MindLoom backend: API, ingestion, retrieval, integrations, and captures.
 # Pinned to the explicit -slim-bookworm tag: on some Docker Desktop image
 # stores the floating `python:3.11-slim` manifest resolves to a mismatched
 # layer that fails with "exec format error" on arm64.

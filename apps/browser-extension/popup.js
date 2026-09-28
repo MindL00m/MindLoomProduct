@@ -25,7 +25,7 @@ async function loadActiveTab() {
     const tab = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" });
     if (tab) renderActiveTab(tab);
   } catch (err) {
-    console.error("[Loom Capture] Failed to load active tab:", err);
+    console.error("[MindLoom Capture] Failed to load active tab:", err);
   }
 }
 

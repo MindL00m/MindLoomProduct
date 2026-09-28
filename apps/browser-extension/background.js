@@ -6,7 +6,7 @@ const APPROVED_KEY = "approvedCaptures";
 const CAPTURE_INTERVAL_MS = 10_000;
 const TAB_CAPTURE_DEBOUNCE_MS = 3_000;
 const MAX_CAPTURES = 50;
-// Approved screenshots go to Loom's single Python API.
+// Approved screenshots go to MindLoom's single Python API.
 const BACKEND_CAPTURES_URL = "http://localhost:8000/captures";
 
 /** @type {{ tabId: number | null, url: string, title: string, windowId: number | null }} */
@@ -56,7 +56,7 @@ function nextCaptureId() {
 }
 
 function logTabEvent(event, state) {
-  console.log(`[Loom Capture] ${event}:`, {
+  console.log(`[MindLoom Capture] ${event}:`, {
     tabId: state.tabId,
     url: state.url,
     title: state.title,
@@ -141,7 +141,7 @@ async function uploadApprovedCapture(capture) {
       const message =
         retryErr instanceof Error ? retryErr.message : String(retryErr);
       console.warn(
-        "[Loom Capture] Upload failed after retry, left in approved queue:",
+        "[MindLoom Capture] Upload failed after retry, left in approved queue:",
         capture.id,
         message
       );
@@ -150,7 +150,7 @@ async function uploadApprovedCapture(capture) {
   }
 
   removeFromApprovedQueue(capture.id);
-  console.log("[Loom Capture] Uploaded to backend:", capture.id);
+  console.log("[MindLoom Capture] Uploaded to backend:", capture.id);
   return true;
 }
 
@@ -162,7 +162,7 @@ function approveCapture(id) {
   approvedCaptures.unshift(capture);
   updatePendingBadge();
   void persistQueues();
-  console.log("[Loom Capture] Capture approved:", capture.id);
+  console.log("[MindLoom Capture] Capture approved:", capture.id);
   uploadApprovedCapture(capture);
   return true;
 }
@@ -174,7 +174,7 @@ function rejectCapture(id) {
   pendingCaptures.splice(index, 1);
   updatePendingBadge();
   void persistQueues();
-  console.log("[Loom Capture] Capture rejected:", id);
+  console.log("[MindLoom Capture] Capture rejected:", id);
   return true;
 }
 
@@ -186,7 +186,7 @@ function approveAllCaptures() {
   pendingCaptures.length = 0;
   updatePendingBadge();
   void persistQueues();
-  console.log("[Loom Capture] Approved all pending captures:", toUpload.length);
+  console.log("[MindLoom Capture] Approved all pending captures:", toUpload.length);
   for (const capture of toUpload) {
     uploadApprovedCapture(capture);
   }
@@ -231,7 +231,7 @@ async function takeCapture(reason) {
   if (!(await getCaptureEnabled())) return;
 
   if (captureInProgress) {
-    console.log("[Loom Capture] Capture skipped (in progress):", reason);
+    console.log("[MindLoom Capture] Capture skipped (in progress):", reason);
     return;
   }
 
@@ -246,18 +246,18 @@ async function takeCapture(reason) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn("[Loom Capture] Capture skipped (tab query failed):", reason, message);
+      console.warn("[MindLoom Capture] Capture skipped (tab query failed):", reason, message);
       return;
     }
 
     if (!tab || tab.windowId === undefined) {
-      console.log("[Loom Capture] Capture skipped (no active tab):", reason);
+      console.log("[MindLoom Capture] Capture skipped (no active tab):", reason);
       return;
     }
 
     if (!isCapturableUrl(tab.url)) {
       console.log(
-        "[Loom Capture] Capture skipped (restricted URL):",
+        "[MindLoom Capture] Capture skipped (restricted URL):",
         tab.url || "(empty)"
       );
       return;
@@ -272,7 +272,7 @@ async function takeCapture(reason) {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn("[Loom Capture] Capture failed (skipped):", reason, message);
+      console.warn("[MindLoom Capture] Capture failed (skipped):", reason, message);
       return;
     }
 
@@ -291,7 +291,7 @@ async function takeCapture(reason) {
     };
 
     addCapture(capture);
-    console.log("[Loom Capture] Capture saved (pending):", {
+    console.log("[MindLoom Capture] Capture saved (pending):", {
       id: capture.id,
       reason,
       url: capture.url,
@@ -307,7 +307,7 @@ async function maybeCaptureOnTabChange() {
 
   const now = Date.now();
   if (now - lastTabChangeCaptureTime < TAB_CAPTURE_DEBOUNCE_MS) {
-    console.log("[Loom Capture] Tab-change capture debounced");
+    console.log("[MindLoom Capture] Tab-change capture debounced");
     return;
   }
 
@@ -356,7 +356,7 @@ async function refreshActiveTab() {
     if (tab) updateActiveTab(tab);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn("[Loom Capture] Failed to query active tab:", message);
+    console.warn("[MindLoom Capture] Failed to query active tab:", message);
   }
 }
 
@@ -366,7 +366,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     updateActiveTab(tab);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.warn("[Loom Capture] Failed to get activated tab:", message);
+    console.warn("[MindLoom Capture] Failed to get activated tab:", message);
   }
 });
 

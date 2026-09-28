@@ -5,7 +5,7 @@ from __future__ import annotations
 import fitz  # PyMuPDF
 import pytest
 
-from pdf_chunker import chunk_pdf
+from brain.pdf_chunker import chunk_pdf
 
 
 def _make_pdf(pages: list[list[tuple[str, float]]]) -> bytes:

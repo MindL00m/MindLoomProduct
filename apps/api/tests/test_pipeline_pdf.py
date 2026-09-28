@@ -13,15 +13,15 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import pytest
 
-import pipeline
-from blob_storage import LocalBlobStorage
-from documents import (
+from brain import pipeline
+from core.blob_storage import LocalBlobStorage
+from brain.documents import (
     InMemoryDocumentRepository,
     compute_content_hash,
     get_citation,
 )
-from models import ChunkMetadata
-from pipeline import run_pdf_ingestion
+from core.models import ChunkMetadata
+from brain.pipeline import run_pdf_ingestion
 
 ORG_ID = "org-test"
 

@@ -1,4 +1,4 @@
-# Loom — full local stack.
+# MindLoom — full local stack.
 #
 # Usage:
 #   1. cp .env.example .env   and fill in the credentials (see that file).
@@ -78,7 +78,7 @@ services:
     restart: "no"
 
   api:
-    # Main Loom backend: API, ingestion, search, integrations, and captures.
+    # Main MindLoom backend: API, ingestion, search, integrations, and captures.
     build: ./apps/api
     environment:
       # --- the only secret you must provide ---
@@ -165,7 +165,7 @@ services:
       - blobdata:/app/data/blobs
 
   frontend:
-    # Main Loom user interface: the production build of the React app.
+    # Main MindLoom user interface: the production build of the React app.
     build:
       context: ./apps/web
       args:

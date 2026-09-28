@@ -2,9 +2,7 @@
 
 import pytest
 
-import notification_delivery
-
-
+from shuttle import notification_delivery
 @pytest.mark.asyncio
 async def test_delivery_attempts_every_channel_when_one_fails(monkeypatch):
     recorded: list[tuple[str, str]] = []

@@ -4,10 +4,10 @@ import base64
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from durable_jobs import enqueue
-from integrations import require_admin_context
-from models import DocumentMetadataInput
-from whatsapp import preview_export
+from core.durable_jobs import enqueue
+from weaver.integrations import require_admin_context
+from core.models import DocumentMetadataInput
+from weaver.whatsapp import preview_export
 
 router = APIRouter(prefix="/integrations/whatsapp", tags=["whatsapp"])
 

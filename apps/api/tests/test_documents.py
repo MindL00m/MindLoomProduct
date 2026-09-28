@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from blob_storage import LocalBlobStorage
-from documents import (
+from core.blob_storage import LocalBlobStorage
+from brain.documents import (
     CitationNotFoundError,
     InMemoryDocumentRepository,
     compute_content_hash,
@@ -21,7 +21,7 @@ from documents import (
     link_chunk_to_document,
     store_document,
 )
-from models import DerivedFrom
+from core.models import DerivedFrom
 
 ORG_ID = "org-test"
 

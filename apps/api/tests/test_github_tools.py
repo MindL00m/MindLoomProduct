@@ -7,10 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import ask_agent
-import github_client
-
-
+from loombot import ask_agent
+from shuttle import github_client
 def test_wants_github_detects_repo_intent() -> None:
     assert ask_agent._wants_github("List my GitHub repos")
     assert ask_agent._wants_github("Show the README for octocat/Hello-World")
@@ -137,7 +135,7 @@ async def test_run_tool_dispatches_github_list(monkeypatch) -> None:
     async def fake_list_repos(*, owner=None, per_page=30):
         return {"count": 0, "repositories": [], "owner": owner, "per_page": per_page}
 
-    monkeypatch.setattr("github_client.list_repos", fake_list_repos)
+    monkeypatch.setattr("shuttle.github_client.list_repos", fake_list_repos)
     result, proposal, pr, ws = await ask_agent._run_tool(
         name="github_list_repos",
         arguments={"owner": "acme", "per_page": 10},
@@ -166,8 +164,8 @@ async def test_propose_github_pr_builds_draft(monkeypatch) -> None:
             "content": "hello\n",
         }
 
-    monkeypatch.setattr("github_client.get_repo", fake_get_repo)
-    monkeypatch.setattr("github_client.get_file_contents", fake_get_file)
+    monkeypatch.setattr("shuttle.github_client.get_repo", fake_get_repo)
+    monkeypatch.setattr("shuttle.github_client.get_file_contents", fake_get_file)
 
     result, proposal, pr, ws = await ask_agent._run_tool(
         name="propose_github_pr",
@@ -207,9 +205,9 @@ async def test_propose_github_pr_does_not_create_pr(monkeypatch) -> None:
         called["create"] = True
         return {}
 
-    monkeypatch.setattr("github_client.get_repo", fake_get_repo)
-    monkeypatch.setattr("github_client.get_file_contents", fake_get_file)
-    monkeypatch.setattr("github_client.create_pull_request_with_file", fake_create)
+    monkeypatch.setattr("shuttle.github_client.get_repo", fake_get_repo)
+    monkeypatch.setattr("shuttle.github_client.get_file_contents", fake_get_file)
+    monkeypatch.setattr("shuttle.github_client.create_pull_request_with_file", fake_create)
 
     _, _, pr, ws = await ask_agent._run_tool(
         name="propose_github_pr",

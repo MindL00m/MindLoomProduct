@@ -2,9 +2,9 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from integrations import require_user_context
-from models import FinishStatusItemResponse, OpenStatusResponse, StatusItemKind
-from status_board import get_open_status, mark_status_item_finished
+from weaver.integrations import require_user_context
+from core.models import FinishStatusItemResponse, OpenStatusResponse, StatusItemKind
+from lens.status_board import get_open_status, mark_status_item_finished
 
 router = APIRouter(prefix="/status", tags=["status"])
 

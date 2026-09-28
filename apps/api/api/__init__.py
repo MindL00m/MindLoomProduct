@@ -1,1 +1,1 @@
-"""HTTP routing package for the Loom API."""
+"""HTTP routing package for the MindLoom API."""

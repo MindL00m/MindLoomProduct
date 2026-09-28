@@ -124,7 +124,7 @@ async function loadCaptures() {
     );
   } catch (err) {
     summaryEl.textContent = "Failed to load captures.";
-    console.error("[Loom Capture] Failed to load captures:", err);
+    console.error("[MindLoom Capture] Failed to load captures:", err);
   }
 }
 
@@ -179,7 +179,7 @@ async function approveCapture(capture, card) {
     await chrome.runtime.sendMessage({ type: "APPROVE_CAPTURE", id: capture.id });
     await loadCaptures();
   } catch (err) {
-    console.error("[Loom Capture] Failed to approve capture:", err);
+    console.error("[MindLoom Capture] Failed to approve capture:", err);
   }
 }
 
@@ -203,7 +203,7 @@ async function rejectCapture(id) {
     await chrome.runtime.sendMessage({ type: "REJECT_CAPTURE", id });
     await loadCaptures();
   } catch (err) {
-    console.error("[Loom Capture] Failed to reject capture:", err);
+    console.error("[MindLoom Capture] Failed to reject capture:", err);
   }
 }
 
@@ -212,7 +212,7 @@ async function approveAll() {
     await chrome.runtime.sendMessage({ type: "APPROVE_ALL_CAPTURES" });
     await loadCaptures();
   } catch (err) {
-    console.error("[Loom Capture] Failed to approve all:", err);
+    console.error("[MindLoom Capture] Failed to approve all:", err);
   }
 }
 
@@ -220,7 +220,7 @@ async function refreshCaptures() {
   try {
     await chrome.runtime.sendMessage({ type: "RETRY_APPROVED_UPLOADS" });
   } catch (err) {
-    console.error("[Loom Capture] Failed to retry uploads:", err);
+    console.error("[MindLoom Capture] Failed to retry uploads:", err);
   }
   await loadCaptures();
 }

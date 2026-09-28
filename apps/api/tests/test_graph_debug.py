@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from storage import _graph_node_id, _serialize_props
+from brain.storage import _graph_node_id, _serialize_props
 
 
 def test_graph_node_id_person():

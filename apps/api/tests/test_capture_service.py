@@ -1,11 +1,11 @@
-"""Tests for the browser capture functionality merged into the Loom API."""
+"""Tests for the browser capture functionality merged into the MindLoom API."""
 
 from types import SimpleNamespace
 
 import pytest
 
-import capture_service
-from models import CaptureCreate
+from weaver import capture_service
+from core.models import CaptureCreate
 
 PNG_DATA_URL = (
     "data:image/png;base64,"

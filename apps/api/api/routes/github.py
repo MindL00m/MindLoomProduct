@@ -7,8 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from github_client import create_pull_request_with_file
-from integrations import require_user_context
+from shuttle.github_client import create_pull_request_with_file
+from weaver.integrations import require_user_context
 
 router = APIRouter(prefix="/github", tags=["github"])
 

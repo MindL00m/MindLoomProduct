@@ -19,10 +19,10 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPE
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse
 
-from auth import create_org, get_org_summary, get_user_access_tokens, google_signin, require_org_id
-from config import get_settings
-from database import close_pools
-from google_workspace import (
+from keeper.auth import create_org, get_org_summary, get_user_access_tokens, google_signin, require_org_id
+from core.config import get_settings
+from core.database import close_pools
+from weaver.google_workspace import (
     connect_google_workspace_dev,
     find_drive_cursor_by_channel,
     find_gmail_cursor_by_email,
@@ -32,7 +32,7 @@ from google_workspace import (
     setup_gmail_watch,
     start_google_workspace_oauth,
 )
-from microsoft_teams import (
+from weaver.microsoft_teams import (
     connect_microsoft_teams_dev,
     find_teams_cursor_by_subscription,
     graph_validation_response,
@@ -41,12 +41,12 @@ from microsoft_teams import (
     setup_teams_channel_watch,
     start_microsoft_teams_oauth,
 )
-from integrations import (
+from weaver.integrations import (
     list_integrations,
     require_admin_context,
     require_user_context,
 )
-from models import (
+from core.models import (
     AuthSessionResponse,
     Conversation,
     CreateOrgRequest,
@@ -79,15 +79,15 @@ from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
 from api.routes.workspaces import router as workspaces_router
 from api.routes.zoom import router as zoom_router
-from file_extract import extract_file_text
-from pipeline import run_ingestion_background, run_pdf_ingestion_background
-from retrieval import retrieve
-from schema import ensure_schema
-from storage import fetch_knowledge_graph_debug, fetch_org_graph, upsert_directory
-from jobs import job_store
-from durable_jobs import enqueue, get_job
-from document_ingestion import ensure_supported_document
-from subscriptions import find_subscription
+from brain.file_extract import extract_file_text
+from brain.pipeline import run_ingestion_background, run_pdf_ingestion_background
+from brain.retrieval import retrieve
+from core.schema import ensure_schema
+from brain.storage import fetch_knowledge_graph_debug, fetch_org_graph, upsert_directory
+from core.jobs import job_store
+from core.durable_jobs import enqueue, get_job
+from brain.document_ingestion import ensure_supported_document
+from weaver.subscriptions import find_subscription
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,16 +96,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage shared connection pools for the app lifecycle."""
 
-    logger.info("Loom ingestion service starting up")
+    logger.info("MindLoom ingestion service starting up")
     await ensure_schema()
     try:
         yield
     finally:
         await close_pools()
-        logger.info("Loom ingestion service shut down")
+        logger.info("MindLoom ingestion service shut down")
 
 
-app = FastAPI(title="Loom — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="MindLoom — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -327,7 +327,7 @@ async def query(
         retrieval = await retrieve(
             request.question, request.history, org_id, access_tokens
         )
-        from ask_agent import run_ask_agent
+        from loombot.ask_agent import run_ask_agent
 
         response = await run_ask_agent(
             question=request.question,
@@ -342,7 +342,7 @@ async def query(
             and response.routed
             and response.expert
         ):
-            from review_workflows import create_expert_request
+            from keeper.review_workflows import create_expert_request
             request_id = await create_expert_request(
                 org_id=org_id,
                 requester_user_id=user_id,
@@ -663,7 +663,7 @@ async def microsoft_teams_webhook(
         if cursor is None:
             continue
         if item.get("changeType") == "deleted":
-            from source_registry import mark_external_source_deleted
+            from brain.source_registry import mark_external_source_deleted
 
             resource_data = item.get("resourceData") or {}
             message_id = (

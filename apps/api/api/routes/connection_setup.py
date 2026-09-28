@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
-from connection_setup import (
+from weaver.connection_setup import (
     discover_resources,
     disconnect_controlled_connection,
     get_policy,
@@ -12,9 +12,9 @@ from connection_setup import (
     save_policy,
     set_policy_status,
 )
-from integrations import require_admin_context
-from durable_jobs import enqueue
-from models import (
+from weaver.integrations import require_admin_context
+from core.durable_jobs import enqueue
+from core.models import (
     ConnectionPolicyInput,
     ConnectionPolicyResponse,
     ConnectionPreviewRequest,
@@ -22,7 +22,7 @@ from models import (
     ConnectionResourcesResponse,
     JobStatus,
 )
-from sync_reporting import list_sync_runs
+from weaver.sync_reporting import list_sync_runs
 
 router = APIRouter(prefix="/integrations/{provider}/setup", tags=["connection setup"])
 

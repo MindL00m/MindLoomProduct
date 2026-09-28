@@ -1,24 +1,24 @@
 import { cn } from "@/lib/utils";
 
-/** Loom wordmark from brand assets. */
+/** MindLoom mark with its wordmark. */
 export function Logo({
   className,
-  showText = false,
+  showText = true,
 }: {
   className?: string;
-  /** When true, show a text label beside the logo (the asset already includes LOOM). */
+  /** When true, show the MindLoom wordmark beside the mark. */
   showText?: boolean;
 }) {
   return (
     <div className={cn("flex items-center gap-2", className)}>
       <img
-        src="/loom-logo.png"
-        alt="Loom"
-        className="h-9 w-auto object-contain"
+        src="/mindloom-logo.png"
+        alt="MindLoom"
+        className="h-9 w-9 rounded-lg object-contain"
       />
       {showText && (
         <span className="text-base font-semibold tracking-tight text-foreground">
-          Loom
+          MindLoom
         </span>
       )}
     </div>

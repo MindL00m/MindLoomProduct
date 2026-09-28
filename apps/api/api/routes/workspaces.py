@@ -3,8 +3,8 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from integrations import require_user_context
-from workspaces import (
+from weaver.integrations import require_user_context
+from loombot.workspaces import (
     create_workspace,
     list_workspace_members,
     list_workspace_messages,

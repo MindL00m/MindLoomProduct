@@ -9,6 +9,7 @@ export interface Session {
   name?: string | null;
   photoUrl?: string | null;
   role: "admin" | "member";
+  accessToken: string;
 }
 
 interface SessionState extends Session {
@@ -26,6 +27,7 @@ const empty: Omit<SessionState, "setSession" | "clearSession"> = {
   name: null,
   photoUrl: null,
   role: "member",
+  accessToken: "",
 };
 
 export const useSession = create<SessionState>()(
@@ -33,10 +35,24 @@ export const useSession = create<SessionState>()(
     (set) => ({
       ...empty,
       setSession: (session) =>
-        set({ ...session, isAuthenticated: true }),
+        set({ ...session, isAuthenticated: Boolean(session.accessToken) }),
       clearSession: () => set({ ...empty }),
     }),
-    { name: "loom-session" },
+    {
+      name: "loom-session",
+      merge: (persisted, current) => {
+        const incoming = (persisted ?? {}) as Partial<SessionState>;
+        const merged = { ...current, ...incoming };
+        // Pre-JWT sessions lack accessToken — force re-auth.
+        if (!merged.accessToken) {
+          return { ...current, ...empty };
+        }
+        return {
+          ...merged,
+          isAuthenticated: true,
+        };
+      },
+    },
   ),
 );
 
@@ -50,4 +66,10 @@ export function getOrgId(): string | null {
 export function getUserId(): string | null {
   const state = useSession.getState();
   return state.isAuthenticated ? state.userId : null;
+}
+
+/** Read MindLoom access JWT for Authorization headers. */
+export function getAccessToken(): string | null {
+  const state = useSession.getState();
+  return state.isAuthenticated && state.accessToken ? state.accessToken : null;
 }

@@ -42,7 +42,7 @@ export interface Expert {
 }
 
 export interface MessageablePerson {
-  user_id: string;
+  user_id?: string;
   name: string;
   email: string;
   title?: string | null;
@@ -54,6 +54,16 @@ export interface ProposedExpertMessage {
   recipient_name: string;
   recipient_email: string;
   message: string;
+  candidates?: MessageablePerson[];
+}
+
+export interface ProposedEmail {
+  recipient_email: string;
+  recipient_name?: string;
+  recipient_user_id?: string | null;
+  subject: string;
+  body: string;
+  google_connected?: boolean;
   candidates?: MessageablePerson[];
 }
 
@@ -103,6 +113,7 @@ export interface QueryResponse {
   routed: boolean;
   routed_reason?: string | null;
   proposed_message?: ProposedExpertMessage | null;
+  proposed_email?: ProposedEmail | null;
   proposed_pull_request?: ProposedPullRequest | null;
   proposed_workspace?: ProposedWorkspace | null;
 }

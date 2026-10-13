@@ -17,6 +17,7 @@ from core.models import (
 from brain.parser import parse_whatsapp_export
 from brain.pipeline import DocumentInput
 from brain.source_registry import ingest_external_source
+from keeper.visibility_acl import permissions_for_upload
 
 
 def decode_export(data: bytes) -> str:
@@ -97,7 +98,12 @@ async def ingest_whatsapp_export(
         ],
         messages=messages,
     )
-    visible_to = metadata.permissions or [f"org:{org_id}"]
+    visible_to = permissions_for_upload(
+        org_id=org_id,
+        uploaded_by=uploaded_by or "",
+        visibility=metadata.visibility,
+        permissions=metadata.permissions,
+    )
     document = DocumentInput(
             data=data, source="whatsapp_export", source_label=title,
             original_filename=filename, mime_type="text/plain",

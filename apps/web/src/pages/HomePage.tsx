@@ -1,23 +1,16 @@
-import type { ConnectionProvider } from "@/services/integrations";
 import type { OrgSummary } from "@/services/auth";
-import AppsView from "@/pages/AppsView";
 import OrganizationView from "@/pages/OrganizationView";
+import StatusView from "@/pages/StatusView";
 import { Card, CardContent } from "@/components/ui/card";
+import { AgentOverview } from "@/components/AgentOverview";
+import { LLMSettingsPanel } from "@/components/LLMSettingsPanel";
 
 export default function HomePage({
   summary,
   isAdmin,
-  setupProvider,
-  oauthStatus,
-  oauthError,
-  onOAuthHandled,
 }: {
   summary: OrgSummary | null;
   isAdmin: boolean;
-  setupProvider: ConnectionProvider | null;
-  oauthStatus: "connected" | "error" | null;
-  oauthError: string | null;
-  onOAuthHandled: () => void;
 }) {
   return (
     <div className="mx-auto w-full max-w-6xl space-y-10">
@@ -42,15 +35,16 @@ export default function HomePage({
         </div>
       </section>
 
+      <section className="border-t border-border pt-8">
+        <StatusView />
+      </section>
+
+      <AgentOverview isAdmin={isAdmin} />
+
       {isAdmin && (
-        <section className="border-t border-border pt-8">
-          <AppsView
-            setupProvider={setupProvider}
-            oauthStatus={oauthStatus}
-            oauthError={oauthError}
-            onOAuthHandled={onOAuthHandled}
-          />
-        </section>
+        <div id="chat-model" className="scroll-mt-20">
+          <LLMSettingsPanel />
+        </div>
       )}
 
       <section className="min-h-[620px] border-t border-border pt-8">

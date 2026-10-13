@@ -21,6 +21,7 @@ import {
   extractFileForChat,
   type ChatMessage,
   type EphemeralDocument,
+  type ProposedEmail,
   type ProposedExpertMessage,
   type ProposedPullRequest,
   type ProposedWorkspace,
@@ -28,7 +29,7 @@ import {
   type Source,
 } from "@/services/ask";
 import { approveProposedPullRequest } from "@/services/github";
-import { sendProposedExpertMessage } from "@/services/reviews";
+import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
@@ -154,7 +155,9 @@ export default function AskView() {
         status: "done",
         response,
         proposedMessage: response.proposed_message ?? null,
+        proposedEmail: response.proposed_email ?? null,
         proposalState: response.proposed_message ? "pending" : undefined,
+        emailProposalState: response.proposed_email ? "pending" : undefined,
         proposedPullRequest: response.proposed_pull_request ?? null,
         prProposalState: response.proposed_pull_request ? "pending" : undefined,
         proposedWorkspace: response.proposed_workspace ?? null,
@@ -514,9 +517,15 @@ function TurnView({
               proposedMessage={
                 turn.proposedMessage ?? turn.response.proposed_message ?? null
               }
+              proposedEmail={
+                turn.proposedEmail ?? turn.response.proposed_email ?? null
+              }
               proposalState={turn.proposalState}
               proposalReviewId={turn.proposalReviewId}
               proposalError={turn.proposalError}
+              emailProposalState={turn.emailProposalState}
+              emailProposalId={turn.emailProposalId}
+              emailProposalError={turn.emailProposalError}
               proposedPullRequest={
                 turn.proposedPullRequest ??
                 turn.response.proposed_pull_request ??
@@ -542,28 +551,71 @@ function TurnView({
   );
 }
 
-function ProposedMessageCard({
-  proposal,
-  state,
-  reviewId,
-  error,
+function matchingLoomUserId(
+  to: string,
+  candidates: { user_id?: string; email: string }[],
+  originalUserId?: string | null,
+  originalEmail?: string,
+): string | undefined {
+  const email = to.trim().toLowerCase();
+  const match = candidates.find(
+    (item) => item.email.toLowerCase() === email && item.user_id,
+  );
+  if (match?.user_id) return match.user_id;
+  if (originalUserId && (originalEmail || "").toLowerCase() === email) {
+    return originalUserId;
+  }
+  return undefined;
+}
+
+function ProposedComposeCard({
+  expert,
+  email,
+  expertState,
+  expertReviewId,
+  expertError,
+  emailState,
+  emailId,
+  emailError,
   onPatch,
 }: {
-  proposal: ProposedExpertMessage;
-  state?: Turn["proposalState"];
-  reviewId?: string;
-  error?: string;
+  expert?: ProposedExpertMessage | null;
+  email?: ProposedEmail | null;
+  expertState?: Turn["proposalState"];
+  expertReviewId?: string;
+  expertError?: string;
+  emailState?: Turn["emailProposalState"];
+  emailId?: string;
+  emailError?: string;
   onPatch: (patch: Partial<Turn>) => void;
 }) {
-  const status = state ?? "pending";
+  const candidates = email?.candidates?.length
+    ? email.candidates
+    : expert?.candidates ?? [];
+  const [to, setTo] = useState(
+    email?.recipient_email || expert?.recipient_email || "",
+  );
+  const [subject, setSubject] = useState(email?.subject || "");
+  const [body, setBody] = useState(email?.body || expert?.message || "");
+  const expertStatus = expertState ?? (expert ? "pending" : undefined);
+  const mailStatus = emailState ?? (email ? "pending" : "pending");
+  const cancelled = expertStatus === "cancelled" || mailStatus === "cancelled";
+  const loomUserId = matchingLoomUserId(
+    to,
+    candidates,
+    expert?.recipient_user_id || email?.recipient_user_id,
+    expert?.recipient_email || email?.recipient_email,
+  );
+  const googleConnected = Boolean(email?.google_connected);
+  const sending = expertStatus === "sending" || mailStatus === "sending";
+  const expertSent = expertStatus === "sent";
+  const emailSent = mailStatus === "sent";
 
-  async function approve() {
+  async function sendExpert() {
+    if (!loomUserId) return;
     onPatch({ proposalState: "sending", proposalError: undefined });
     try {
-      const result = await sendProposedExpertMessage(
-        proposal.recipient_user_id,
-        proposal.message,
-      );
+      const result = await sendProposedExpertMessage(loomUserId, body);
       onPatch({
         proposalState: "sent",
         proposalReviewId: result.review_id,
@@ -577,7 +629,24 @@ function ProposedMessageCard({
     }
   }
 
-  if (status === "cancelled") {
+  async function sendEmail() {
+    onPatch({ emailProposalState: "sending", emailProposalError: undefined });
+    try {
+      const result = await sendProposedEmail(to, subject, body);
+      onPatch({
+        emailProposalState: "sent",
+        emailProposalId: result.provider_message_id,
+        emailProposalError: undefined,
+      });
+    } catch (err) {
+      onPatch({
+        emailProposalState: "pending",
+        emailProposalError: err instanceof Error ? err.message : "Send failed.",
+      });
+    }
+  }
+
+  if (cancelled) {
     return (
       <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
         Proposed message discarded.
@@ -585,64 +654,149 @@ function ProposedMessageCard({
     );
   }
 
-  if (status === "sent") {
-    return (
-      <div className="rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
-        <p className="font-medium">Message sent to {proposal.recipient_name}</p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Delivered via Expert Messages
-          {reviewId ? ` (${reviewId.slice(0, 8)}…)` : ""}.
-        </p>
-        <a
-          href="/dashboard?tab=messages"
-          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
-        >
-          Open Expert Messages
-        </a>
-      </div>
-    );
-  }
+  const recipientLabel =
+    email?.recipient_name || expert?.recipient_name || to || "recipient";
 
   return (
     <div
       data-testid="proposed-expert-message-card"
       className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
     >
-      <p className="font-semibold text-foreground">Send Expert Message?</p>
-      <p className="mt-1 text-muted-foreground">
-        To{" "}
-        <span className="font-medium text-foreground">
-          {proposal.recipient_name}
-        </span>{" "}
-        ({proposal.recipient_email})
+      <p className="font-semibold text-foreground">Review and send</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Correct the address if needed, edit the draft, then send as an Expert
+        Message and/or email. Nothing is sent until you choose a button.
       </p>
-      <p className="mt-2 whitespace-pre-wrap rounded-md border border-border bg-card px-3 py-2 text-foreground">
-        {proposal.message}
-      </p>
-      {error && (
-        <p className="mt-2 text-xs text-destructive">{error}</p>
+
+      {candidates.length > 1 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {candidates.map((person) => (
+            <button
+              key={`${person.user_id || ""}:${person.email}`}
+              type="button"
+              onClick={() => setTo(person.email)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs",
+                to.trim().toLowerCase() === person.email.toLowerCase()
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-foreground",
+              )}
+            >
+              {person.name || person.email}
+            </button>
+          ))}
+        </div>
       )}
+
+      <label className="mt-3 block text-xs font-medium text-muted-foreground">
+        To
+        <input
+          type="email"
+          value={to}
+          onChange={(event) => setTo(event.target.value)}
+          placeholder="Enter an email address"
+          className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
+        />
+      </label>
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Subject
+        <input
+          type="text"
+          value={subject}
+          onChange={(event) => setSubject(event.target.value)}
+          placeholder="Subject"
+          className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
+        />
+      </label>
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Message
+        <textarea
+          value={body}
+          onChange={(event) => setBody(event.target.value)}
+          rows={5}
+          className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
+        />
+      </label>
+
+      {(expertError || emailError) && (
+        <p className="mt-2 text-xs text-destructive">
+          {expertError || emailError}
+        </p>
+      )}
+
+      {expertSent && (
+        <p className="mt-2 text-xs text-foreground">
+          Expert Message sent to {recipientLabel}
+          {expertReviewId ? ` (${expertReviewId.slice(0, 8)}…)` : ""}.{" "}
+          <a href="/dashboard?tab=messages" className="font-medium text-primary hover:underline">
+            Open Expert Messages
+          </a>
+        </p>
+      )}
+      {emailSent && (
+        <p className="mt-2 text-xs text-foreground">
+          Email sent to {to}
+          {emailId ? ` (${emailId.slice(0, 8)}…)` : ""}.
+        </p>
+      )}
+
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
-          disabled={status === "sending"}
-          onClick={() => void approve()}
+          disabled={sending || expertSent || !loomUserId}
+          onClick={() => void sendExpert()}
           className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
         >
-          {status === "sending" ? "Sending…" : "Approve & send"}
+          {expertStatus === "sending"
+            ? "Sending…"
+            : expertSent
+              ? "Expert Message sent"
+              : "Send Expert Message"}
         </button>
         <button
           type="button"
-          disabled={status === "sending"}
-          onClick={() => onPatch({ proposalState: "cancelled" })}
+          disabled={
+            sending ||
+            emailSent ||
+            !googleConnected ||
+            !to.trim() ||
+            !subject.trim() ||
+            !body.trim()
+          }
+          onClick={() => void sendEmail()}
+          className="rounded-md border border-primary bg-card px-3 py-2 text-xs font-semibold text-foreground disabled:opacity-50"
+        >
+          {mailStatus === "sending"
+            ? "Sending…"
+            : emailSent
+              ? "Email sent"
+              : "Send email"}
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          onClick={() =>
+            onPatch({
+              proposalState: "cancelled",
+              emailProposalState: "cancelled",
+            })
+          }
           className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
         >
           Cancel
         </button>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Nothing is sent until you approve.
-      </p>
+      {!loomUserId && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Expert Messages are available when the address matches a signed-in
+          MindLoom user.
+        </p>
+      )}
+      {!googleConnected && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Connect Google Workspace to send email.
+        </p>
+      )}
     </div>
   );
 }
@@ -650,9 +804,13 @@ function ProposedMessageCard({
 function AnswerView({
   response,
   proposedMessage,
+  proposedEmail,
   proposalState,
   proposalReviewId,
   proposalError,
+  emailProposalState,
+  emailProposalId,
+  emailProposalError,
   proposedPullRequest,
   prProposalState,
   prProposalUrl,
@@ -665,9 +823,13 @@ function AnswerView({
 }: {
   response: QueryResponse;
   proposedMessage?: ProposedExpertMessage | null;
+  proposedEmail?: ProposedEmail | null;
   proposalState?: Turn["proposalState"];
   proposalReviewId?: string;
   proposalError?: string;
+  emailProposalState?: Turn["emailProposalState"];
+  emailProposalId?: string;
+  emailProposalError?: string;
   proposedPullRequest?: ProposedPullRequest | null;
   prProposalState?: Turn["prProposalState"];
   prProposalUrl?: string;
@@ -685,6 +847,7 @@ function AnswerView({
     cited.add(match[1].trim());
   }
   const proposal = proposedMessage ?? response.proposed_message ?? null;
+  const emailProposal = proposedEmail ?? response.proposed_email ?? null;
   const prProposal =
     proposedPullRequest ?? response.proposed_pull_request ?? null;
   const wsProposal =
@@ -699,12 +862,16 @@ function AnswerView({
         {renderAnswer(response.answer, response.sources)}
       </p>
 
-      {proposal && (
-        <ProposedMessageCard
-          proposal={proposal}
-          state={proposalState}
-          reviewId={proposalReviewId}
-          error={proposalError}
+      {(proposal || emailProposal) && (
+        <ProposedComposeCard
+          expert={proposal}
+          email={emailProposal}
+          expertState={proposalState}
+          expertReviewId={proposalReviewId}
+          expertError={proposalError}
+          emailState={emailProposalState}
+          emailId={emailProposalId}
+          emailError={emailProposalError}
           onPatch={onProposalPatch}
         />
       )}

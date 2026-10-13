@@ -2,7 +2,9 @@
 
 Chrome Manifest V3 extension that tracks the active browser tab and optionally
 captures visible-tab screenshots. Approved screenshots are sent to MindLoom's main
-API at `http://localhost:8000`; there is no separate capture backend.
+API (default `http://localhost:8000`) with an `Authorization: Bearer` MindLoom
+access token. Configure the API base and token in the extension popup (copy
+`access_token` from a signed-in MindLoom web session).
 
 ## Load unpacked in Chrome
 

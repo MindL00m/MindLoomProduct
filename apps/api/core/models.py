@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 PersonStatus = Literal["active", "inactive"]
 
@@ -62,6 +62,67 @@ class CaptureSummary(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ActivityFieldInteraction(BaseModel):
+    """On-device field interaction metadata — never includes field values."""
+
+    role: str = ""
+    label: str = ""
+    duration_ms: int = Field(default=0, alias="durationMs", ge=0)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivityTaskStats(BaseModel):
+    event_count: int = Field(default=0, alias="eventCount", ge=0)
+    active_ms: int = Field(default=0, alias="activeMs", ge=0)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivityTaskSummary(BaseModel):
+    """Aggregated on-device task segment from the macOS Accessibility agent."""
+
+    task_id: str = Field(alias="taskId")
+    started_at: datetime = Field(alias="startedAt")
+    ended_at: datetime = Field(alias="endedAt")
+    primary_app: str = Field(default="", alias="primaryApp")
+    apps: list[str] = Field(default_factory=list)
+    step_hints: list[str] = Field(default_factory=list, alias="stepHints")
+    field_interactions: list[ActivityFieldInteraction] = Field(
+        default_factory=list, alias="fieldInteractions"
+    )
+    stats: ActivityTaskStats = Field(default_factory=ActivityTaskStats)
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivitySessionCreate(BaseModel):
+    """Desktop agent upload: task summaries only (no raw events or pixels)."""
+
+    session_id: str = Field(alias="sessionId")
+    org_id: str = Field(default="default", alias="orgId")
+    user_id: str = Field(default="desktop-user", alias="userId")
+    source: Literal["desktop_ax"] = "desktop_ax"
+    started_at: datetime = Field(alias="startedAt")
+    ended_at: datetime = Field(alias="endedAt")
+    tasks: list[ActivityTaskSummary] = Field(default_factory=list)
+    note: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class ActivitySessionRecord(ActivitySessionCreate):
+    """Persisted activity session row."""
+
+    received_at: datetime = Field(alias="receivedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+SkillSource = Literal["browser", "desktop_ax", "expert"]
+ContentVisibility = Literal["private", "organization"]
+
+
 class SkillFileDraft(BaseModel):
     skill_id: str
     session_id: str
@@ -75,7 +136,9 @@ class SkillFileDraft(BaseModel):
     decision_guidance: list[str] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
     source_capture_ids: list[str] = Field(default_factory=list)
+    source: SkillSource = "browser"
     status: Literal["proposed", "approved", "rejected"] = "proposed"
+    visibility: ContentVisibility = "private"
     expert_notes: str = ""
     created_at: datetime
     updated_at: datetime
@@ -92,6 +155,7 @@ class SkillFileReview(BaseModel):
     warnings: Optional[list[str]] = None
     decision_guidance: Optional[list[str]] = None
     expert_notes: str = ""
+    visibility: Optional[ContentVisibility] = None
 
 
 class SkillFileUpdate(BaseModel):
@@ -101,6 +165,7 @@ class SkillFileUpdate(BaseModel):
     purpose: Optional[str] = None
     application: Optional[str] = None
     expert_notes: Optional[str] = None
+    visibility: Optional[ContentVisibility] = None
 
 
 class Message(BaseModel):
@@ -133,10 +198,32 @@ class OwnershipSignal(BaseModel):
     )
 
 
+_ENTITY_TYPES = frozenset(get_args(EntityType))
+# Models often emit these; they are not graph entity types (prompt: skip ordinary dates).
+_SKIP_ENTITY_TYPES = frozenset({"date", "datetime", "time", "timestamp", "day"})
+
+
 class TypedEntity(BaseModel):
     name: str
     type: EntityType = "topic"
     relevance: Literal["primary", "secondary"] = "secondary"
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def coerce_entity_type(cls, value: object) -> str:
+        if value is None or value == "":
+            return "topic"
+        kind = str(value).strip().lower()
+        if kind in _ENTITY_TYPES:
+            return kind
+        return "topic"
+
+    @field_validator("relevance", mode="before")
+    @classmethod
+    def coerce_relevance(cls, value: object) -> str:
+        if value in ("primary", "secondary"):
+            return str(value)
+        return "secondary"
 
 
 class ProjectUpdate(BaseModel):
@@ -191,6 +278,27 @@ class ChunkMetadata(BaseModel):
     project_updates: list[ProjectUpdate] = Field(default_factory=list)
     action_item_updates: list[ActionItemUpdate] = Field(default_factory=list)
     issue_updates: list[IssueUpdate] = Field(default_factory=list)
+
+    @field_validator("typed_entities", mode="before")
+    @classmethod
+    def drop_non_graph_entity_types(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        kept: list[object] = []
+        for item in value:
+            if isinstance(item, dict):
+                kind = str(item.get("type") or "").strip().lower()
+                if kind in _SKIP_ENTITY_TYPES:
+                    continue
+            kept.append(item)
+        return kept
+
+    @field_validator("valid_until", mode="before")
+    @classmethod
+    def empty_valid_until(cls, value: object) -> object:
+        if value in ("", "null", "none", "n/a", "N/A"):
+            return None
+        return value
 
 
 class StatusEvidence(BaseModel):
@@ -360,6 +468,7 @@ class DocumentMetadataInput(BaseModel):
     version: Optional[str] = None
     contributors: list[str] = Field(default_factory=list)
     permissions: list[str] = Field(default_factory=list)
+    visibility: Optional[ContentVisibility] = None
     source_url: Optional[str] = None
 
 
@@ -706,9 +815,9 @@ class QueryRequest(BaseModel):
 
 
 class MessageablePerson(BaseModel):
-    """A signed-in org member that can receive Expert Messages."""
+    """A person who can receive an Expert Message and/or email."""
 
-    user_id: str
+    user_id: str = ""
     name: str
     email: str
     title: Optional[str] = None
@@ -722,6 +831,18 @@ class ProposedExpertMessage(BaseModel):
     recipient_name: str
     recipient_email: str
     message: str
+    candidates: list[MessageablePerson] = Field(default_factory=list)
+
+
+class ProposedEmail(BaseModel):
+    """Draft email awaiting user confirmation in Ask before Gmail send."""
+
+    recipient_email: str = ""
+    recipient_name: str = ""
+    recipient_user_id: Optional[str] = None
+    subject: str
+    body: str
+    google_connected: bool = False
     candidates: list[MessageablePerson] = Field(default_factory=list)
 
 
@@ -797,6 +918,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Draft Expert Message awaiting explicit user approval in Ask.",
     )
+    proposed_email: Optional[ProposedEmail] = Field(
+        default=None,
+        description="Draft email awaiting explicit user approval in Ask.",
+    )
     proposed_pull_request: Optional[ProposedPullRequest] = Field(
         default=None,
         description="Draft GitHub file change awaiting explicit user approval in Ask.",
@@ -811,21 +936,24 @@ class QueryResponse(BaseModel):
 
 
 class GoogleSignInRequest(BaseModel):
-    """Simulated Google SSO sign-in payload."""
+    """Google GIS credential (ID token) for sign-in."""
 
-    email: str = Field(description="Google account email")
-    name: Optional[str] = Field(default=None, description="Display name")
-    photo_url: Optional[str] = Field(default=None, description="Profile photo URL")
+    id_token: str = Field(description="Google Identity Services ID token (JWT)")
+
+
+class PublicAuthConfig(BaseModel):
+    """Non-secret auth config the web app can load at runtime (not baked into Vite)."""
+
+    google_client_id: str = ""
+    google_oauth_enabled: bool = False
 
 
 class CreateOrgRequest(BaseModel):
-    """Create a new organization and its first admin user."""
+    """Create a new organization; admin identity comes from a verified Google ID token."""
 
     name: str = Field(description="Organization display name")
     domain: str = Field(description="Primary email domain, e.g. acme.com")
-    admin_email: str = Field(description="Admin Google account email")
-    admin_name: Optional[str] = Field(default=None)
-    admin_photo_url: Optional[str] = Field(default=None)
+    id_token: str = Field(description="Google Identity Services ID token for the admin")
 
 
 class AuthSessionResponse(BaseModel):
@@ -838,6 +966,7 @@ class AuthSessionResponse(BaseModel):
     name: Optional[str] = None
     photo_url: Optional[str] = None
     role: Literal["admin", "member"] = "member"
+    access_token: str = Field(description="MindLoom access JWT for Authorization: Bearer")
 
 
 class OrgSummaryResponse(BaseModel):
@@ -880,6 +1009,10 @@ class IntegrationsListResponse(BaseModel):
         description="True when real Microsoft OAuth credentials are configured on the server.",
     )
     zoom_oauth_enabled: bool = False
+    dev_integrations_allowed: bool = Field(
+        default=False,
+        description="True when connect-dev fake connections are permitted (development only).",
+    )
 
 
 class OAuthAuthorizeResponse(BaseModel):

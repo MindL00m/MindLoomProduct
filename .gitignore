@@ -40,6 +40,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Packaged macOS agent copied into the web app for download.
+# Force-add the zip if you want Railway/Git deploys to include it, or host it
+# separately and set VITE_DESKTOP_AGENT_DOWNLOAD_URL.
+apps/web/public/downloads/*.zip
+
 # ---- OS / editor ----
 .DS_Store
 Thumbs.db

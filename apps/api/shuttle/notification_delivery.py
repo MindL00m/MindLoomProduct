@@ -69,18 +69,22 @@ def _notification_text(question: str) -> str:
     )
 
 
-async def _send_gmail(org_id: str, recipient: str, question: str) -> str:
-    user_id = await _connection_user(org_id, "google_workspace")
-    if not user_id:
-        raise RuntimeError("Google Workspace is not connected.")
+async def _gmail_send_raw(
+    *,
+    org_id: str,
+    user_id: str,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> str:
     token, sender = await _workspace_access_token(org_id, user_id)
     if token.startswith("dev:"):
         raise RuntimeError("Gmail delivery is unavailable in development connection mode.")
     message = EmailMessage()
     message["To"] = recipient
     message["From"] = sender
-    message["Subject"] = "Company Brain needs your expertise"
-    message.set_content(_notification_text(question))
+    message["Subject"] = subject
+    message.set_content(body)
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode().rstrip("=")
     async with httpx.AsyncClient(timeout=30) as client:
         response = await request_with_backoff(
@@ -92,6 +96,38 @@ async def _send_gmail(org_id: str, recipient: str, question: str) -> str:
     if response.status_code >= 400:
         raise RuntimeError(f"Gmail send failed ({response.status_code}).")
     return str(response.json().get("id") or "")
+
+
+async def send_user_gmail(
+    *,
+    org_id: str,
+    user_id: str,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> str:
+    """Send a user-authored email from this user's connected Gmail account."""
+
+    return await _gmail_send_raw(
+        org_id=org_id,
+        user_id=user_id,
+        recipient=recipient,
+        subject=subject,
+        body=body,
+    )
+
+
+async def _send_gmail(org_id: str, recipient: str, question: str) -> str:
+    user_id = await _connection_user(org_id, "google_workspace")
+    if not user_id:
+        raise RuntimeError("Google Workspace is not connected.")
+    return await _gmail_send_raw(
+        org_id=org_id,
+        user_id=user_id,
+        recipient=recipient,
+        subject="Company Brain needs your expertise",
+        body=_notification_text(question),
+    )
 
 
 async def _send_outlook(org_id: str, recipient: str, question: str) -> str:

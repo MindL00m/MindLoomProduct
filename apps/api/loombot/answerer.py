@@ -11,9 +11,8 @@ import asyncio
 import logging
 import re
 
-from openai import AsyncOpenAI
 
-from core.config import get_settings
+from core.llm_provider import get_llm_client
 from brain.documents import CitationNotFoundError, DocumentRepository, get_citation
 from core.models import ChatMessage, ChunkResult, Citation, EphemeralDocument, QueryResponse, RetrievalResult
 
@@ -57,6 +56,8 @@ _LOW_CONFIDENCE_MARKERS = (
 )
 
 _SOURCE_AUTHORITY = {
+    "directory": 1.0,
+    "skill_file": 0.98,
     "sharepoint": 1.0,
     "google_drive": 0.95,
     "pdf": 0.9,
@@ -80,6 +81,8 @@ async def _attach_citations(
     """
 
     async def _fetch(chunk: ChunkResult) -> None:
+        if chunk.citation is not None or chunk.chunk_id.startswith("directory:"):
+            return
         try:
             chunk.citation = await get_citation(
                 chunk.chunk_id, org_id=org_id, repository=repository
@@ -208,11 +211,7 @@ async def generate_answer(
     retrieval.chunks.sort(key=lambda item: item.retrieval_score, reverse=True)
     context_string = _build_context(retrieval, ephemeral)
 
-    settings = get_settings()
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
-    )
+    client = await get_llm_client(org_id)
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": _SYSTEM_PROMPT.format(context_string=context_string)},

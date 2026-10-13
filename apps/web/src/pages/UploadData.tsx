@@ -18,7 +18,6 @@ import {
   type WhatsAppPreview,
 } from "@/services/ingest";
 import { cn } from "@/lib/utils";
-import { useSession } from "@/store/session";
 import { PrimaryButton } from "@/components/PrimaryButton";
 
 type ItemKind = "document" | "json";
@@ -42,13 +41,13 @@ function kindOf(file: File): ItemKind | null {
   return null;
 }
 
-export default function UploadData() {
+export default function UploadData({ showHeading = true }: { showHeading?: boolean }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [metadata, setMetadata] = useState<DocumentMetadata>({});
+  const [visibility, setVisibility] = useState<"private" | "organization">("private");
   const inputRef = useRef<HTMLInputElement>(null);
   const inputId = useId();
-  const isAdmin = useSession((state) => state.role === "admin");
 
   const update = useCallback((id: string, patch: Partial<UploadItem>) => {
     setItems((prev) =>
@@ -73,10 +72,11 @@ export default function UploadData() {
       try {
         const { job_id } =
           kind === "json"
-            ? await uploadConversationJson(file)
+            ? await uploadConversationJson(file, { visibility })
             : await uploadDocument(file, {
                 ...metadata,
                 title: metadata.title || file.name,
+                visibility,
               });
         update(id, { status: "processing", message: "Chunking & classifying…" });
 
@@ -105,7 +105,7 @@ export default function UploadData() {
         });
       }
     },
-    [metadata, update],
+    [metadata, update, visibility],
   );
 
   const handleFiles = useCallback(
@@ -118,13 +118,15 @@ export default function UploadData() {
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Upload data</h2>
-        <p className="mt-1 text-muted-foreground">
-          Add company documents and exported conversations. Their content and
-          source context are retained together.
-        </p>
-      </div>
+      {showHeading && (
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">Upload data</h2>
+          <p className="mt-1 text-muted-foreground">
+            Add company documents and exported conversations. Their content and
+            source context are retained together.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2">
         <MetadataField label="Title (optional)" value={metadata.title} onChange={(title) => setMetadata({ ...metadata, title })} />
@@ -133,9 +135,12 @@ export default function UploadData() {
         <MetadataField label="Project" value={metadata.project} onChange={(project) => setMetadata({ ...metadata, project })} />
         <MetadataField label="Version" value={metadata.version} onChange={(version) => setMetadata({ ...metadata, version })} />
         <MetadataField label="Original source link" value={metadata.source_url} onChange={(source_url) => setMetadata({ ...metadata, source_url })} />
+        <div className="sm:col-span-2">
+          <VisibilityToggle value={visibility} onChange={setVisibility} />
+        </div>
       </div>
 
-      {isAdmin && <WhatsAppImport metadata={metadata} />}
+      <WhatsAppImport metadata={metadata} visibility={visibility} />
 
       <input
         id={inputId}
@@ -194,7 +199,13 @@ export default function UploadData() {
   );
 }
 
-function WhatsAppImport({ metadata }: { metadata: DocumentMetadata }) {
+function WhatsAppImport({
+  metadata,
+  visibility,
+}: {
+  metadata: DocumentMetadata;
+  visibility: "private" | "organization";
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [timezoneName, setTimezoneName] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
@@ -202,7 +213,6 @@ function WhatsAppImport({ metadata }: { metadata: DocumentMetadata }) {
   const [preview, setPreview] = useState<WhatsAppPreview | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [accessTokens, setAccessTokens] = useState("");
 
   async function selectFile(selected: File | null) {
     setFile(selected);
@@ -229,10 +239,7 @@ function WhatsAppImport({ metadata }: { metadata: DocumentMetadata }) {
         title: metadata.title || file.name.replace(/\.txt$/i, ""),
         source_application: "WhatsApp",
         source_location: metadata.source_location || "WhatsApp chat export",
-        permissions: accessTokens
-          .split(",")
-          .map((token) => token.trim())
-          .filter(Boolean),
+        visibility,
       });
       const result = await pollJob(job_id, (job) => setStatus(job.progress || job.status));
       if (result.status === "complete") {
@@ -257,6 +264,7 @@ function WhatsAppImport({ metadata }: { metadata: DocumentMetadata }) {
         <h3 className="font-medium">WhatsApp export</h3>
         <p className="mt-1 text-sm text-muted-foreground">
           Export a WhatsApp chat without media, then upload its .txt file. Previewing does not import anything.
+          Search visibility follows the setting above.
         </p>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_220px]">
@@ -277,18 +285,6 @@ function WhatsAppImport({ metadata }: { metadata: DocumentMetadata }) {
           />
         </label>
       </div>
-      <label className="mt-3 block text-sm">
-        Restricted search access (optional)
-        <input
-          className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2"
-          value={accessTokens}
-          onChange={(event) => setAccessTokens(event.target.value)}
-          placeholder="Comma-separated employee emails or access groups"
-        />
-        <span className="mt-1 block text-xs text-muted-foreground">
-          Leave blank for everyone in the organization.
-        </span>
-      </label>
       {busy && !preview && <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Reading export…</p>}
       {preview && (
         <div className="mt-4 space-y-3 rounded-md bg-muted/50 p-3">
@@ -355,6 +351,49 @@ function MetadataField({
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
+  );
+}
+
+function VisibilityToggle({
+  value,
+  onChange,
+}: {
+  value: "private" | "organization";
+  onChange: (value: "private" | "organization") => void;
+}) {
+  return (
+    <div>
+      <p className="text-sm font-medium">Search visibility</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Controls who can find this content in Ask. Defaults to only you.
+      </p>
+      <div className="mt-2 flex gap-1 rounded-md border border-border bg-background p-1">
+        <button
+          type="button"
+          onClick={() => onChange("private")}
+          className={cn(
+            "flex-1 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+            value === "private"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted",
+          )}
+        >
+          Only me
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange("organization")}
+          className={cn(
+            "flex-1 rounded px-3 py-1.5 text-sm font-medium transition-colors",
+            value === "organization"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted",
+          )}
+        >
+          Organisation
+        </button>
+      </div>
+    </div>
   );
 }
 

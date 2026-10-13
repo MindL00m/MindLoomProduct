@@ -1,19 +1,26 @@
-"""Organization and user tenancy: Postgres persistence + FastAPI dependency."""
+"""Organization and user tenancy: Postgres persistence + JWT FastAPI dependencies."""
 
 from __future__ import annotations
 
 import logging
 import re
 from datetime import datetime, timezone
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy import DateTime, String, Text, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from core.database import get_neo4j_driver, get_session_factory
 from core.models import AuthSessionResponse, OrgSummaryResponse
+from keeper.session_tokens import (
+    GoogleIdentity,
+    decode_access_token,
+    issue_access_token,
+    verify_google_id_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +72,48 @@ def email_domain(email: str) -> str:
     return normalize_domain(parts[1])
 
 
+def _session_response(
+    *,
+    org_id: str,
+    org_name: str,
+    user: UserRow,
+) -> AuthSessionResponse:
+    return AuthSessionResponse(
+        org_id=org_id,
+        org_name=org_name,
+        user_id=user.user_id,
+        email=user.email,
+        name=user.name,
+        photo_url=user.photo_url,
+        role=user.role,  # type: ignore[arg-type]
+        access_token=issue_access_token(
+            org_id=org_id,
+            user_id=user.user_id,
+            role=user.role,
+            email=user.email,
+        ),
+    )
+
+
 async def get_org_by_id(org_id: str) -> OrganizationRow | None:
     session_factory = get_session_factory()
     async with session_factory() as session:
         return await session.get(OrganizationRow, org_id)
 
 
-async def get_user_access_tokens(org_id: str, user_id: str) -> list[str]:
-    """Return stable identities used by chunk-level search permissions."""
-
+async def get_user_by_id(org_id: str, user_id: str) -> UserRow | None:
     session_factory = get_session_factory()
     async with session_factory() as session:
         result = await session.execute(
             select(UserRow).where(UserRow.org_id == org_id, UserRow.user_id == user_id)
         )
-        user = result.scalar_one_or_none()
+        return result.scalar_one_or_none()
+
+
+async def get_user_access_tokens(org_id: str, user_id: str) -> list[str]:
+    """Return stable identities used by chunk-level search permissions."""
+
+    user = await get_user_by_id(org_id, user_id)
     if user is None:
         return []
     email = user.email.lower()
@@ -122,6 +156,7 @@ async def upsert_user(
     *,
     org_id: str,
     email: str,
+    google_sub: str | None = None,
     name: str | None = None,
     photo_url: str | None = None,
     role: str = "member",
@@ -133,22 +168,27 @@ async def upsert_user(
     session_factory = get_session_factory()
     async with session_factory() as session:
         async with session.begin():
-            stmt = pg_insert(UserRow).values(
-                user_id=user_id,
-                org_id=org_id,
-                email=normalized_email,
-                name=name,
-                photo_url=photo_url,
-                role=role,
-                created_at=now,
-            )
+            values: dict = {
+                "user_id": user_id,
+                "org_id": org_id,
+                "email": normalized_email,
+                "name": name,
+                "photo_url": photo_url,
+                "role": role,
+                "created_at": now,
+            }
+            update_set: dict = {
+                "org_id": org_id,
+                "name": name,
+                "photo_url": photo_url,
+            }
+            if google_sub is not None:
+                values["google_sub"] = google_sub
+                update_set["google_sub"] = google_sub
+            stmt = pg_insert(UserRow).values(**values)
             stmt = stmt.on_conflict_do_update(
                 index_elements=[UserRow.email],
-                set_={
-                    "org_id": org_id,
-                    "name": name,
-                    "photo_url": photo_url,
-                },
+                set_=update_set,
             )
             await session.execute(stmt)
         result = await session.execute(
@@ -162,15 +202,13 @@ async def create_org(
     *,
     name: str,
     domain: str,
-    admin_email: str,
-    admin_name: str | None = None,
-    admin_photo_url: str | None = None,
+    identity: GoogleIdentity,
 ) -> AuthSessionResponse:
     domain_norm = normalize_domain(domain)
     if not _DOMAIN_RE.match(domain_norm):
         raise ValueError("Invalid domain format.")
 
-    admin_domain = email_domain(admin_email)
+    admin_domain = email_domain(identity.email)
     if admin_domain != domain_norm:
         raise ValueError("Admin email domain must match the organization domain.")
 
@@ -195,31 +233,19 @@ async def create_org(
 
     user = await upsert_user(
         org_id=org_id,
-        email=admin_email,
-        name=admin_name,
-        photo_url=admin_photo_url,
+        email=identity.email,
+        google_sub=identity.sub,
+        name=identity.name,
+        photo_url=identity.picture,
         role="admin",
     )
 
     logger.info("Created organization %s (%s)", org_id, domain_norm)
-    return AuthSessionResponse(
-        org_id=org_id,
-        org_name=name.strip(),
-        user_id=user.user_id,
-        email=user.email,
-        name=user.name,
-        photo_url=user.photo_url,
-        role=user.role,
-    )
+    return _session_response(org_id=org_id, org_name=name.strip(), user=user)
 
 
-async def google_signin(
-    *,
-    email: str,
-    name: str | None = None,
-    photo_url: str | None = None,
-) -> AuthSessionResponse:
-    domain = email_domain(email)
+async def google_signin(*, identity: GoogleIdentity) -> AuthSessionResponse:
+    domain = email_domain(identity.email)
     org = await get_org_by_domain(domain)
     if org is None:
         raise HTTPException(
@@ -229,20 +255,13 @@ async def google_signin(
 
     user = await upsert_user(
         org_id=org.org_id,
-        email=email,
-        name=name,
-        photo_url=photo_url,
+        email=identity.email,
+        google_sub=identity.sub,
+        name=identity.name,
+        photo_url=identity.picture,
     )
 
-    return AuthSessionResponse(
-        org_id=org.org_id,
-        org_name=org.name,
-        user_id=user.user_id,
-        email=user.email,
-        name=user.name,
-        photo_url=user.photo_url,
-        role=user.role,
-    )
+    return _session_response(org_id=org.org_id, org_name=org.name, user=user)
 
 
 async def get_org_summary(org_id: str) -> OrgSummaryResponse:
@@ -250,12 +269,6 @@ async def get_org_summary(org_id: str) -> OrgSummaryResponse:
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found.")
 
-    cypher = """
-    MATCH (p:Person {org_id: $org_id})
-    WHERE p.canonical_email IS NOT NULL
-    RETURN count(p) AS people,
-           count(DISTINCT p.department) AS departments
-    """
     groups_cypher = """
     MATCH (p:Person {org_id: $org_id})
     WHERE p.canonical_email IS NOT NULL AND size(coalesce(p.groups, [])) > 0
@@ -294,12 +307,65 @@ async def get_org_summary(org_id: str) -> OrgSummaryResponse:
     )
 
 
-async def require_org_id(x_org_id: str = Header(..., alias="X-Org-Id")) -> str:
-    """FastAPI dependency: validate ``X-Org-Id`` and return the org id."""
+def _bearer_token(request: Request) -> str:
+    header = request.headers.get("Authorization") or ""
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Missing access token.")
+    return token.strip()
 
-    if not x_org_id.strip():
-        raise HTTPException(status_code=401, detail="Missing organization context.")
-    org = await get_org_by_id(x_org_id.strip())
+
+async def require_user_context(request: Request) -> tuple[str, str]:
+    """Validate Bearer JWT and ensure the user still belongs to the org."""
+
+    claims = decode_access_token(_bearer_token(request))
+    user = await get_user_by_id(claims.org_id, claims.user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid user for this organization.")
+    org = await get_org_by_id(claims.org_id)
     if org is None:
         raise HTTPException(status_code=401, detail="Invalid or unknown organization.")
-    return x_org_id.strip()
+    return claims.org_id, claims.user_id
+
+
+async def require_admin_context(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> tuple[str, str]:
+    """Require an organization administrator for privileged APIs."""
+
+    org_id, user_id = ctx
+    user = await get_user_by_id(org_id, user_id)
+    if user is None or user.role != "admin":
+        raise HTTPException(status_code=403, detail="Organization admin access is required.")
+    return ctx
+
+
+async def require_org_id(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> str:
+    """Return the authenticated organization id from the Bearer JWT."""
+
+    org_id, _ = ctx
+    return org_id
+
+
+# Re-export for callers that verify Google tokens at the route layer.
+__all__ = [
+    "Base",
+    "OrganizationRow",
+    "UserRow",
+    "normalize_domain",
+    "email_domain",
+    "get_org_by_id",
+    "get_user_by_id",
+    "get_user_access_tokens",
+    "get_org_by_domain",
+    "upsert_user",
+    "create_org",
+    "google_signin",
+    "get_org_summary",
+    "require_user_context",
+    "require_admin_context",
+    "require_org_id",
+    "verify_google_id_token",
+]

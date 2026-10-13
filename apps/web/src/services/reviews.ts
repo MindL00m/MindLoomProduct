@@ -103,6 +103,33 @@ export async function sendProposedExpertMessage(
   return response.json();
 }
 
+export async function sendProposedEmail(
+  recipientEmail: string,
+  subject: string,
+  body: string,
+): Promise<{ status: string; provider_message_id?: string }> {
+  const response = await apiFetch("/knowledge/reviews/messages/send-proposed-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient_email: recipientEmail,
+      subject,
+      body,
+    }),
+  });
+  if (!response.ok) {
+    let detail = "Could not send the proposed email.";
+    try {
+      const parsed = await response.json();
+      detail = (parsed?.detail as string) || detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
 export async function sendExpertMessage(
   reviewId: string,
   message: string,

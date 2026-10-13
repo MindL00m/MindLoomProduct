@@ -1,1 +1,11 @@
 /// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_API_BASE?: string;
+  readonly VITE_GOOGLE_CLIENT_ID?: string;
+  readonly VITE_DESKTOP_AGENT_DOWNLOAD_URL?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}

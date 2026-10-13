@@ -5,8 +5,10 @@ import { WizardCard } from "@/components/WizardCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { Input } from "@/components/ui/input";
+import { GoogleIcon } from "@/components/icons";
+import { requestGoogleIdToken } from "@/lib/googleAuth";
 import { useOnboarding, normalizeDomain } from "@/store/onboarding";
-import { AuthError, createOrg } from "@/services/auth";
+import { createOrg, toClientSession } from "@/services/auth";
 import { useSession } from "@/store/session";
 
 export default function CreateOrg() {
@@ -16,58 +18,76 @@ export default function CreateOrg() {
 
   const [name, setName] = useState(organizationName);
   const [domainInput, setDomainInput] = useState(domain);
-  const [adminEmail, setAdminEmail] = useState("");
+  const [idToken, setIdToken] = useState<string | null>(null);
+  const [googleEmail, setGoogleEmail] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
   const nameError = name.trim() === "" ? "Organization name is required." : "";
   const normalized = normalizeDomain(domainInput);
+  const googleEmailDomain =
+    googleEmail?.includes("@") ? normalizeDomain(googleEmail.split("@")[1] ?? "") : "";
   const domainError =
     normalized === ""
       ? "Company domain is required."
       : !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalized)
         ? "Enter a valid domain, e.g. acme.com."
-        : "";
-  const emailNorm = adminEmail.trim().toLowerCase();
-  const emailError =
-    emailNorm === ""
-      ? "Admin Google email is required."
-      : !emailNorm.includes("@")
-        ? "Enter a valid email address."
-        : !emailNorm.endsWith(`@${normalized}`) && normalized
-          ? `Email must use @${normalized}.`
+        : googleEmailDomain && normalized !== googleEmailDomain
+          ? `Domain must match your Google account (${googleEmailDomain}).`
           : "";
+  const googleError = !idToken ? "Verify your Google account before creating the organization." : "";
 
-  const isValid = !nameError && !domainError && !emailError;
+  const isValid = !nameError && !domainError && !googleError;
+
+  async function handleGoogleVerify() {
+    setApiError(null);
+    setGoogleLoading(true);
+    try {
+      const token = await requestGoogleIdToken();
+      setIdToken(token);
+      // Decode email from JWT payload for display only (server re-verifies).
+      try {
+        const payload = JSON.parse(atob(token.split(".")[1] ?? "")) as { email?: string };
+        const email = payload.email ?? null;
+        setGoogleEmail(email);
+        // Prefill company domain from the verified Google email.
+        if (email?.includes("@")) {
+          const emailDomain = normalizeDomain(email.split("@")[1] ?? "");
+          if (emailDomain) setDomainInput(emailDomain);
+        }
+      } catch {
+        setGoogleEmail(null);
+      }
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : "Google verification failed.");
+      setIdToken(null);
+      setGoogleEmail(null);
+    } finally {
+      setGoogleLoading(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setTouched(true);
     setApiError(null);
-    if (!isValid) return;
+    if (!isValid || !idToken) return;
 
     setLoading(true);
     try {
       const session = await createOrg({
         name: name.trim(),
         domain: normalized,
-        adminEmail: emailNorm,
+        idToken,
       });
       setOrganization(name.trim(), normalized);
-      setSession({
-        orgId: session.org_id,
-        orgName: session.org_name,
-        userId: session.user_id,
-        email: session.email,
-        name: session.name,
-        photoUrl: session.photo_url,
-        role: session.role,
-      });
+      setSession(toClientSession(session));
       navigate("/dashboard");
     } catch (err) {
       setApiError(
-        err instanceof AuthError ? err.message : "Could not create organization.",
+        err instanceof Error ? err.message : "Could not create organization.",
       );
     } finally {
       setLoading(false);
@@ -121,19 +141,24 @@ export default function CreateOrg() {
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="admin-email" className="text-sm font-medium">
-            Your Google email (admin)
-          </label>
-          <Input
-            id="admin-email"
-            type="email"
-            placeholder={normalized ? `you@${normalized}` : "you@company.com"}
-            value={adminEmail}
-            invalid={touched && !!emailError}
-            onChange={(e) => setAdminEmail(e.target.value)}
-          />
-          {touched && emailError && (
-            <p className="text-xs text-destructive">{emailError}</p>
+          <span className="text-sm font-medium">Admin Google account</span>
+          {googleEmail ? (
+            <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+              Verified as <span className="font-medium">{googleEmail}</span>
+            </p>
+          ) : (
+            <PrimaryButton
+              type="button"
+              className="w-full"
+              loading={googleLoading}
+              onClick={() => void handleGoogleVerify()}
+            >
+              {!googleLoading && <GoogleIcon className="size-5" />}
+              {googleLoading ? "Verifying…" : "Verify with Google"}
+            </PrimaryButton>
+          )}
+          {touched && googleError && (
+            <p className="text-xs text-destructive">{googleError}</p>
           )}
         </div>
 
@@ -144,7 +169,7 @@ export default function CreateOrg() {
             <ArrowLeft />
             Back
           </SecondaryButton>
-          <PrimaryButton type="submit" loading={loading}>
+          <PrimaryButton type="submit" loading={loading} disabled={!idToken}>
             Create organization
             <ArrowRight />
           </PrimaryButton>

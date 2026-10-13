@@ -10,10 +10,15 @@ export interface Turn {
   error?: string;
   /** Copied from the API so the approve card survives store quirks. */
   proposedMessage?: QueryResponse["proposed_message"];
+  proposedEmail?: QueryResponse["proposed_email"];
   /** Local UI state for Ask-proposed Expert Messages. */
   proposalState?: "pending" | "sending" | "sent" | "cancelled";
   proposalReviewId?: string;
   proposalError?: string;
+  /** Local UI state for Ask-proposed emails. */
+  emailProposalState?: "pending" | "sending" | "sent" | "cancelled";
+  emailProposalId?: string;
+  emailProposalError?: string;
   /** Copied from the API so the PR diff modal survives store quirks. */
   proposedPullRequest?: QueryResponse["proposed_pull_request"];
   /** Local UI state for Ask-proposed GitHub PRs. */

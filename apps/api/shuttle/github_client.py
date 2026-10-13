@@ -9,7 +9,6 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
-from core.config import get_settings
 from core.provider_http import request_with_backoff
 
 _API = "https://api.github.com"
@@ -17,40 +16,101 @@ _ACCEPT = "application/vnd.github+json"
 _API_VERSION = "2022-11-28"
 
 
-def github_configured() -> bool:
-    return bool(get_settings().github_token.strip())
-
-
-def _headers() -> dict[str, str]:
-    token = get_settings().github_token.strip()
-    if not token:
-        raise ValueError("GITHUB_TOKEN is not configured.")
+def _headers(token: str) -> dict[str, str]:
+    secret = token.strip()
+    if not secret:
+        raise ValueError("GitHub token is missing.")
     return {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {secret}",
         "Accept": _ACCEPT,
         "X-GitHub-Api-Version": _API_VERSION,
-        "User-Agent": "MindLoom",
+        "User-Agent": "CompanyBrain-MindLoom",
     }
 
 
-def _not_configured() -> dict[str, Any]:
-    return {
-        "error": (
-            "GITHUB_TOKEN is not configured. Add it to the project root .env file "
-            "and restart the API."
+def repo_full_name(full_name: object, owner: object = None, name: object = None) -> str:
+    if isinstance(full_name, str) and full_name.strip():
+        return full_name.strip()
+    owner_s = str(owner or "").strip()
+    name_s = str(name or "").strip()
+    if owner_s and name_s:
+        return f"{owner_s}/{name_s}"
+    return ""
+
+
+def _github_error(status: int, text: str) -> dict[str, Any]:
+    return {"error": f"GitHub API error ({status}): {text[:400]}"}
+
+
+def _payload_message(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    message = str(payload.get("message") or "").strip()
+    if message:
+        parts.append(message)
+    for item in payload.get("errors") or []:
+        if isinstance(item, dict) and item.get("message"):
+            parts.append(str(item["message"]).strip())
+        elif isinstance(item, str) and item.strip():
+            parts.append(item.strip())
+    return " ".join(part for part in parts if part)
+
+
+def _raise_github(
+    status: int,
+    payload: Any,
+    fallback: str,
+    *,
+    write: bool = False,
+) -> None:
+    github_msg = _payload_message(payload)
+    detail = fallback
+    if github_msg and github_msg.lower() not in detail.lower():
+        detail = f"{fallback} {github_msg}"
+    if status in {401, 403} and write:
+        detail += (
+            " A fine-grained token needs Contents: Read and write (not Read only) "
+            "and Pull requests: Read and write on this repository. "
+            "If the org uses SAML SSO, authorize the token for that organization."
         )
-    }
+    code = status if status in {401, 403, 404, 409, 422} else 502
+    raise HTTPException(status_code=code, detail=detail.strip())
+
+
+async def inspect_token(token: str) -> dict[str, Any]:
+    """Validate a PAT and list repositories it can currently see."""
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        user_response = await request_with_backoff(
+            client,
+            "GET",
+            f"{_API}/user",
+            headers=_headers(token),
+        )
+        if user_response.status_code == 401:
+            return {"error": "GitHub rejected this token. Check that it is valid and not expired."}
+        if user_response.status_code >= 400:
+            return _github_error(user_response.status_code, user_response.text)
+        profile = user_response.json()
+        listed = await list_repos(token=token, owner=None, per_page=100)
+        if listed.get("error"):
+            return listed
+        return {
+            "login": profile.get("login") or "",
+            "name": profile.get("name") or "",
+            "html_url": profile.get("html_url") or "",
+            "repositories": listed.get("repositories") or [],
+        }
 
 
 async def list_repos(
     *,
+    token: str,
     owner: str | None = None,
     per_page: int = 30,
 ) -> dict[str, Any]:
-    """List repositories for the authenticated user, or for a given owner/org."""
-
-    if not github_configured():
-        return _not_configured()
+    """List repositories for the authenticated token, or for a given owner/org."""
 
     per_page = max(1, min(per_page, 100))
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -60,7 +120,7 @@ async def list_repos(
                 client,
                 "GET",
                 f"{_API}/users/{login}/repos",
-                headers=_headers(),
+                headers=_headers(token),
                 params={
                     "per_page": str(per_page),
                     "sort": "updated",
@@ -72,7 +132,7 @@ async def list_repos(
                     client,
                     "GET",
                     f"{_API}/orgs/{login}/repos",
-                    headers=_headers(),
+                    headers=_headers(token),
                     params={
                         "per_page": str(per_page),
                         "sort": "updated",
@@ -84,7 +144,7 @@ async def list_repos(
                 client,
                 "GET",
                 f"{_API}/user/repos",
-                headers=_headers(),
+                headers=_headers(token),
                 params={
                     "per_page": str(per_page),
                     "sort": "updated",
@@ -94,9 +154,7 @@ async def list_repos(
             )
 
     if response.status_code >= 400:
-        return {
-            "error": f"GitHub API error ({response.status_code}): {response.text[:400]}"
-        }
+        return _github_error(response.status_code, response.text)
 
     repos = response.json()
     if not isinstance(repos, list):
@@ -120,11 +178,8 @@ async def list_repos(
     }
 
 
-async def get_repo(owner: str, repo: str) -> dict[str, Any]:
+async def get_repo(token: str, owner: str, repo: str) -> dict[str, Any]:
     """Fetch metadata for a single repository."""
-
-    if not github_configured():
-        return _not_configured()
 
     owner = owner.strip()
     repo = repo.strip()
@@ -136,15 +191,13 @@ async def get_repo(owner: str, repo: str) -> dict[str, Any]:
             client,
             "GET",
             f"{_API}/repos/{owner}/{repo}",
-            headers=_headers(),
+            headers=_headers(token),
         )
 
     if response.status_code == 404:
         return {"error": f"Repository {owner}/{repo} not found or not accessible."}
     if response.status_code >= 400:
-        return {
-            "error": f"GitHub API error ({response.status_code}): {response.text[:400]}"
-        }
+        return _github_error(response.status_code, response.text)
 
     data = response.json()
     return {
@@ -163,6 +216,7 @@ async def get_repo(owner: str, repo: str) -> dict[str, Any]:
 
 
 async def get_file_contents(
+    token: str,
     owner: str,
     repo: str,
     path: str,
@@ -170,9 +224,6 @@ async def get_file_contents(
     ref: str | None = None,
 ) -> dict[str, Any]:
     """Read a file (or list a directory) from a repository."""
-
-    if not github_configured():
-        return _not_configured()
 
     owner = owner.strip()
     repo = repo.strip()
@@ -189,20 +240,17 @@ async def get_file_contents(
             client,
             "GET",
             f"{_API}/repos/{owner}/{repo}/contents/{path}",
-            headers=_headers(),
+            headers=_headers(token),
             params=params or None,
         )
 
     if response.status_code == 404:
         return {"error": f"Path {path} not found in {owner}/{repo}."}
     if response.status_code >= 400:
-        return {
-            "error": f"GitHub API error ({response.status_code}): {response.text[:400]}"
-        }
+        return _github_error(response.status_code, response.text)
 
     data = response.json()
 
-    # Directory listing
     if isinstance(data, list):
         return {
             "type": "dir",
@@ -231,7 +279,6 @@ async def get_file_contents(
     text: str | None = None
     if encoding == "base64" and isinstance(content, str):
         raw = base64.b64decode(content)
-        # Cap returned text so tool payloads stay small.
         if len(raw) > 80_000:
             return {
                 "type": "file",
@@ -272,6 +319,7 @@ async def _gh_json(
     method: str,
     url: str,
     *,
+    token: str,
     json_body: dict[str, Any] | None = None,
     params: dict[str, str] | None = None,
 ) -> tuple[int, Any]:
@@ -279,7 +327,7 @@ async def _gh_json(
         client,
         method,
         url,
-        headers=_headers(),
+        headers=_headers(token),
         json=json_body,
         params=params,
     )
@@ -292,6 +340,7 @@ async def _gh_json(
 
 async def create_pull_request_with_file(
     *,
+    token: str,
     owner: str,
     repo: str,
     path: str,
@@ -308,10 +357,10 @@ async def create_pull_request_with_file(
     Only called after explicit user approval — never from the propose tool.
     """
 
-    if not github_configured():
+    if not token.strip():
         raise HTTPException(
             status_code=400,
-            detail="GITHUB_TOKEN is not configured. Add it to .env and restart the API.",
+            detail="GitHub is not connected. Add a token in Apps first.",
         )
 
     owner = owner.strip()
@@ -328,7 +377,7 @@ async def create_pull_request_with_file(
 
     async with httpx.AsyncClient(timeout=45.0) as client:
         status, repo_data = await _gh_json(
-            client, "GET", f"{_API}/repos/{owner}/{repo}"
+            client, "GET", f"{_API}/repos/{owner}/{repo}", token=token
         )
         if status == 404:
             raise HTTPException(
@@ -336,10 +385,7 @@ async def create_pull_request_with_file(
                 detail=f"Repository {owner}/{repo} not found or not accessible.",
             )
         if status >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"GitHub repo lookup failed ({status}).",
-            )
+            _raise_github(status, repo_data, f"GitHub repo lookup failed ({status}).")
         if not base_branch:
             base_branch = str((repo_data or {}).get("default_branch") or "main")
 
@@ -347,36 +393,39 @@ async def create_pull_request_with_file(
             client,
             "GET",
             f"{_API}/repos/{owner}/{repo}/git/ref/heads/{base_branch}",
+            token=token,
         )
         if status >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Could not resolve base branch '{base_branch}' ({status}).",
+            _raise_github(
+                status, ref_data, f"Could not resolve base branch '{base_branch}' ({status})."
             )
         base_sha = ((ref_data or {}).get("object") or {}).get("sha")
         if not base_sha:
             raise HTTPException(status_code=502, detail="Base branch SHA missing.")
 
-        status, _ = await _gh_json(
+        status, ref_create = await _gh_json(
             client,
             "POST",
             f"{_API}/repos/{owner}/{repo}/git/refs",
+            token=token,
             json_body={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
         )
         if status == 422:
-            # Branch may already exist — try a unique suffix.
             suffix = base_sha[:7]
             branch_name = f"{branch_name}-{suffix}"
-            status, _ = await _gh_json(
+            status, ref_create = await _gh_json(
                 client,
                 "POST",
                 f"{_API}/repos/{owner}/{repo}/git/refs",
+                token=token,
                 json_body={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
             )
         if status >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Could not create branch '{branch_name}' ({status}).",
+            _raise_github(
+                status,
+                ref_create,
+                f"Could not create branch '{branch_name}' ({status}).",
+                write=True,
             )
 
         put_body: dict[str, Any] = {
@@ -391,19 +440,22 @@ async def create_pull_request_with_file(
             client,
             "PUT",
             f"{_API}/repos/{owner}/{repo}/contents/{path}",
+            token=token,
             json_body=put_body,
         )
         if status >= 400:
-            detail = (put_data or {}).get("message") if isinstance(put_data, dict) else None
-            raise HTTPException(
-                status_code=502,
-                detail=detail or f"Could not commit file change ({status}).",
+            _raise_github(
+                status,
+                put_data,
+                f"Could not commit file change ({status}).",
+                write=True,
             )
 
         status, pr_data = await _gh_json(
             client,
             "POST",
             f"{_API}/repos/{owner}/{repo}/pulls",
+            token=token,
             json_body={
                 "title": pr_title.strip(),
                 "body": (pr_body or "").strip()
@@ -413,10 +465,11 @@ async def create_pull_request_with_file(
             },
         )
         if status >= 400:
-            detail = (pr_data or {}).get("message") if isinstance(pr_data, dict) else None
-            raise HTTPException(
-                status_code=502,
-                detail=detail or f"Could not open pull request ({status}).",
+            _raise_github(
+                status,
+                pr_data,
+                f"Could not open pull request ({status}).",
+                write=True,
             )
 
     return {

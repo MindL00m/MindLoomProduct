@@ -1,0 +1,186 @@
+# MindLoom Desktop Capture Agent (macOS)
+
+Privacy-focused menu-bar agent that captures **structured Accessibility interaction events** from an explicit app allowlist, aggregates them on-device into task summaries, and uploads only those aggregates to the Loom API. Raw events stay on the device; no screenshots or keystroke content are transmitted.
+
+## Privacy defaults
+
+- Empty allowlist → structurally nothing is captured
+- Non-allowlisted apps never attach AX observers
+- Password / secure fields are redacted at capture time
+- Text field values (`AXValue`) are never read
+- Only task summaries leave the device
+
+## Requirements
+
+- macOS 13+
+- Swift 5.9+ / Xcode Command Line Tools (or Xcode)
+- Loom API running (e.g. `docker compose up` → `http://localhost:8000`)
+- Accessibility permission for the **packaged** `Loom Capture.app` (not a raw `swift run` binary)
+
+### Accessibility (important)
+
+macOS ties Accessibility to a specific app identity. After every rebuild:
+
+1. `./scripts/package-app.sh` (installs `~/Applications/Loom Capture.app`)
+2. `open "$HOME/Applications/Loom Capture.app"`
+3. System Settings → Privacy & Security → Accessibility: remove old Loom Capture rows, add **this** app, toggle ON
+4. **Quit the agent completely and reopen it** from `~/Applications` (permission does not apply to the already-running process)
+
+Do not keep using `dist/Loom Capture.app` after a rebuild — packaging deletes `dist/`, so the Accessibility toggle is left pointing at a dead copy.
+
+If it still says permission isn’t granted, remove old `MindLoomAgent` / `Loom Capture` rows, add `dist/Loom Capture.app` with +, enable, quit, reopen.
+
+## Build & run
+
+```bash
+cd apps/desktop-agent
+swift run MindLoomAgent
+```
+
+Or package and launch as a real macOS app (recommended — survives closing the terminal):
+
+```bash
+cd apps/desktop-agent
+chmod +x scripts/package-app.sh
+./scripts/package-app.sh
+open "$HOME/Applications/Loom Capture.app"
+```
+
+A **Loom Capture** control window should open. Use that window for Start / Pause /
+End. Open **Setup** (above Sign out) for allowlist and Accessibility. A menu-bar
+item is also registered, but your menu bar may be too full for it to appear.
+
+If you only ran `swift build`, that compiles and exits — it does not launch the agent.
+
+### Publish a website download
+
+The package script also writes `apps/web/public/downloads/LoomCapture-macos.zip`.
+Rebuild/redeploy the frontend after packaging so nginx can serve it.
+
+For a deployed site, bake the public web origin so downloaded copies sign in
+against production instead of localhost:
+
+```bash
+cd apps/desktop-agent
+LOOM_WEB_BASE=https://your-web-host ./scripts/package-app.sh
+# Optional if the API is not at https://your-web-host/api:
+# LOOM_API_BASE=https://your-api-host
+```
+
+Then rebuild the web image. People can:
+
+- Open `/download` on the website
+- Or use **Download Loom Capture for Mac** on the welcome page, Home, and Workflows
+
+Website zip downloads are blocked by Gatekeeper until the app is **Developer ID
+signed and notarized**. Ad-hoc signing is only for launching `dist/Loom Capture.app`
+on the build Mac.
+
+Until you notarize, install from Terminal (avoids Finder quarantine). After
+redeploying the frontend, copy the command on `/download`, or run:
+
+```bash
+curl -fsSL https://your-web-host/downloads/install-loom-capture.sh | bash -s -- https://your-web-host
+```
+
+To ship a zip Apple will open from a browser download:
+
+```bash
+# One-time: Apple Developer ID Application cert in Keychain, plus a notary profile:
+#   xcrun notarytool store-credentials loom-notary --apple-id … --team-id … --password <app-specific-password>
+export MACOS_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export MACOS_NOTARY_PROFILE="loom-notary"
+# Or App Store Connect API key: APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER
+LOOM_WEB_BASE=https://your-web-host ./scripts/package-app.sh
+```
+
+The zip is gitignored by default. Either force-add it for Git-based deploys, or
+host it separately and set `VITE_DESKTOP_AGENT_DOWNLOAD_URL`.
+
+## Configuration
+
+On first launch the agent writes `~/.mindloom/agent.json`. Packaged builds bake
+`apiBase` / `webBase` from `LOOM_WEB_BASE` and `LOOM_API_BASE` (or `/api` on the
+web host). A local unpackaged build still defaults to:
+
+```json
+{
+  "apiBase": "http://localhost:8000",
+  "webBase": "http://localhost:5500",
+  "orgId": "default",
+  "userId": "desktop-user",
+  "accessToken": "",
+  "email": "",
+  "allowlist": [],
+  "idleGapSeconds": 90
+}
+```
+
+### Sign in (required for upload)
+
+1. Start the Loom web app (Compose `:5500` or Vite `:5173` — set `webBase` to match).
+2. In the **Loom Capture** window, click **Sign in with Google**.
+3. Your browser opens `/desktop-auth`; finish Google sign-in (or reuse an existing web session).
+4. The page sends the Loom JWT back to the agent over `127.0.0.1`; the token is saved in `agent.json`.
+
+You should not need to copy tokens from DevTools. Use **Sign out** to clear the saved session.
+
+`apiBase` is the Loom API the agent uploads to. `webBase` is only for the browser sign-in page.
+
+- **Add Frontmost App to Allowlist** — grant capture for the active app (Setup screen or menu bar)
+- **Remove** an allowlisted app
+- **Open Config File…** / **Reload Config**
+- **Grant Accessibility Permission…** if needed
+
+Local raw events (debug / retention) are appended under `~/.mindloom/events/` and are **not** uploaded.
+
+## Capture workflow
+
+1. Grant Accessibility when prompted (System Settings → Privacy & Security → Accessibility), or open **Setup**.
+2. Add the apps you want captured to the allowlist (**Setup**).
+3. **Start Session** — status shows Capturing (or Paused / Needs Accessibility).
+4. Work in allowlisted apps. Use **Pause / Resume** anytime (user-controlled, independent of admin).
+5. **End** uploads the session and drafts a Skill File (`POST /captures/activity-sessions` plus analyze).
+6. Review the proposed Skill File in the web app **Workflows** tab (source badge: **Desktop**).
+7. Approve to ingest into the knowledge graph (same path as browser skills).
+
+## Smoke test
+
+1. Start the stack: `docker compose up --build` from the repo root.
+2. Run the agent; click **Sign in with Google** and finish in the browser.
+3. Add **Notes** (or another app) to the allowlist.
+4. Start a session, create/edit a note for ~30s, then **End**.
+5. Open <http://localhost:5500> → Workflows → confirm a **Desktop** skill draft.
+6. Approve it; confirm it becomes searchable via Ask / appears as a `skill_file` document.
+
+## API contract (agent → API)
+
+`POST /captures/activity-sessions`
+
+```json
+{
+  "sessionId": "session-…",
+  "orgId": "default",
+  "userId": "desktop-user",
+  "source": "desktop_ax",
+  "startedAt": "2026-08-02T12:00:00Z",
+  "endedAt": "2026-08-02T12:05:00Z",
+  "tasks": [
+    {
+      "taskId": "…",
+      "startedAt": "…",
+      "endedAt": "…",
+      "primaryApp": "Notes",
+      "apps": ["Notes"],
+      "stepHints": ["Focus Notes", "Click New Note"],
+      "fieldInteractions": [
+        { "role": "AXTextArea", "label": "Note body", "durationMs": 1200 }
+      ],
+      "stats": { "eventCount": 4, "activeMs": 300000 }
+    }
+  ],
+  "note": ""
+}
+```
+
+`POST /captures/activity-sessions/{sessionId}/analyze` drafts a Skill File from those summaries (text-only LLM; no vision).

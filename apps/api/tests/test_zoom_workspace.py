@@ -5,6 +5,8 @@ import hmac
 from types import SimpleNamespace
 
 from weaver import zoom_workspace
+
+
 def test_zoom_webhook_signature(monkeypatch):
     secret = "zoom-secret"
     monkeypatch.setattr(

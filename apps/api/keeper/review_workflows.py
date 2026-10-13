@@ -18,6 +18,8 @@ from brain.source_registry import (
     mark_external_source_deleted,
 )
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -69,17 +71,32 @@ async def create_expert_request(
 
     factory = get_session_factory()
     async with factory() as session:
-        expert = (
-            await session.execute(text("""
+        if expert_email:
+            lookup_sql = """
                 SELECT user_id, email FROM users
                 WHERE org_id=:org
                   AND (
-                    (:email IS NOT NULL AND lower(email)=lower(:email))
+                    lower(email)=lower(:email)
                     OR lower(coalesce(name, ''))=lower(:name)
                   )
-                ORDER BY CASE WHEN lower(email)=lower(coalesce(:email, '')) THEN 0 ELSE 1 END
+                ORDER BY CASE WHEN lower(email)=lower(:email) THEN 0 ELSE 1 END
                 LIMIT 1
-            """), {"org": org_id, "email": expert_email, "name": expert_name})
+            """
+            lookup_params = {
+                "org": org_id,
+                "email": expert_email,
+                "name": expert_name,
+            }
+        else:
+            lookup_sql = """
+                SELECT user_id, email FROM users
+                WHERE org_id=:org
+                  AND lower(coalesce(name, ''))=lower(:name)
+                LIMIT 1
+            """
+            lookup_params = {"org": org_id, "name": expert_name}
+        expert = (
+            await session.execute(text(lookup_sql), lookup_params)
         ).mappings().one_or_none()
         if expert is None:
             return None
@@ -515,7 +532,7 @@ async def lookup_messageable_people(
     exclude_user_id: str | None = None,
     limit: int = 8,
 ) -> list[dict]:
-    """Rank signed-in org users matching name, email, or directory title/role."""
+    """Rank org users and directory emails matching name, email, or title/role."""
 
     cleaned = " ".join(query.strip().split())
     if not cleaned:
@@ -607,7 +624,18 @@ async def lookup_messageable_people(
 
     for hit in directory_hits:
         email = str(hit.get("email") or "").lower()
-        if not email or email not in by_email:
+        if not email:
+            continue
+        if email not in by_email:
+            by_email[email] = {
+                "user_id": "",
+                "name": hit.get("name") or email,
+                "email": email,
+                "role": None,
+                "title": hit.get("title"),
+                "department": hit.get("department"),
+                "rank_score": int(hit.get("rank_score") or 5),
+            }
             continue
         item = by_email[email]
         if hit.get("title"):
@@ -657,7 +685,58 @@ async def lookup_messageable_people(
     results: list[dict] = []
     for item in ranked[:limit]:
         results.append({k: v for k, v in item.items() if k != "rank_score"})
+    if _EMAIL_RE.match(cleaned):
+        typed = cleaned.lower()
+        if not any(str(item.get("email") or "").lower() == typed for item in results):
+            results.insert(
+                0,
+                {
+                    "user_id": "",
+                    "name": typed.split("@")[0],
+                    "email": typed,
+                },
+            )
+            results = results[:limit]
     return results
+
+
+async def send_proposed_email(
+    *,
+    org_id: str,
+    requester_user_id: str,
+    recipient_email: str,
+    subject: str,
+    body: str,
+) -> dict:
+    """Send an Ask-confirmed email from the requester's connected Gmail."""
+
+    recipient = recipient_email.strip()
+    if not _EMAIL_RE.match(recipient):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    cleaned_subject = subject.strip()
+    cleaned_body = body.strip()
+    if not cleaned_subject or not cleaned_body:
+        raise HTTPException(status_code=400, detail="Subject and body are required.")
+
+    from weaver.integrations import has_google_workspace_connection
+    from shuttle.notification_delivery import send_user_gmail
+
+    if not await has_google_workspace_connection(org_id, requester_user_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Connect Google Workspace to send email.",
+        )
+    try:
+        message_id = await send_user_gmail(
+            org_id=org_id,
+            user_id=requester_user_id,
+            recipient=recipient,
+            subject=cleaned_subject,
+            body=cleaned_body,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "sent", "provider_message_id": message_id}
 
 
 async def send_proposed_expert_message(

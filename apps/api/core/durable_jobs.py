@@ -17,6 +17,17 @@ from core.models import Conversation, JobStatus
 
 QUEUE_NAME = "loom:jobs"
 PROCESSING_QUEUE_NAME = "loom:jobs:processing"
+WORKER_HEARTBEAT_KEY = "loom:worker:heartbeat"
+WORKER_HEARTBEAT_TTL_SECONDS = 60
+WORKER_HEARTBEAT_STALE_SECONDS = 90
+
+
+async def touch_worker_heartbeat(redis: Redis) -> str:
+    """Refresh the shared worker liveness key (ISO-UTC timestamp, short TTL)."""
+
+    stamp = datetime.now(timezone.utc).isoformat()
+    await redis.set(WORKER_HEARTBEAT_KEY, stamp, ex=WORKER_HEARTBEAT_TTL_SECONDS)
+    return stamp
 
 
 async def set_job(job: JobStatus) -> None:
@@ -125,7 +136,16 @@ async def execute(message: dict[str, Any]) -> None:
             from brain.pipeline import run_ingestion_background
 
             await run_ingestion_background(
-                job_id, Conversation.model_validate(payload["conversation"]), org_id, local
+                job_id,
+                Conversation.model_validate(payload["conversation"]),
+                org_id,
+                local,
+                visible_to=list(payload.get("visible_to") or []) or None,
+                uploaded_by=(
+                    str(payload["uploaded_by"])
+                    if payload.get("uploaded_by")
+                    else None
+                ),
             )
         elif kind == "pdf":
             from brain.pipeline import run_pdf_ingestion_background

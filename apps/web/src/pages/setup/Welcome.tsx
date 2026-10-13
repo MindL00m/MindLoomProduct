@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, Building2, LogIn } from "lucide-react";
+import { ArrowRight, Building2, LogIn, Monitor } from "lucide-react";
 import { WizardCard } from "@/components/WizardCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
@@ -31,6 +31,14 @@ export default function Welcome() {
             <Building2 />
             Set up a new organization
             <ArrowRight />
+          </SecondaryButton>
+          <SecondaryButton
+            size="lg"
+            className="w-full"
+            onClick={() => navigate("/download")}
+          >
+            <Monitor />
+            Download MindLoom Capture for Mac
           </SecondaryButton>
         </div>
       }

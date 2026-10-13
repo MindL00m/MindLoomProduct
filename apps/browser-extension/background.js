@@ -3,11 +3,12 @@ const SESSION_KEY = "captureSessionId";
 const LAST_SESSION_KEY = "lastCaptureSessionId";
 const PENDING_KEY = "pendingCaptures";
 const APPROVED_KEY = "approvedCaptures";
+const API_BASE_KEY = "apiBase";
+const ACCESS_TOKEN_KEY = "accessToken";
 const CAPTURE_INTERVAL_MS = 10_000;
 const TAB_CAPTURE_DEBOUNCE_MS = 3_000;
 const MAX_CAPTURES = 50;
-// Approved screenshots go to MindLoom's single Python API.
-const BACKEND_CAPTURES_URL = "http://localhost:8000/captures";
+const DEFAULT_API_BASE = "http://localhost:8000";
 
 /** @type {{ tabId: number | null, url: string, title: string, windowId: number | null }} */
 let activeTabState = {
@@ -104,10 +105,31 @@ function removeFromApprovedQueue(id) {
   return true;
 }
 
+async function getApiConfig() {
+  const stored = await chrome.storage.local.get([API_BASE_KEY, ACCESS_TOKEN_KEY]);
+  const apiBase = String(stored[API_BASE_KEY] || DEFAULT_API_BASE).replace(/\/$/, "");
+  const accessToken = String(stored[ACCESS_TOKEN_KEY] || "").trim();
+  return { apiBase, accessToken };
+}
+
+async function authHeaders() {
+  const { accessToken } = await getApiConfig();
+  if (!accessToken) {
+    throw new Error(
+      "Missing MindLoom access token. Open the extension popup and paste your MindLoom access token.",
+    );
+  }
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${accessToken}`,
+  };
+}
+
 async function postCaptureToBackend(capture) {
-  const response = await fetch(BACKEND_CAPTURES_URL, {
+  const { apiBase } = await getApiConfig();
+  const response = await fetch(`${apiBase}/captures`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders(),
     body: JSON.stringify({
       id: capture.id,
       timestamp: capture.timestamp,
@@ -118,8 +140,6 @@ async function postCaptureToBackend(capture) {
       sessionId: capture.sessionId,
       note: capture.note || "",
       redactions: capture.redactions || [],
-      orgId: capture.orgId || "default",
-      userId: capture.userId || "browser-user",
     }),
   });
 
@@ -438,12 +458,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "ANALYZE_SESSION") {
-    fetch(`${BACKEND_CAPTURES_URL}/sessions/${encodeURIComponent(message.sessionId)}/analyze`, {
-      method: "POST",
-    }).then(async (response) => {
-      const body = await response.json();
-      sendResponse(response.ok ? { ok: true, skill: body } : { ok: false, error: body.detail });
-    }).catch((error) => sendResponse({ ok: false, error: String(error) }));
+    getApiConfig()
+      .then(async ({ apiBase }) => {
+        const response = await fetch(
+          `${apiBase}/captures/sessions/${encodeURIComponent(message.sessionId)}/analyze`,
+          {
+            method: "POST",
+            headers: await authHeaders(),
+          },
+        );
+        const body = await response.json().catch(() => ({}));
+        sendResponse(
+          response.ok
+            ? { ok: true, skill: body }
+            : { ok: false, error: body.detail || `HTTP ${response.status}` },
+        );
+      })
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
 

@@ -9,15 +9,20 @@ The source is grouped by agent, matching how the product is described:
 ```text
 main.py      HTTP app, startup and the remaining top-level routes
 worker.py    Durable Redis ingestion worker (python -m worker)
-api/routes/  HTTP routers for captures, reviews, status, workspaces, ...
-core/        Shared infrastructure: config, databases, models, jobs, HTTP helpers
+api/routes/  HTTP routers for captures, GitHub, LLM settings, reviews, status,
+             workspaces, WhatsApp, Zoom and connection setup
+core/        Shared infrastructure: config, databases, models, schema, jobs,
+             Redis, rate limits, health probes, token encryption, the
+             organization-selectable LLM provider and HTTP helpers
 brain/       The MindLoom Brain: ingestion pipeline, parsers, chunkers, file text,
              extraction, embeddings, storage and retrieval
-loombot/     Loombot: Ask agent, cited answers, workspaces and CONTEXT.md
-weaver/      Weaver (Capture): Google, Microsoft, Zoom, WhatsApp connectors,
-             connection setup, sync reporting and MindLoom Capture
-keeper/      Keeper (Keep true): tenancy and access, review queues,
-             expert answers, conflicts and expiry schedules
+loombot/     LoomBot: Ask agent, cited answers, workspaces and CONTEXT.md
+weaver/      Weaver (Capture): Google, Microsoft, Zoom, WhatsApp and GitHub
+             connectors, webhook verification, connection setup, sync
+             reporting and MindLoom Capture
+keeper/      Keeper (Keep true): sign-in and session tokens, tenancy and
+             visibility ACLs, review queues, expert answers, conflicts and
+             expiry schedules
 lens/        Lens (Understand): status board and analysis
 shuttle/     Shuttle (Act): notification delivery and GitHub pull requests
 tests/       Automated backend tests
@@ -32,6 +37,21 @@ modules by package, for example `from brain.retrieval import retrieve`.
 Long imports are queued in Redis, tracked in PostgreSQL, and processed by
 `python -m worker`. Run the API and worker together; Docker Compose does this
 automatically.
+
+## Local chat models
+
+Organization administrators can switch Ask from OpenAI to a self-hosted model
+in Company home → Chat model. The base URL must expose the OpenAI-compatible
+`GET /v1/models` and `POST /v1/chat/completions` API, including SSE chunks when
+`stream: true` is requested. Ollama, vLLM, llama.cpp, or another server may be
+used when its OpenAI compatibility layer is enabled; enter the URL through
+`/v1` (for example `http://llm-host:8000/v1`) and the exact served model name.
+
+The endpoint is contacted by the API container, not by the browser. A Railway
+deployment therefore cannot use `localhost` to reach a model on a developer's
+laptop. Set `LOCAL_LLM_API_KEY` when the endpoint requires a bearer token.
+Embeddings remain on the existing OpenAI embedding path so stored pgvector
+dimensions and retrieval rankings do not change when the answer model changes.
 
 The Microsoft connection covers Teams and SharePoint. Its Entra delegated
 permissions are `User.Read`, `Team.ReadBasic.All`, `Channel.ReadBasic.All`,

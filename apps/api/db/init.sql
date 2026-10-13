@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_org_id ON users (org_id);
 
+CREATE TABLE IF NOT EXISTS organization_llm_settings (
+    org_id          TEXT PRIMARY KEY REFERENCES organizations (org_id) ON DELETE CASCADE,
+    provider        TEXT NOT NULL DEFAULT 'openai' CHECK (provider IN ('openai', 'local')),
+    base_url        TEXT,
+    model           TEXT,
+    context_window  INTEGER NOT NULL DEFAULT 16384 CHECK (context_window >= 1024),
+    supports_tools  BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- --- Connected apps (per user, org-scoped) --------------------------------
 
 CREATE TABLE IF NOT EXISTS app_connections (
@@ -192,3 +202,57 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org_id ON ingestion_jobs (org_id);
+
+-- --- Browser / desktop captures (metadata; images in blob storage) --------
+
+CREATE TABLE IF NOT EXISTS captures (
+    capture_id      TEXT PRIMARY KEY,
+    org_id          TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id         TEXT        NOT NULL,
+    timestamp_ms    BIGINT      NOT NULL,
+    url             TEXT        NOT NULL DEFAULT '',
+    tab_title       TEXT        NOT NULL DEFAULT '',
+    window_id       INTEGER,
+    blob_key        TEXT        NOT NULL,
+    session_id      TEXT        NOT NULL DEFAULT '',
+    note            TEXT        NOT NULL DEFAULT '',
+    redactions_json TEXT        NOT NULL DEFAULT '[]',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_captures_org_session
+    ON captures (org_id, session_id, timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS capture_summaries (
+    capture_id   TEXT PRIMARY KEY REFERENCES captures (capture_id) ON DELETE CASCADE,
+    org_id       TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    payload_json TEXT        NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_capture_summaries_org
+    ON capture_summaries (org_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS activity_sessions (
+    session_id   TEXT PRIMARY KEY,
+    org_id       TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id      TEXT        NOT NULL,
+    payload_json TEXT        NOT NULL,
+    received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_sessions_org
+    ON activity_sessions (org_id, received_at DESC);
+
+CREATE TABLE IF NOT EXISTS skill_files (
+    skill_id     TEXT PRIMARY KEY,
+    org_id       TEXT        NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    session_id   TEXT        NOT NULL,
+    payload_json TEXT        NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_files_org
+    ON skill_files (org_id, updated_at DESC);

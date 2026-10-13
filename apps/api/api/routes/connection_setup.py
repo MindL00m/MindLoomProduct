@@ -12,7 +12,7 @@ from weaver.connection_setup import (
     save_policy,
     set_policy_status,
 )
-from weaver.integrations import require_admin_context
+from weaver.integrations import require_user_context
 from core.durable_jobs import enqueue
 from core.models import (
     ConnectionPolicyInput,
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/integrations/{provider}/setup", tags=["connection se
 @router.get("/sync-runs")
 async def sync_runs(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> list[dict]:
     return await list_sync_runs(ctx[0], provider)
 
@@ -38,7 +38,7 @@ async def sync_runs(
 @router.get("/resources", response_model=ConnectionResourcesResponse)
 async def resources(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionResourcesResponse:
     return await discover_resources(*ctx, provider)
 
@@ -46,7 +46,7 @@ async def resources(
 @router.get("/policy", response_model=ConnectionPolicyResponse | None)
 async def current_policy(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPolicyResponse | None:
     row = await get_policy(*ctx, provider)
     return policy_response(row) if row else None
@@ -56,7 +56,7 @@ async def current_policy(
 async def preview(
     provider: str,
     request: ConnectionPreviewRequest,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPreviewResponse:
     return await preview_policy(*ctx, provider, request)
 
@@ -65,7 +65,7 @@ async def preview(
 async def confirm(
     provider: str,
     request: ConnectionPolicyInput,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPolicyResponse:
     org_id, user_id = ctx
     row = await save_policy(org_id, user_id, provider, request, status="importing")
@@ -81,7 +81,7 @@ async def confirm(
 @router.post("/pause", response_model=ConnectionPolicyResponse)
 async def pause(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPolicyResponse:
     return policy_response(await set_policy_status(*ctx, provider, "paused"))
 
@@ -89,7 +89,7 @@ async def pause(
 @router.post("/resume", response_model=ConnectionPolicyResponse)
 async def resume(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPolicyResponse:
     return policy_response(await set_policy_status(*ctx, provider, "active"))
 
@@ -97,7 +97,7 @@ async def resume(
 @router.delete("")
 async def disconnect(
     provider: str,
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict[str, str]:
     await disconnect_controlled_connection(*ctx, provider)
     return {"status": "disconnected"}

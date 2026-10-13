@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   LayoutGrid,
   Loader2,
@@ -14,6 +15,8 @@ import { SecondaryButton } from "@/components/SecondaryButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ConnectionWizard } from "@/pages/integrations/ConnectionWizard";
+import GitHubConnector from "@/pages/integrations/GitHubConnector";
+import { dashboardHref } from "@/lib/navigation";
 import {
   connectGoogleWorkspaceDev,
   connectMicrosoftTeamsDev,
@@ -35,6 +38,8 @@ import {
 } from "@/services/reviews";
 
 interface AppsViewProps {
+  isAdmin: boolean;
+  showHeading?: boolean;
   oauthStatus?: "connected" | "error" | null;
   oauthError?: string | null;
   setupProvider?: ConnectionProvider | null;
@@ -42,6 +47,8 @@ interface AppsViewProps {
 }
 
 export default function AppsView({
+  isAdmin,
+  showHeading = true,
   oauthStatus,
   oauthError,
   setupProvider,
@@ -51,6 +58,7 @@ export default function AppsView({
   const [oauthEnabled, setOauthEnabled] = useState(false);
   const [microsoftOauthEnabled, setMicrosoftOauthEnabled] = useState(false);
   const [zoomOauthEnabled, setZoomOauthEnabled] = useState(false);
+  const [devIntegrationsAllowed, setDevIntegrationsAllowed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [wizardProvider, setWizardProvider] = useState<ConnectionProvider | null>(
@@ -64,6 +72,7 @@ export default function AppsView({
   const workspace = integrations.find((item) => item.provider === "google_workspace");
   const teams = integrations.find((item) => item.provider === "microsoft_teams");
   const zoom = integrations.find((item) => item.provider === "zoom");
+  const github = integrations.find((item) => item.provider === "github");
 
   const loadIntegrations = useCallback(async () => {
     setLoading(true);
@@ -74,13 +83,14 @@ export default function AppsView({
       setOauthEnabled(data.oauth_enabled);
       setMicrosoftOauthEnabled(data.microsoft_oauth_enabled);
       setZoomOauthEnabled(data.zoom_oauth_enabled);
-      setReviews(await listKnowledgeReviews().catch(() => []));
+      setDevIntegrationsAllowed(Boolean(data.dev_integrations_allowed));
+      setReviews(isAdmin ? await listKnowledgeReviews().catch(() => []) : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load apps.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
     void loadIntegrations();
@@ -105,7 +115,7 @@ export default function AppsView({
       setError(oauthError ?? "Sign-in was cancelled or failed.");
       onOAuthHandled?.();
     }
-  }, [setupProvider, oauthStatus, oauthError, onOAuthHandled, loadIntegrations]);
+  }, [setupProvider, oauthStatus, oauthError, onOAuthHandled, loadIntegrations, isAdmin]);
 
   async function connectWorkspace(provider: ConnectionProvider) {
     setBusyProvider(provider);
@@ -116,17 +126,26 @@ export default function AppsView({
           window.location.href = await startGoogleWorkspaceOAuth();
           return;
         }
+        if (!devIntegrationsAllowed) {
+          throw new Error("Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.");
+        }
         await connectGoogleWorkspaceDev();
       } else if (provider === "microsoft_teams") {
         if (microsoftOauthEnabled) {
           window.location.href = await startMicrosoftTeamsOAuth();
           return;
         }
+        if (!devIntegrationsAllowed) {
+          throw new Error("Microsoft OAuth is not configured. Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET.");
+        }
         await connectMicrosoftTeamsDev();
       } else {
         if (zoomOauthEnabled) {
           window.location.href = await startZoomOAuth();
           return;
+        }
+        if (!devIntegrationsAllowed) {
+          throw new Error("Zoom OAuth is not configured. Set ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET.");
         }
         await connectZoomDev();
       }
@@ -145,12 +164,15 @@ export default function AppsView({
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Connected workspaces</h2>
-        <p className="mt-1 text-muted-foreground">
-          Choose approved company locations once. MindLoom imports their knowledge and keeps it current.
-        </p>
-      </div>
+      {showHeading && (
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">Connected workspaces</h2>
+          <p className="mt-1 text-muted-foreground">
+            Connect Google, Microsoft 365, Zoom, or GitHub. MindLoom only uses the locations and
+            permissions you approve.
+          </p>
+        </div>
+      )}
 
       {banner && <div className="rounded-md border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">{banner}</div>}
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
@@ -206,6 +228,13 @@ export default function AppsView({
         onDisconnect={() => void disconnectConnection("microsoft_teams").then(loadIntegrations)}
       />
 
+      <GitHubConnector
+        connected={github?.connected}
+        account={github?.account_email}
+        selectedCount={github?.selected_resource_count}
+        onChanged={() => void loadIntegrations()}
+      />
+
       <Card>
         <CardHeader className="flex-row items-start gap-3">
           <span className="flex size-11 items-center justify-center rounded-lg border">
@@ -220,7 +249,11 @@ export default function AppsView({
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Use the Upload section. WhatsApp exports are manual snapshots, not a live connection.
+            Use{" "}
+            <Link to={`${dashboardHref("import")}#manual-import`} className="font-medium text-primary hover:underline">
+              Upload data
+            </Link>
+            . WhatsApp exports are manual snapshots, not a live connection.
           </p>
         </CardContent>
       </Card>
@@ -236,10 +269,17 @@ export default function AppsView({
           </div>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">Use the Upload section in the main navigation.</p>
+          <p className="text-sm text-muted-foreground">
+            Use{" "}
+            <Link to={`${dashboardHref("import")}#manual-import`} className="font-medium text-primary hover:underline">
+              Upload data
+            </Link>{" "}
+            under Weaver.
+          </p>
         </CardContent>
       </Card>
 
+      {isAdmin && (
       <Card>
         <CardHeader>
           <CardTitle className="text-lg">Knowledge review queue</CardTitle>
@@ -314,6 +354,7 @@ export default function AppsView({
           )}
         </CardContent>
       </Card>
+      )}
 
     </div>
   );

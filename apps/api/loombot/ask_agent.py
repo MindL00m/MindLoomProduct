@@ -7,14 +7,15 @@ import logging
 import re
 from typing import Any
 
-from openai import AsyncOpenAI
 
 from loombot.answerer import generate_answer
 from core.config import get_settings
+from core.llm_provider import get_llm_client
 from core.models import (
     ChatMessage,
     EphemeralDocument,
     MessageablePerson,
+    ProposedEmail,
     ProposedExpertMessage,
     ProposedPullRequest,
     ProposedWorkspace,
@@ -32,24 +33,33 @@ _MAX_TOOL_ROUNDS = 5
 
 _AGENT_SYSTEM = """\
 You are MindLoom, a company knowledge assistant that can draft Expert Messages,
-work with GitHub repositories when a token is configured, and propose project
-workspaces with a CONTEXT.md file for Loombot.
+draft emails, work with GitHub repositories when a token is configured, and
+propose project workspaces with a CONTEXT.md file for Loombot.
 
 You have retrieval context below for factual questions. Use it for knowledge answers
 and cite sources with [SOURCE: chunk_id] when applicable.
 
 Messaging rules:
-- When the user wants to notify, tell, message, or ask a coworker, you MUST use tools.
+- When the user wants to notify, tell, message, email, or ask a coworker, you MUST use tools.
 - Always call lookup_person first with the role/title/name/email from the request
   (e.g. query "CTO" when they say "send a message to the CTO").
-- When lookup_person returns exactly one match, you MUST call propose_expert_message.
-- Do NOT write the draft email/message in your reply text. The UI shows an approve card
-  from propose_expert_message. Your final text should only say a draft is ready for approval.
-- If multiple people match, ask which one — do not guess and do not invent a draft.
-- propose_expert_message does NOT send anything. Never say a message was sent.
-- Do not message people who are not signed-in MindLoom users.
+- After lookup, call propose_email with a subject and body. If lookup found an address,
+  pass it as recipient_email; if not, leave recipient_email empty so the user can type one.
+- If lookup_person returns a signed-in MindLoom user (non-empty user_id), also call
+  propose_expert_message for the in-app option.
+- Do NOT write the draft email/message in your reply text. The UI shows a compose card.
+  Your final text should only say a draft is ready for approval.
+- If multiple people match, still call propose_email with the best guess or an empty
+  recipient_email and list the candidates; the user will correct the address.
+- propose_email and propose_expert_message do NOT send anything. Never say a message
+  or email was sent.
+- Expert Messages require a signed-in MindLoom user. Email can go to any address.
+- Google Workspace email sending is {gmail_status}.
 
 GitHub rules:
+- GitHub tools use this user's Apps connector, not a server token. They may only
+  see repositories and perform actions the user granted (metadata, file contents,
+  and/or pull requests).
 - When the user asks about GitHub repos, code, READMEs, or file contents, use the
   github_* tools. Prefer github_list_repos, then github_get_repo / github_get_file.
 - When the user asks you to change, update, fix, edit, or open a PR for a file:
@@ -60,8 +70,9 @@ GitHub rules:
   was opened or a file was committed.
 - For owner/repo, accept "owner/repo" or separate owner and repo fields.
 - Summarize tool results clearly; quote short snippets when useful.
-- If a tool returns a GITHUB_TOKEN configuration error, tell the user to set
-  GITHUB_TOKEN in the project .env and restart the API.
+- If a tool says GitHub is not connected or a repository/permission was not granted,
+  tell the user to open Apps, paste a fine-grained personal access token, and choose
+  exactly which repositories and actions MindLoom may use.
 
 Workspace rules:
 - When the user asks to create, make, set up, or spin up a workspace for a project
@@ -86,8 +97,9 @@ _TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "lookup_person",
             "description": (
-                "Find signed-in org members by name, email, or directory title/role "
-                "(e.g. CTO, engineering manager) who can receive Expert Messages."
+                "Find people by name, email, or directory title/role "
+                "(e.g. CTO, engineering manager). Returns signed-in MindLoom users "
+                "and directory emails that may not have a MindLoom account."
             ),
             "parameters": {
                 "type": "object",
@@ -124,6 +136,43 @@ _TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["recipient_user_id", "message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_email",
+            "description": (
+                "Draft an email (recipient, subject, body) for user confirmation. "
+                "Does not send. Use for any email address, including people who "
+                "are not signed-in MindLoom users. Leave recipient_email empty if unknown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient_email": {
+                        "type": "string",
+                        "description": "To address. Empty if the user must enter one.",
+                    },
+                    "recipient_name": {
+                        "type": "string",
+                        "description": "Optional display name for the recipient.",
+                    },
+                    "recipient_user_id": {
+                        "type": "string",
+                        "description": "Optional MindLoom user_id from lookup_person.",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject line.",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body to propose for approval.",
+                    },
+                },
+                "required": ["subject", "body"],
             },
         },
     },
@@ -315,6 +364,16 @@ def _wants_messaging(question: str) -> bool:
         "reach out",
         "dm ",
         "text ",
+        "an email",
+        "e-mail",
+    )
+    if any(token in lowered for token in triggers):
+        return True
+    return bool(
+        re.search(
+            r"\be-?mail\s+(?:to\s+)?(?:the\s+)?(?!policy\b|address\b|settings\b|server\b)\S+",
+            lowered,
+        )
     )
     return any(token in lowered for token in triggers)
 
@@ -402,52 +461,144 @@ def _draft_message_from_question(question: str) -> str:
     return question.strip()
 
 
+def _draft_subject_from_question(question: str) -> str:
+    body = _draft_message_from_question(question)
+    first_line = body.split("\n", 1)[0].strip()
+    if len(first_line) <= 72:
+        return first_line or "Message from MindLoom"
+    return first_line[:69].rstrip() + "..."
+
+
+def _person_cache_key(person: dict) -> str:
+    uid = str(person.get("user_id") or "").strip()
+    if uid:
+        return uid
+    email = str(person.get("email") or "").strip().lower()
+    return f"email:{email}" if email else ""
+
+
+def _store_person(people_cache: dict[str, dict], person: dict) -> None:
+    uid = str(person.get("user_id") or "").strip()
+    email = str(person.get("email") or "").strip().lower()
+    if uid:
+        people_cache[uid] = person
+    if email:
+        people_cache[f"email:{email}"] = person
+
+
+def _as_messageable(person: dict) -> MessageablePerson:
+    return MessageablePerson(
+        user_id=str(person.get("user_id") or ""),
+        name=str(person.get("name") or person.get("email") or ""),
+        email=str(person.get("email") or ""),
+        title=person.get("title"),
+        department=person.get("department"),
+    )
+
+
+def _candidates_from_cache(people_cache: dict[str, dict]) -> list[MessageablePerson]:
+    seen: set[str] = set()
+    out: list[MessageablePerson] = []
+    for person in people_cache.values():
+        key = _person_cache_key(person)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(_as_messageable(person))
+    return out
+
+
 def _proposal_from_person(person: dict, message: str) -> ProposedExpertMessage:
     return ProposedExpertMessage(
         recipient_user_id=str(person["user_id"]),
         recipient_name=str(person["name"]),
         recipient_email=str(person["email"]),
         message=message,
-        candidates=[
-            MessageablePerson(
-                user_id=str(person["user_id"]),
-                name=str(person["name"]),
-                email=str(person["email"]),
-                title=person.get("title"),
-                department=person.get("department"),
-            )
-        ],
+        candidates=[_as_messageable(person)],
     )
 
 
-async def _ensure_proposal(
+def _email_from_person(
+    person: dict | None,
+    *,
+    question: str,
+    google_connected: bool,
+    candidates: list[MessageablePerson] | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+) -> ProposedEmail:
+    drafted_body = body or _draft_message_from_question(question)
+    drafted_subject = subject or _draft_subject_from_question(question)
+    uid = str((person or {}).get("user_id") or "").strip() or None
+    return ProposedEmail(
+        recipient_email=str((person or {}).get("email") or ""),
+        recipient_name=str((person or {}).get("name") or ""),
+        recipient_user_id=uid,
+        subject=drafted_subject,
+        body=drafted_body,
+        google_connected=google_connected,
+        candidates=candidates or ([_as_messageable(person)] if person else []),
+    )
+
+
+async def _ensure_proposals(
     *,
     question: str,
     org_id: str,
     user_id: str,
     people_cache: dict[str, dict],
     proposal: ProposedExpertMessage | None,
-) -> ProposedExpertMessage | None:
-    """If the model forgot propose_expert_message, build one for a clear recipient."""
+    email_proposal: ProposedEmail | None,
+    google_connected: bool,
+) -> tuple[ProposedExpertMessage | None, ProposedEmail | None]:
+    """Fill Expert Message and email drafts when the model skipped a tool."""
 
-    if proposal is not None:
-        return proposal
-
-    if len(people_cache) == 1:
-        person = next(iter(people_cache.values()))
-        return _proposal_from_person(person, _draft_message_from_question(question))
-
+    people: list[dict] = []
+    if len(people_cache) >= 1:
+        seen: set[str] = set()
+        for person in people_cache.values():
+            key = _person_cache_key(person)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            people.append(person)
     hint = _extract_recipient_query(question)
-    if not hint:
-        return None
-    people = await lookup_messageable_people(
-        org_id, hint, exclude_user_id=user_id, limit=5
-    )
-    for person in people:
-        people_cache[str(person["user_id"])] = person
-    if len(people) == 1:
-        return _proposal_from_person(people[0], _draft_message_from_question(question))
-    return None
+    if not people and hint:
+        people = await lookup_messageable_people(
+            org_id, hint, exclude_user_id=user_id, limit=5
+        )
+        for person in people:
+            _store_person(people_cache, person)
+
+    unique_people = people
+    person = unique_people[0] if len(unique_people) == 1 else None
+    candidates = [_as_messageable(item) for item in unique_people]
+    loom_person = None
+    if person and str(person.get("user_id") or "").strip():
+        loom_person = person
+    elif len(unique_people) == 1 and str(unique_people[0].get("user_id") or "").strip():
+        loom_person = unique_people[0]
+
+    if proposal is None and loom_person is not None:
+        proposal = _proposal_from_person(
+            loom_person, _draft_message_from_question(question)
+        )
+
+    if email_proposal is None:
+        email_proposal = _email_from_person(
+            person,
+            question=question,
+            google_connected=google_connected,
+            candidates=candidates,
+        )
+    else:
+        email_proposal = email_proposal.model_copy(
+            update={"google_connected": google_connected}
+        )
+        if not email_proposal.candidates and candidates:
+            email_proposal = email_proposal.model_copy(update={"candidates": candidates})
+
+    return proposal, email_proposal
 
 
 def _split_owner_repo(arguments: dict[str, Any]) -> tuple[str, str]:
@@ -468,8 +619,18 @@ def _slug_branch(title: str) -> str:
     return f"loom/{slug}"
 
 
-async def _propose_github_pr(arguments: dict[str, Any]) -> tuple[Any, ProposedPullRequest | None]:
+async def _propose_github_pr(
+    arguments: dict[str, Any],
+    *,
+    org_id: str,
+    user_id: str,
+) -> tuple[Any, ProposedPullRequest | None]:
+    from weaver.github_access import CAP_CONTENTS, CAP_PULL_REQUESTS, load_github_access, _not_connected_error
     from shuttle.github_client import get_file_contents, get_repo
+
+    access = await load_github_access(org_id, user_id)
+    if access is None:
+        return _not_connected_error(), None
 
     owner, repo = _split_owner_repo(arguments)
     path = str(arguments.get("path") or "").strip().lstrip("/")
@@ -484,14 +645,20 @@ async def _propose_github_pr(arguments: dict[str, Any]) -> tuple[Any, ProposedPu
     if not pr_title:
         return {"error": "pr_title is required."}, None
 
+    denied = access.deny(CAP_PULL_REQUESTS, owner, repo) or access.deny(
+        CAP_CONTENTS, owner, repo
+    )
+    if denied:
+        return {"error": denied}, None
+
     base_branch = str(arguments.get("base_branch") or "").strip()
     if not base_branch:
-        meta = await get_repo(owner, repo)
+        meta = await get_repo(access.token, owner, repo)
         if meta.get("error"):
             return meta, None
         base_branch = str(meta.get("default_branch") or "main")
 
-    existing = await get_file_contents(owner, repo, path, ref=base_branch)
+    existing = await get_file_contents(access.token, owner, repo, path, ref=base_branch)
     old_content = ""
     file_sha: str | None = None
     html_url: str | None = None
@@ -559,11 +726,13 @@ async def _run_tool(
     org_id: str,
     user_id: str,
     people_cache: dict[str, dict],
+    google_connected: bool = False,
 ) -> tuple[
     Any,
     ProposedExpertMessage | None,
     ProposedPullRequest | None,
     ProposedWorkspace | None,
+    ProposedEmail | None,
 ]:
     if name == "lookup_person":
         query = str(arguments.get("query") or "").strip()
@@ -571,11 +740,11 @@ async def _run_tool(
             org_id, query, exclude_user_id=user_id
         )
         for person in people:
-            people_cache[str(person["user_id"])] = person
+            _store_person(people_cache, person)
         return {
             "matches": [
                 {
-                    "user_id": p["user_id"],
+                    "user_id": p.get("user_id") or "",
                     "name": p["name"],
                     "email": p["email"],
                     "title": p.get("title"),
@@ -583,13 +752,16 @@ async def _run_tool(
                 }
                 for p in people
             ]
-        }, None, None, None
+        }, None, None, None, None
 
     if name == "propose_expert_message":
         recipient_user_id = str(arguments.get("recipient_user_id") or "").strip()
         message = str(arguments.get("message") or "").strip()
         if not recipient_user_id or not message:
-            return {"error": "recipient_user_id and message are required."}, None, None, None
+            return (
+                {"error": "recipient_user_id and message are required."},
+                None, None, None, None,
+            )
         person = people_cache.get(recipient_user_id)
         if person is None:
             from core.database import get_session_factory
@@ -610,26 +782,25 @@ async def _run_tool(
                 ).mappings().one_or_none()
             person = dict(row) if row else None
             if person is not None:
-                people_cache[recipient_user_id] = person
+                _store_person(people_cache, person)
         if person is None:
             return {
                 "error": "Recipient is not a signed-in org member. Look them up again."
-            }, None, None, None
+            }, None, None, None, None
         proposal = ProposedExpertMessage(
             recipient_user_id=str(person["user_id"]),
             recipient_name=str(person["name"]),
             recipient_email=str(person["email"]),
             message=message,
-            candidates=[
-                MessageablePerson(
-                    user_id=str(p["user_id"]),
-                    name=str(p["name"]),
-                    email=str(p["email"]),
-                    title=p.get("title"),
-                    department=p.get("department"),
-                )
-                for p in people_cache.values()
-            ],
+            candidates=_candidates_from_cache(people_cache) or [_as_messageable(person)],
+        )
+        email = _email_from_person(
+            person,
+            question=message,
+            google_connected=google_connected,
+            candidates=proposal.candidates,
+            subject=_draft_subject_from_question(message),
+            body=message,
         )
         return {
             "status": "proposed",
@@ -637,44 +808,128 @@ async def _run_tool(
             "recipient_name": proposal.recipient_name,
             "recipient_email": proposal.recipient_email,
             "message": proposal.message,
-        }, proposal, None, None
+        }, proposal, None, None, email
+
+    if name == "propose_email":
+        recipient_email = str(arguments.get("recipient_email") or "").strip()
+        recipient_name = str(arguments.get("recipient_name") or "").strip()
+        recipient_user_id = str(arguments.get("recipient_user_id") or "").strip()
+        subject = str(arguments.get("subject") or "").strip()
+        body = str(arguments.get("body") or "").strip()
+        if not subject or not body:
+            return {"error": "subject and body are required."}, None, None, None, None
+        person = None
+        if recipient_user_id:
+            person = people_cache.get(recipient_user_id)
+        if person is None and recipient_email:
+            person = people_cache.get(f"email:{recipient_email.lower()}")
+        if person is None and (recipient_email or recipient_name):
+            person = {
+                "user_id": recipient_user_id,
+                "name": recipient_name or recipient_email,
+                "email": recipient_email,
+            }
+        candidates = _candidates_from_cache(people_cache)
+        email = _email_from_person(
+            person,
+            question=body,
+            google_connected=google_connected,
+            candidates=candidates,
+            subject=subject,
+            body=body,
+        )
+        expert = None
+        uid = str((person or {}).get("user_id") or "").strip()
+        if uid:
+            expert = ProposedExpertMessage(
+                recipient_user_id=uid,
+                recipient_name=str((person or {}).get("name") or email.recipient_name),
+                recipient_email=str((person or {}).get("email") or email.recipient_email),
+                message=body,
+                candidates=candidates or email.candidates,
+            )
+        return {
+            "status": "proposed",
+            "note": "Email draft ready. User must approve in the UI before send.",
+            "recipient_email": email.recipient_email,
+            "subject": email.subject,
+        }, expert, None, None, email
 
     if name == "github_list_repos":
+        from weaver.github_access import (
+            CAP_METADATA,
+            filter_listed_repos,
+            load_github_access,
+            _not_connected_error,
+        )
         from shuttle.github_client import list_repos
 
+        access = await load_github_access(org_id, user_id)
+        if access is None:
+            return _not_connected_error(), None, None, None, None
+        denied = access.deny(CAP_METADATA)
+        if denied:
+            return {"error": denied}, None, None, None, None
         owner = arguments.get("owner")
         per_page = arguments.get("per_page", 30)
         try:
             per_page_int = int(per_page) if per_page is not None else 30
         except (TypeError, ValueError):
             per_page_int = 30
-        return await list_repos(
+        listed = await list_repos(
+            token=access.token,
             owner=str(owner).strip() if owner else None,
             per_page=per_page_int,
-        ), None, None, None
+        )
+        if listed.get("error"):
+            return listed, None, None, None, None
+        repos = filter_listed_repos(listed.get("repositories") or [], access.policy)
+        return {
+            "count": len(repos),
+            "repositories": repos,
+            "granted_repositories": list(access.policy.repositories),
+            "granted_capabilities": list(access.policy.capabilities),
+        }, None, None, None, None
 
     if name == "github_get_repo":
+        from weaver.github_access import CAP_METADATA, load_github_access, _not_connected_error
         from shuttle.github_client import get_repo
 
+        access = await load_github_access(org_id, user_id)
+        if access is None:
+            return _not_connected_error(), None, None, None, None
         owner, repo = _split_owner_repo(arguments)
-        return await get_repo(owner, repo), None, None, None
+        denied = access.deny(CAP_METADATA, owner, repo)
+        if denied:
+            return {"error": denied}, None, None, None, None
+        return await get_repo(access.token, owner, repo), None, None, None, None
 
     if name == "github_get_file":
+        from weaver.github_access import CAP_CONTENTS, load_github_access, _not_connected_error
         from shuttle.github_client import get_file_contents
 
+        access = await load_github_access(org_id, user_id)
+        if access is None:
+            return _not_connected_error(), None, None, None, None
         owner, repo = _split_owner_repo(arguments)
+        denied = access.deny(CAP_CONTENTS, owner, repo)
+        if denied:
+            return {"error": denied}, None, None, None, None
         path = str(arguments.get("path") or "").strip()
         ref = arguments.get("ref")
         return await get_file_contents(
+            access.token,
             owner,
             repo,
             path,
             ref=str(ref).strip() if ref else None,
-        ), None, None, None
+        ), None, None, None, None
 
     if name == "propose_github_pr":
-        result, pr = await _propose_github_pr(arguments)
-        return result, None, pr, None
+        result, pr = await _propose_github_pr(
+            arguments, org_id=org_id, user_id=user_id
+        )
+        return result, None, pr, None, None
 
     if name == "propose_workspace":
         from loombot.workspace_context import propose_workspace_draft
@@ -690,7 +945,7 @@ async def _run_tool(
             member_queries=[str(q) for q in member_queries],
         )
         if result.get("error") or "draft" not in result:
-            return result, None, None, None
+            return result, None, None, None, None
         draft = result["draft"]
         workspace = ProposedWorkspace(
             name=str(draft["name"]),
@@ -715,9 +970,9 @@ async def _run_tool(
                 for p in draft.get("unmatched_people") or []
             ],
         )
-        return result, None, None, workspace
+        return result, None, None, workspace, None
 
-    return {"error": f"Unknown tool: {name}"}, None, None, None
+    return {"error": f"Unknown tool: {name}"}, None, None, None, None
 
 
 async def run_ask_agent(
@@ -754,15 +1009,23 @@ async def run_ask_agent(
         retrieval.chunks or ephemeral
     ) else "(No knowledge-graph context matched this turn.)"
 
-    settings = get_settings()
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
+    from weaver.integrations import has_google_workspace_connection
+
+    google_connected = await has_google_workspace_connection(org_id, user_id)
+    gmail_status = (
+        "available for this user"
+        if google_connected
+        else "not connected for this user — still draft the email so they can connect or copy it"
     )
+
+    client = await get_llm_client(org_id)
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": _AGENT_SYSTEM.format(context_string=context_string),
+            "content": _AGENT_SYSTEM.format(
+                context_string=context_string,
+                gmail_status=gmail_status,
+            ),
         },
         *_history_messages(history or []),
         {"role": "user", "content": question},
@@ -770,9 +1033,51 @@ async def run_ask_agent(
 
     people_cache: dict[str, dict] = {}
     proposal: ProposedExpertMessage | None = None
+    email_proposal: ProposedEmail | None = None
     pr_proposal: ProposedPullRequest | None = None
     ws_proposal: ProposedWorkspace | None = None
     used_github = False
+
+    if not client.configuration.supports_tools:
+        if wants_msg:
+            proposal, email_proposal = await _ensure_proposals(
+                question=question, org_id=org_id, user_id=user_id,
+                people_cache=people_cache, proposal=None, email_proposal=None,
+                google_connected=google_connected,
+            )
+            return QueryResponse(
+                answer=_messaging_answer() or base.answer, sources=[], expert=None,
+                confidence="high" if proposal or email_proposal else base.confidence,
+                routed=False, routed_reason=None, proposed_message=proposal,
+                proposed_email=email_proposal,
+            )
+        # Knowledge answers already use explicit retrieval then prompting. Actions
+        # that require structured arguments fail safely instead of being guessed.
+        if wants_gh or wants_ws:
+            base.answer += (
+                "\n\nThe active local model is configured without structured tool "
+                "calling, so I did not perform the requested action."
+            )
+        return base
+
+    def _messaging_answer() -> str:
+        if email_proposal is not None:
+            target = email_proposal.recipient_email or email_proposal.recipient_name
+            if target:
+                return (
+                    f"I prepared a draft for {target}. "
+                    "Review the address and message, then send as an Expert Message and/or email."
+                )
+            return (
+                "I prepared a draft. Enter or correct the email address, "
+                "then send as an Expert Message and/or email."
+            )
+        if proposal is not None:
+            return (
+                f"I prepared a message to {proposal.recipient_name} "
+                f"({proposal.recipient_email}). Approve it in the card below to send."
+            )
+        return ""
 
     for round_idx in range(_MAX_TOOL_ROUNDS):
         create_kwargs: dict[str, Any] = {
@@ -781,18 +1086,39 @@ async def run_ask_agent(
             "tools": _TOOLS,
             "temperature": 0,
         }
+        unique_people = {
+            _person_cache_key(person)
+            for person in people_cache.values()
+            if _person_cache_key(person)
+        }
         # Force the first turn to use tools so the model cannot skip them.
         if (
             round_idx == 0
             and proposal is None
+            and email_proposal is None
             and pr_proposal is None
             and ws_proposal is None
         ):
             create_kwargs["tool_choice"] = "required"
-        elif wants_msg and proposal is None and people_cache and len(people_cache) == 1:
+        elif (
+            wants_msg
+            and email_proposal is None
+            and proposal is None
+            and len(unique_people) == 1
+        ):
+            person = next(
+                person
+                for person in people_cache.values()
+                if _person_cache_key(person) in unique_people
+            )
+            tool_name = (
+                "propose_expert_message"
+                if str(person.get("user_id") or "").strip()
+                else "propose_email"
+            )
             create_kwargs["tool_choice"] = {
                 "type": "function",
-                "function": {"name": "propose_expert_message"},
+                "function": {"name": tool_name},
             }
 
         response = await client.chat.completions.create(**create_kwargs)
@@ -800,44 +1126,43 @@ async def run_ask_agent(
         tool_calls = choice.tool_calls or []
         if not tool_calls:
             if wants_msg:
-                proposal = await _ensure_proposal(
+                proposal, email_proposal = await _ensure_proposals(
                     question=question,
                     org_id=org_id,
                     user_id=user_id,
                     people_cache=people_cache,
                     proposal=proposal,
+                    email_proposal=email_proposal,
+                    google_connected=google_connected,
                 )
-            if proposal is not None:
-                answer = (
-                    f"I prepared a message to {proposal.recipient_name} "
-                    f"({proposal.recipient_email}). Approve it in the card below to send."
-                )
-            elif pr_proposal is not None:
+            answer = _messaging_answer()
+            if not answer and pr_proposal is not None:
                 answer = (
                     f"I prepared a pull request draft for `{pr_proposal.owner}/"
                     f"{pr_proposal.repo}` — `{pr_proposal.path}`. "
                     "Review the diff and approve to open the PR."
                 )
-            elif ws_proposal is not None:
+            elif not answer and ws_proposal is not None:
                 answer = (
                     f"I prepared a workspace draft for **{ws_proposal.name}**. "
                     "Review the members and CONTEXT.md, then approve to create it."
                 )
-            else:
+            elif not answer:
                 answer = (choice.content or "").strip() or base.answer
             return QueryResponse(
                 answer=answer,
-                sources=base.sources if proposal is None else [],
+                sources=base.sources if proposal is None and email_proposal is None else [],
                 expert=None,
                 expert_request_created=False,
                 confidence=(
                     "high"
-                    if proposal or pr_proposal or ws_proposal or used_github
+                    if proposal or email_proposal or pr_proposal or ws_proposal or used_github
                     else base.confidence
                 ),
                 routed=False,
                 routed_reason=None,
                 proposed_message=proposal,
+                proposed_email=email_proposal,
                 proposed_pull_request=pr_proposal,
                 proposed_workspace=ws_proposal,
             )
@@ -868,12 +1193,13 @@ async def run_ask_agent(
                 "propose_github_pr"
             ):
                 used_github = True
-            result, maybe_proposal, maybe_pr, maybe_ws = await _run_tool(
+            result, maybe_proposal, maybe_pr, maybe_ws, maybe_email = await _run_tool(
                 name=call.function.name,
                 arguments=args if isinstance(args, dict) else {},
                 org_id=org_id,
                 user_id=user_id,
                 people_cache=people_cache,
+                google_connected=google_connected,
             )
             if maybe_proposal is not None:
                 proposal = maybe_proposal
@@ -881,6 +1207,8 @@ async def run_ask_agent(
                 pr_proposal = maybe_pr
             if maybe_ws is not None:
                 ws_proposal = maybe_ws
+            if maybe_email is not None:
+                email_proposal = maybe_email
             messages.append(
                 {
                     "role": "tool",
@@ -888,7 +1216,7 @@ async def run_ask_agent(
                     "content": json.dumps(result),
                 }
             )
-        if proposal is not None and not wants_gh and not wants_ws:
+        if (proposal is not None or email_proposal is not None) and not wants_gh and not wants_ws:
             break
         if pr_proposal is not None and not wants_msg and not wants_ws:
             break
@@ -896,20 +1224,19 @@ async def run_ask_agent(
             break
 
     if wants_msg:
-        proposal = await _ensure_proposal(
+        proposal, email_proposal = await _ensure_proposals(
             question=question,
             org_id=org_id,
             user_id=user_id,
             people_cache=people_cache,
             proposal=proposal,
+            email_proposal=email_proposal,
+            google_connected=google_connected,
         )
-    if proposal is not None:
-        answer = (
-            f"I prepared a message to {proposal.recipient_name} "
-            f"({proposal.recipient_email}). Approve it in the card below to send."
-        )
+    messaging_answer = _messaging_answer()
+    if messaging_answer:
         return QueryResponse(
-            answer=answer,
+            answer=messaging_answer,
             sources=[],
             expert=None,
             expert_request_created=False,
@@ -917,6 +1244,7 @@ async def run_ask_agent(
             routed=False,
             routed_reason=None,
             proposed_message=proposal,
+            proposed_email=email_proposal,
             proposed_pull_request=pr_proposal,
             proposed_workspace=ws_proposal,
         )

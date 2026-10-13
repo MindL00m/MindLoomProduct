@@ -342,8 +342,47 @@ def normalize_entity_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", name.strip().lower())
 
 
+_COMPANY_TAIL = re.compile(
+    r"\s+of\s+(?:this|the|our|my)\s+(?:company|org(?:anization)?|firm)\b.*$",
+    re.IGNORECASE,
+)
+
+_ROLE_ALIASES: dict[str, tuple[str, ...]] = {
+    "ceo": ("ceo", "chief executive"),
+    "cto": ("cto", "chief technology"),
+    "cfo": ("cfo", "chief financial"),
+    "coo": ("coo", "chief operating"),
+    "cmo": ("cmo", "chief marketing"),
+    "chro": ("chro", "chief people", "chief human"),
+    "president": ("president",),
+    "founder": ("founder",),
+    "managing director": ("managing director",),
+}
+
+
+def _role_search_terms(question: str, entities: list[str]) -> list[str]:
+    """Role/title substrings to match against directory Person.title."""
+
+    blob = f"{question} {' '.join(entities)}".lower()
+    terms: list[str] = []
+    seen: set[str] = set()
+    for key, aliases in _ROLE_ALIASES.items():
+        if re.search(rf"\b{re.escape(key)}\b", blob) or any(alias in blob for alias in aliases):
+            for alias in (key, *aliases):
+                if alias not in seen:
+                    seen.add(alias)
+                    terms.append(alias)
+    for entity in entities:
+        cleaned = entity.strip().lower()
+        if 1 < len(cleaned) <= 40 and cleaned not in seen:
+            seen.add(cleaned)
+            terms.append(cleaned)
+    return terms
+
+
 def _clean_heuristic_candidate(raw: str) -> str | None:
     candidate = raw.strip(" \t\n\r.,:;!?")
+    candidate = _COMPANY_TAIL.sub("", candidate).strip()
     candidate = re.split(
         r"\s+(?:and|or|that|which|who|from|in|on|with)\s+",
         candidate,
@@ -715,6 +754,101 @@ async def _lexical_entity_search(
     return collected
 
 
+_DIRECTORY_PEOPLE_CYPHER = """
+MATCH (p:Person {org_id: $org_id})
+WHERE any(term IN $terms WHERE
+  toLower(coalesce(p.title, '')) CONTAINS term
+  OR toLower(coalesce(p.name, '')) CONTAINS term)
+RETURN coalesce(p.person_id, p.canonical_email, p.canonical_name) AS person_id,
+       coalesce(p.name, '') AS name,
+       coalesce(p.title, '') AS title,
+       coalesce(p.email, p.canonical_email, '') AS email,
+       coalesce(p.department, '') AS department
+ORDER BY CASE WHEN toLower(coalesce(p.title, '')) CONTAINS $primary THEN 0 ELSE 1 END,
+         p.name
+LIMIT 8
+"""
+
+
+def _directory_rows_to_chunks(rows: list[dict]) -> list[ChunkResult]:
+    from datetime import datetime, timezone
+
+    from core.models import Citation
+
+    now = datetime.now(timezone.utc)
+    chunks: list[ChunkResult] = []
+    for row in rows:
+        name = str(row.get("name") or "").strip() or "Unknown"
+        title = str(row.get("title") or "").strip() or "employee"
+        email = str(row.get("email") or "").strip()
+        department = str(row.get("department") or "").strip()
+        person_id = str(row.get("person_id") or email or name)
+        dept = f" in {department}" if department else ""
+        mail = f" ({email})" if email else ""
+        text = f"{name}{mail} is listed in the employee directory as {title}{dept}."
+        chunks.append(
+            ChunkResult(
+                chunk_id=f"directory:{person_id}",
+                raw_text=text,
+                summary=text,
+                speakers=[name],
+                start_time=now,
+                end_time=now,
+                knowledge_type="question_answer",
+                confidence="high",
+                similarity_score=0.99,
+                freshness_score=1.0,
+                authority_score=1.0,
+                graph_score=1.0,
+                retrieval_score=0.99,
+                citation=Citation(
+                    chunk_id=f"directory:{person_id}",
+                    document_id=person_id,
+                    source="directory",
+                    source_label="Employee directory",
+                    original_filename="org-directory",
+                    author=name,
+                ),
+            )
+        )
+    return chunks
+
+
+async def _directory_people_search(
+    question: str, entities: list[str], org_id: str
+) -> tuple[list[ChunkResult], list[ExpertResult]]:
+    """Match org-directory Person nodes by job title or name."""
+
+    terms = _role_search_terms(question, entities)
+    if not terms:
+        return [], []
+    try:
+        driver = get_neo4j_driver()
+        async with driver.session() as graph:
+            result = await graph.run(
+                _DIRECTORY_PEOPLE_CYPHER,
+                org_id=org_id,
+                terms=terms,
+                primary=terms[0],
+            )
+            rows = [record.data() async for record in result]
+    except Exception:  # noqa: BLE001 - directory miss must not fail Ask
+        logger.exception("Directory people search failed")
+        return [], []
+    chunks = _directory_rows_to_chunks(rows)
+    experts = [
+        ExpertResult(
+            name=str(row.get("name") or "Unknown"),
+            reason=f"Listed in the employee directory as {row.get('title') or 'an employee'}.",
+            relationship_count=1,
+            email=str(row["email"]).lower() if row.get("email") else None,
+        )
+        for row in rows
+    ]
+    logger.info("Directory search for %s returned %d person(s)", terms, len(chunks))
+    return chunks, experts
+
+
 async def _graph_chunk_scores(
     chunks: list[ChunkResult], entities: list[str], org_id: str
 ) -> dict[str, float]:
@@ -883,12 +1017,21 @@ async def retrieve(
         experts_task = asyncio.create_task(
             _expert_search(entities, org_id, access_tokens)
         )
-        linked_chunks, lexical_chunks = await asyncio.gather(
-            _entity_linked_chunks(entities, org_id, access_tokens),
-            _lexical_entity_search(entities, org_id, access_tokens),
+        linked_chunks, lexical_chunks, (directory_chunks, directory_experts) = (
+            await asyncio.gather(
+                _entity_linked_chunks(entities, org_id, access_tokens),
+                _lexical_entity_search(entities, org_id, access_tokens),
+                _directory_people_search(search_query, entities, org_id),
+            )
         )
         experts = await experts_task
-        return entities, experts, [*linked_chunks, *lexical_chunks]
+        if directory_experts:
+            known = {expert.name.lower() for expert in experts}
+            experts = [
+                *directory_experts,
+                *[expert for expert in experts if expert.name.lower() not in known],
+            ]
+        return entities, experts, [*directory_chunks, *linked_chunks, *lexical_chunks]
 
     vector_chunks, (entities, experts, entity_chunks) = await asyncio.gather(
         _chunk_pipeline(),

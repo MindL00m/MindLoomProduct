@@ -1,14 +1,39 @@
-"""Lightweight schema upgrades for databases initialised before newer tables existed."""
+"""Apply the base Postgres schema, then idempotent upgrades for older databases."""
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from sqlalchemy import text
 
 from core.database import get_session_factory
 
 logger = logging.getLogger(__name__)
+
+_INIT_SQL_PATH = Path(__file__).resolve().parent.parent / "db" / "init.sql"
+_SCHEMA_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('mindloom_schema'))"
+
+
+def _sql_statements(sql: str) -> list[str]:
+    """Split a SQL file into executable statements, ignoring line comments."""
+
+    statements: list[str] = []
+    buf: list[str] = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        buf.append(line)
+        if stripped.endswith(";"):
+            stmt = "\n".join(buf).strip().rstrip(";").strip()
+            if stmt:
+                statements.append(stmt)
+            buf = []
+    tail = "\n".join(buf).strip().rstrip(";").strip()
+    if tail:
+        statements.append(tail)
+    return statements
 
 _APP_CONNECTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS app_connections (
@@ -79,6 +104,18 @@ CREATE TABLE IF NOT EXISTS connection_policies (
 _CONNECTION_POLICIES_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_connection_policies_org_provider
 ON connection_policies (org_id, provider)
+"""
+
+_LLM_SETTINGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS organization_llm_settings (
+    org_id          TEXT PRIMARY KEY REFERENCES organizations (org_id) ON DELETE CASCADE,
+    provider        TEXT NOT NULL DEFAULT 'openai' CHECK (provider IN ('openai', 'local')),
+    base_url        TEXT,
+    model           TEXT,
+    context_window  INTEGER NOT NULL DEFAULT 16384 CHECK (context_window >= 1024),
+    supports_tools  BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+)
 """
 
 _CHUNKS_VISIBILITY_SQL = """
@@ -247,22 +284,73 @@ _DURABLE_INTEGRATIONS_SQL = [
 )""",
 """CREATE INDEX IF NOT EXISTS idx_workspace_messages_thread
   ON workspace_messages (workspace_id, created_at)""",
+"""CREATE TABLE IF NOT EXISTS captures (
+    capture_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    timestamp_ms BIGINT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    tab_title TEXT NOT NULL DEFAULT '',
+    window_id INTEGER,
+    blob_key TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    redactions_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+"""CREATE INDEX IF NOT EXISTS idx_captures_org_session
+  ON captures (org_id, session_id, timestamp_ms)""",
+"""CREATE TABLE IF NOT EXISTS capture_summaries (
+    capture_id TEXT PRIMARY KEY REFERENCES captures (capture_id) ON DELETE CASCADE,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    payload_json TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+"""CREATE INDEX IF NOT EXISTS idx_capture_summaries_org
+  ON capture_summaries (org_id, created_at DESC)""",
+"""CREATE TABLE IF NOT EXISTS activity_sessions (
+    session_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+"""CREATE INDEX IF NOT EXISTS idx_activity_sessions_org
+  ON activity_sessions (org_id, received_at DESC)""",
+"""CREATE TABLE IF NOT EXISTS skill_files (
+    skill_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+"""CREATE INDEX IF NOT EXISTS idx_skill_files_org
+  ON skill_files (org_id, updated_at DESC)""",
 ]
 
 
 async def ensure_schema() -> None:
-    """Apply idempotent DDL for tables added after first deploy."""
+    """Create the base schema on an empty database, then apply additive upgrades."""
 
     session_factory = get_session_factory()
+    init_statements = _sql_statements(_INIT_SQL_PATH.read_text(encoding="utf-8"))
     async with session_factory() as session:
         async with session.begin():
+            # Railway starts the API and worker independently. Serialize their
+            # first-run DDL so both cannot race to create the same base tables.
+            await session.execute(text(_SCHEMA_LOCK_SQL))
+            for statement in init_statements:
+                await session.execute(text(statement))
             await session.execute(text(_APP_CONNECTIONS_TABLE_SQL))
             await session.execute(text(_APP_CONNECTIONS_INDEX_SQL))
             await session.execute(text(_SYNC_CURSORS_TABLE_SQL))
             await session.execute(text(_SYNC_CURSORS_INDEX_SQL))
             await session.execute(text(_CONNECTION_POLICIES_TABLE_SQL))
             await session.execute(text(_CONNECTION_POLICIES_INDEX_SQL))
+            await session.execute(text(_LLM_SETTINGS_TABLE_SQL))
             await session.execute(text(_CHUNKS_VISIBILITY_SQL))
             for statement in _DURABLE_INTEGRATIONS_SQL:
                 await session.execute(text(statement))
-    logger.info("Schema check complete (connections, policies, sync cursors)")
+    logger.info("Schema check complete (base tables, connections, captures, policies)")

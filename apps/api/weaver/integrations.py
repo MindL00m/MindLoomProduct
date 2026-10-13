@@ -8,18 +8,17 @@ import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
 from uuid import uuid4
 
 import httpx
-from fastapi import Depends, Header, HTTPException
+from fastapi import HTTPException
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2.credentials import Credentials
 from sqlalchemy import DateTime, String, Text, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Mapped, mapped_column
 
-from keeper.auth import Base, UserRow, require_org_id
+from keeper.auth import Base, require_admin_context, require_org_id, require_user_context
 from core.config import get_settings
 from core.database import get_session_factory
 from core.models import (
@@ -27,6 +26,9 @@ from core.models import (
     IntegrationsListResponse,
     OAuthAuthorizeResponse,
 )
+
+# Re-export auth dependencies so existing route modules can keep importing from here.
+__all_auth_deps__ = (require_user_context, require_admin_context, require_org_id)
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +38,24 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 PROVIDER_GOOGLE_WORKSPACE = "google_workspace"
 PROVIDER_MICROSOFT_TEAMS = "microsoft_teams"
 PROVIDER_ZOOM = "zoom"
+PROVIDER_GITHUB = "github"
 
-# Short-lived OAuth state tokens (in-memory; fine for single-process dev).
+# Dev-only fallback when Redis is unavailable (single-process).
 _oauth_states: dict[str, tuple[str, str, datetime]] = {}
+_OAUTH_STATE_TTL_SECONDS = 600
+_OAUTH_STATE_KEY = "loom:oauth_state:{state}"
+
+
+def assert_dev_integrations_allowed() -> None:
+    """Raise 403 unless connect-dev endpoints are explicitly enabled for development."""
+
+    settings = get_settings()
+    if not settings.dev_integrations_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Dev integration connections are disabled in this environment.",
+        )
+
 
 class AppConnectionRow(Base):
     __tablename__ = "app_connections"
@@ -56,53 +73,68 @@ class AppConnectionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-async def require_user_context(
-    org_id: Annotated[str, Depends(require_org_id)],
-    x_user_id: str = Header(..., alias="X-User-Id"),
-) -> tuple[str, str]:
-    """Validate org + user headers and ensure the user belongs to the org."""
-
-    user_id = x_user_id.strip()
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Missing user context.")
-
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        result = await session.execute(
-            select(UserRow).where(UserRow.user_id == user_id, UserRow.org_id == org_id)
-        )
-        user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=401, detail="Invalid user for this organization.")
-    return org_id, user_id
-
-
-async def require_admin_context(
-    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
-) -> tuple[str, str]:
-    """Require an organization administrator for connection-management APIs."""
-
-    org_id, user_id = ctx
-    session_factory = get_session_factory()
-    async with session_factory() as session:
-        result = await session.execute(
-            select(UserRow.role).where(
-                UserRow.user_id == user_id, UserRow.org_id == org_id
-            )
-        )
-        role = result.scalar_one_or_none()
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Organization admin access is required.")
-    return ctx
-
-
 def _store_oauth_state(org_id: str, user_id: str) -> str:
+    """Persist a short-lived OAuth CSRF state (Redis; memory fallback in development)."""
+
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = (org_id, user_id, datetime.now(timezone.utc) + timedelta(minutes=10))
-    return state
+    payload = json.dumps({"org_id": org_id, "user_id": user_id})
+    key = _OAUTH_STATE_KEY.format(state=state)
+    settings = get_settings()
+    try:
+        from core.redis_client import get_redis_sync
+
+        get_redis_sync().setex(key, _OAUTH_STATE_TTL_SECONDS, payload)
+        return state
+    except Exception as exc:  # noqa: BLE001 — Redis optional in development only
+        if settings.app_env == "production":
+            logger.exception("Redis unavailable for OAuth state store")
+            raise HTTPException(
+                status_code=503,
+                detail="OAuth state storage unavailable. Try again shortly.",
+            ) from exc
+        logger.warning("Redis unavailable for OAuth state; using in-memory fallback: %s", exc)
+        _oauth_states[state] = (
+            org_id,
+            user_id,
+            datetime.now(timezone.utc) + timedelta(seconds=_OAUTH_STATE_TTL_SECONDS),
+        )
+        return state
 
 
 def _pop_oauth_state(state: str) -> tuple[str, str]:
+    """Consume OAuth state exactly once (atomic GETDEL when using Redis)."""
+
+    key = _OAUTH_STATE_KEY.format(state=state)
+    settings = get_settings()
+    raw: str | None = None
+    try:
+        from core.redis_client import get_redis_sync
+
+        client = get_redis_sync()
+        # GETDEL is atomic on Redis 6.2+; fall back to GET+DEL.
+        if hasattr(client, "getdel"):
+            raw = client.getdel(key)
+        else:
+            pipe = client.pipeline()
+            pipe.get(key)
+            pipe.delete(key)
+            raw, _ = pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        if settings.app_env == "production":
+            logger.exception("Redis unavailable for OAuth state pop")
+            raise HTTPException(
+                status_code=503,
+                detail="OAuth state storage unavailable. Try again shortly.",
+            ) from exc
+        logger.warning("Redis unavailable for OAuth state pop; trying memory: %s", exc)
+
+    if raw is not None:
+        try:
+            data = json.loads(raw)
+            return str(data["org_id"]), str(data["user_id"])
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.") from exc
+
     entry = _oauth_states.pop(state, None)
     if entry is None:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
@@ -110,6 +142,16 @@ def _pop_oauth_state(state: str) -> tuple[str, str]:
     if datetime.now(timezone.utc) > expires:
         raise HTTPException(status_code=400, detail="OAuth state expired. Try connecting again.")
     return org_id, user_id
+
+
+def _decrypt_connection_row(row: AppConnectionRow | None) -> AppConnectionRow | None:
+    if row is None:
+        return None
+    from core.token_crypto import decrypt_token
+
+    row.access_token = decrypt_token(row.access_token) or ""
+    row.refresh_token = decrypt_token(row.refresh_token)
+    return row
 
 
 async def _get_connection(org_id: str, user_id: str, provider: str) -> AppConnectionRow | None:
@@ -122,7 +164,14 @@ async def _get_connection(org_id: str, user_id: str, provider: str) -> AppConnec
                 AppConnectionRow.provider == provider,
             )
         )
-        return result.scalar_one_or_none()
+        return _decrypt_connection_row(result.scalar_one_or_none())
+
+
+async def has_google_workspace_connection(org_id: str, user_id: str) -> bool:
+    """True when this user has a stored Google Workspace connection."""
+
+    row = await _get_connection(org_id, user_id, PROVIDER_GOOGLE_WORKSPACE)
+    return row is not None and bool(row.access_token)
 
 
 async def _save_connection(
@@ -136,8 +185,12 @@ async def _save_connection(
     token_expiry: datetime | None,
     scopes: str | None,
 ) -> AppConnectionRow:
+    from core.token_crypto import encrypt_token
+
     now = datetime.now(timezone.utc)
     connection_id = str(uuid4())
+    stored_access = encrypt_token(access_token) or ""
+    stored_refresh = encrypt_token(refresh_token)
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -148,8 +201,8 @@ async def _save_connection(
                 user_id=user_id,
                 provider=provider,
                 account_email=account_email,
-                access_token=access_token,
-                refresh_token=refresh_token,
+                access_token=stored_access,
+                refresh_token=stored_refresh,
                 token_expiry=token_expiry,
                 scopes=scopes,
                 created_at=now,
@@ -159,8 +212,8 @@ async def _save_connection(
                 index_elements=["org_id", "user_id", "provider"],
                 set_={
                     "account_email": account_email,
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
+                    "access_token": stored_access,
+                    "refresh_token": stored_refresh,
                     "token_expiry": token_expiry,
                     "scopes": scopes,
                     "updated_at": now,
@@ -174,7 +227,7 @@ async def _save_connection(
                 AppConnectionRow.provider == provider,
             )
         )
-        return result.scalar_one()
+        return _decrypt_connection_row(result.scalar_one())  # type: ignore[return-value]
 
 
 async def _delete_connection(org_id: str, user_id: str, provider: str) -> None:
@@ -290,6 +343,7 @@ async def list_integrations(org_id: str, user_id: str) -> IntegrationsListRespon
     workspace_row = await _get_connection(org_id, user_id, PROVIDER_GOOGLE_WORKSPACE)
     teams_row = await _get_connection(org_id, user_id, PROVIDER_MICROSOFT_TEAMS)
     zoom_row = await _get_connection(org_id, user_id, PROVIDER_ZOOM)
+    github_row = await _get_connection(org_id, user_id, PROVIDER_GITHUB)
     workspace_policy = await get_policy(org_id, user_id, PROVIDER_GOOGLE_WORKSPACE)
     teams_policy = await get_policy(org_id, user_id, PROVIDER_MICROSOFT_TEAMS)
     zoom_policy = await get_policy(org_id, user_id, PROVIDER_ZOOM)
@@ -353,9 +407,31 @@ async def list_integrations(org_id: str, user_id: str) -> IntegrationsListRespon
             else None
         ),
     )
+    from weaver.github_access import connection_public_view, policy_from_scopes
+
+    if github_row is not None:
+        github_policy = policy_from_scopes(github_row.scopes)
+        github_public = connection_public_view(github_row.account_email or "", github_policy)
+        github = IntegrationInfo(
+            provider=PROVIDER_GITHUB,
+            label="GitHub",
+            connected=True,
+            account_email=github_row.account_email,
+            connected_at=github_row.created_at.isoformat(),
+            setup_status=str(github_public["setup_status"]),
+            selected_resource_count=int(github_public["selected_resource_count"]),
+        )
+    else:
+        github = IntegrationInfo(
+            provider=PROVIDER_GITHUB,
+            label="GitHub",
+            connected=False,
+            setup_status="not_connected",
+        )
     return IntegrationsListResponse(
-        integrations=[workspace, teams, zoom],
+        integrations=[workspace, teams, zoom, github],
         oauth_enabled=settings.google_oauth_enabled,
         microsoft_oauth_enabled=settings.microsoft_oauth_enabled,
         zoom_oauth_enabled=settings.zoom_oauth_enabled,
+        dev_integrations_allowed=settings.dev_integrations_allowed,
     )

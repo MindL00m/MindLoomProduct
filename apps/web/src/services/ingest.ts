@@ -59,6 +59,7 @@ export interface DocumentMetadata {
   version?: string;
   contributors?: string[];
   permissions?: string[];
+  visibility?: "private" | "organization";
   source_url?: string;
 }
 
@@ -119,6 +120,7 @@ export async function uploadDocument(
 /** Upload a canonical conversation JSON file for ingestion. */
 export async function uploadConversationJson(
   file: File,
+  options: { visibility?: "private" | "organization" } = {},
 ): Promise<{ job_id: string }> {
   const text = await file.text();
   let payload: unknown;
@@ -127,7 +129,9 @@ export async function uploadConversationJson(
   } catch {
     throw new Error("File is not valid JSON.");
   }
-  const res = await apiFetch("/ingest/conversation", {
+  const visibility = options.visibility ?? "private";
+  const qs = new URLSearchParams({ visibility });
+  const res = await apiFetch(`/ingest/conversation?${qs.toString()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -138,6 +142,9 @@ export async function uploadConversationJson(
 
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
   const res = await apiFetch(`/ingest/status/${jobId}`);
+  if (res.status === 502 || res.status === 503) {
+    throw new Error(`Status check failed (${res.status})`);
+  }
   if (!res.ok) throw new Error(`Status check failed (${res.status})`);
   return res.json();
 }
@@ -149,10 +156,20 @@ export async function pollJob(
   { intervalMs = 1500, maxAttempts = 600 }: { intervalMs?: number; maxAttempts?: number } = {},
 ): Promise<JobStatus> {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const status = await getJobStatus(jobId);
-    onUpdate(status);
-    if (status.status === "complete" || status.status === "failed") {
-      return status;
+    try {
+      const status = await getJobStatus(jobId);
+      onUpdate(status);
+      if (status.status === "complete" || status.status === "failed") {
+        return status;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      // API recreate / nginx 502 while the worker is still running.
+      if (/\(502\)|\(503\)/.test(msg) && attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        continue;
+      }
+      throw err;
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

@@ -1,5 +1,7 @@
 """Unit tests for Status board coercion helpers."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from core.models import (
@@ -7,9 +9,15 @@ from core.models import (
     ChunkMetadata,
     IssueUpdate,
     ProjectUpdate,
+    StatusEvidence,
     TypedEntity,
 )
-from lens.status_board import _evidence_list, mark_status_item_finished
+from lens.status_board import (
+    _evidence_list,
+    derive_current_status,
+    mark_status_item_finished,
+    merge_project_updates,
+)
 from brain.storage import (
     _canonical_key,
     _coerce_action_updates,
@@ -35,7 +43,7 @@ def test_canonical_key_normalizes_whitespace() -> None:
     assert _canonical_key("  Email   the vendor ") == "email the vendor"
 
 
-def test_coerce_action_updates_merges_legacy_strings() -> None:
+def test_coerce_action_updates_ignores_bare_strings() -> None:
     meta = _base(
         action_items=["Email the vendor", "email the vendor"],
         action_item_updates=[
@@ -43,29 +51,23 @@ def test_coerce_action_updates_merges_legacy_strings() -> None:
         ],
     )
     updates = _coerce_action_updates(meta)
-    texts = sorted(item.text for item in updates)
-    assert texts == ["Email the vendor", "Ship docs"]
+    assert [item.text for item in updates] == ["Ship docs"]
 
 
-def test_coerce_issue_updates_synthesizes_from_knowledge_type() -> None:
+def test_coerce_issue_updates_does_not_synthesize_from_knowledge_type() -> None:
     meta = _base(
         knowledge_type="problem_report",
         summary="Vendor delay on Alpha Launch",
     )
-    updates = _coerce_issue_updates(meta)
-    assert len(updates) == 1
-    assert updates[0].kind == "problem_report"
-    assert updates[0].status == "open"
-    assert "Vendor delay" in updates[0].title
+    assert _coerce_issue_updates(meta) == []
 
 
-def test_coerce_project_updates_from_typed_entities() -> None:
+def test_coerce_project_updates_ignores_typed_entities() -> None:
     meta = _base(
         typed_entities=[TypedEntity(name="Alpha Launch", type="project")],
     )
     entity_nodes = [{"name": "Alpha Launch", "type": "project"}]
-    updates = _coerce_project_updates(meta, entity_nodes)
-    assert updates == [ProjectUpdate(name="Alpha Launch", work_status="open")]
+    assert _coerce_project_updates(meta, entity_nodes) == []
 
 
 def test_explicit_issue_updates_win() -> None:
@@ -82,7 +84,19 @@ def test_explicit_issue_updates_win() -> None:
     assert updates[0].status == "closed"
 
 
-def test_evidence_list_includes_excerpt_fields() -> None:
+def test_explicit_project_updates_are_kept() -> None:
+    meta = _base(
+        project_updates=[
+            ProjectUpdate(name="Alpha Launch", work_status="open", evidence="still blocked")
+        ],
+    )
+    updates = _coerce_project_updates(meta, [])
+    assert len(updates) == 1
+    assert updates[0].name == "Alpha Launch"
+    assert updates[0].work_status == "open"
+
+
+def test_evidence_list_drops_raw_excerpts() -> None:
     items = _evidence_list(
         [
             {
@@ -91,22 +105,18 @@ def test_evidence_list_includes_excerpt_fields() -> None:
                 "source": "gmail",
                 "source_label": "Thread",
                 "knowledge_type": "problem_report",
-                "excerpt": "The vendor delayed Alpha.",
+                "excerpt": "The vendor delayed Alpha. Here is the entire email body.",
             }
         ]
     )
     assert len(items) == 1
     assert items[0].chunk_id == "c1"
     assert items[0].knowledge_type == "problem_report"
-    assert items[0].excerpt == "The vendor delayed Alpha."
+    assert items[0].excerpt == ""
+    assert items[0].summary == "Vendor slipped"
 
 
 def test_merge_project_updates_prefers_newer_status() -> None:
-    from datetime import datetime, timezone
-
-    from lens.status_board import derive_current_status, merge_project_updates
-    from core.models import StatusEvidence
-
     older = StatusEvidence(
         chunk_id="c-old",
         summary="Kickoff scheduled",
@@ -129,9 +139,56 @@ def test_merge_project_updates_prefers_newer_status() -> None:
     assert derive_current_status(merged) == "Vendor delayed Alpha launch by one week"
 
 
-def test_derive_current_status_empty() -> None:
-    from lens.status_board import derive_current_status
+def test_merge_project_updates_drops_non_status_noise() -> None:
+    noise = StatusEvidence(
+        chunk_id="c-noise",
+        summary="Thanks for the recap",
+        excerpt="The entire newsletter body",
+        knowledge_type="noise",
+        end_time=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    )
+    decision = StatusEvidence(
+        chunk_id="c-decision",
+        summary="Chose vendor B",
+        knowledge_type="decision",
+        end_time=datetime(2026, 8, 2, tzinfo=timezone.utc),
+    )
+    status = StatusEvidence(
+        chunk_id="c-status",
+        summary="Alpha still blocked on vendor",
+        knowledge_type="status_update",
+        end_time=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    merged = merge_project_updates([noise, decision, status])
+    assert [item.chunk_id for item in merged] == ["c-status"]
+    assert merged[0].excerpt == ""
 
+
+def test_merge_project_updates_caps_at_three() -> None:
+    items = [
+        StatusEvidence(
+            chunk_id=f"c-{index}",
+            summary=f"Update {index}",
+            knowledge_type="status_update",
+            end_time=datetime(2026, 1, index, tzinfo=timezone.utc),
+        )
+        for index in range(1, 6)
+    ]
+    merged = merge_project_updates(items)
+    assert [item.chunk_id for item in merged] == ["c-5", "c-4", "c-3"]
+
+
+def test_derive_current_status_ignores_excerpt() -> None:
+    only_excerpt = StatusEvidence(
+        chunk_id="c1",
+        summary="",
+        excerpt="Full email body should not become current status",
+        knowledge_type="status_update",
+    )
+    assert "No recent updates" in derive_current_status([only_excerpt])
+
+
+def test_derive_current_status_empty() -> None:
     assert "No recent updates" in derive_current_status([])
 
 

@@ -1,6 +1,4 @@
-/** Shared types for the (mock) onboarding services. These mirror the shapes a
- *  real backend would return, so swapping the mock implementation for real
- *  fetch() calls later requires no changes in the UI layer. */
+/** Shared types for onboarding and setup UI. */
 
 export type ProviderId = "google" | "microsoft" | "okta" | "csv";
 
@@ -8,7 +6,6 @@ export interface OAuthResult {
   connected: true;
   /** Email of the admin who authorized the connection. */
   account: string;
-  /** Opaque token placeholder (never a real secret in the mock). */
   accessToken: string;
 }
 

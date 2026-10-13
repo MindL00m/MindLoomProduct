@@ -85,6 +85,12 @@ async def handle_zoom_callback(code: str, state: str) -> str:
 
 
 async def connect_zoom_dev(org_id: str, user_id: str, email: str) -> None:
+    settings = get_settings()
+    if settings.zoom_oauth_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Zoom OAuth is configured — use the real Zoom connect flow.",
+        )
     await _save_connection(
         org_id=org_id,
         user_id=user_id,

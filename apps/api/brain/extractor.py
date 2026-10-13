@@ -78,15 +78,17 @@ Rules:
 - Output must be parseable JSON and nothing else.
 - Use the exact literal values listed for knowledge_type, signal_type, and confidence.
 - If the chunk is small talk or has no useful knowledge, use knowledge_type "noise".
+- Routine email is noise unless it clearly reports ongoing unfinished work: FYIs, newsletters, scheduling, acknowledgements, receipts, and one-off mentions of a project name are not status items. Use knowledge_type "noise" and empty lifecycle lists.
 - "ownership" may be an empty list if no relationships are inferable.
 - Extract only facts explicitly supported by the text; do not guess missing people or relationships.
-- Keep entity names stable and specific. Do not treat ordinary dates as entities.
+- Keep entity names stable and specific. Do not treat ordinary dates as entities. Never set typed_entities.type to "date"; omit dates from typed_entities.
 - A decision is a committed choice, not a suggestion. An action item must describe assigned or requested work.
 - valid_until must be an ISO-8601 timestamp only when the text explicitly states an expiry.
-- project_updates: emit when a named project/initiative is clearly still active (open) or finished/cancelled/shipped (closed).
-- action_item_updates: prefer this over bare action_items strings when status/assignee/project is known. Mirror open items in both lists when useful.
-- issue_updates: for problem reports or status updates that are still unresolved (open) or clearly resolved (closed). Use stable short titles.
-- Empty lists are fine when no lifecycle signals exist.
+- summary: exactly one sentence capturing the latest progress or the point of the chunk. Never paste the full email or document into summary or evidence fields.
+- project_updates: emit work_status "open" only when a named project/initiative is clearly still active and unfinished. Emit "closed" when it is finished, cancelled, or shipped. Do not open a project from a passing mention.
+- action_item_updates: emit status "open" only for assigned or requested work that is still outstanding. Do not invent action items from casual suggestions or FYI mail. Prefer this structured list over bare action_items strings.
+- issue_updates: emit status "open" only for an unresolved problem or an explicit in-progress status report. Use a stable short title, not the whole message. Emit "closed" only when the text clearly resolves it.
+- Empty lists are fine when no lifecycle signals exist. Prefer empty lists over weak guesses.
 """
 
 

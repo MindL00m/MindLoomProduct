@@ -154,6 +154,34 @@
     </div>
     <div id="capture-status" class="status">OFF</div>
 
+    <div class="field" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0;">
+      <label class="label" for="api-base">API base</label>
+      <input
+        id="api-base"
+        class="value"
+        style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px;"
+        placeholder="http://localhost:8000"
+      />
+    </div>
+    <div class="field">
+      <label class="label" for="access-token">Access token</label>
+      <textarea
+        id="access-token"
+        class="value"
+        rows="3"
+        style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 11px; font-family: ui-monospace, monospace;"
+        placeholder="Paste MindLoom access_token from web session"
+      ></textarea>
+      <button
+        type="button"
+        id="save-auth"
+        style="margin-top: 8px; width: 100%; padding: 8px; border: none; border-radius: 6px; background: #0f172a; color: #fff; font-size: 12px; cursor: pointer;"
+      >
+        Save API settings
+      </button>
+      <div id="auth-status" class="status" style="margin-top: 6px;"></div>
+    </div>
+
     <button type="button" id="view-captures" class="view-captures">
       View Captures
     </button>

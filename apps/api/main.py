@@ -2,8 +2,9 @@
 
 The API is connector-agnostic: connectors (WhatsApp, Teams, Slack, ...) are
 responsible for producing the canonical :class:`Conversation` format and posting
-it to ``/ingest/conversation``. All data endpoints require an ``X-Org-Id``
-header that scopes reads and writes to one organization.
+it to ``/ingest/conversation``. Authenticated data endpoints require an
+``Authorization: Bearer`` MindLoom access JWT that scopes reads and writes to one
+organization and user.
 """
 
 from __future__ import annotations
@@ -15,13 +16,27 @@ from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-from keeper.auth import create_org, get_org_summary, get_user_access_tokens, google_signin, require_org_id
-from core.config import get_settings
+from keeper.auth import (
+    create_org,
+    get_org_summary,
+    get_user_access_tokens,
+    google_signin,
+    require_admin_context,
+    require_org_id,
+    require_user_context,
+    verify_google_id_token,
+)
+from core.config import get_settings, validate_production_secrets
 from core.database import close_pools
+from core.llm_provider import LLMProviderError
+from weaver.webhook_auth import verify_google_pubsub_oidc
 from weaver.google_workspace import (
     connect_google_workspace_dev,
     find_drive_cursor_by_channel,
@@ -41,11 +56,7 @@ from weaver.microsoft_teams import (
     setup_teams_channel_watch,
     start_microsoft_teams_oauth,
 )
-from weaver.integrations import (
-    list_integrations,
-    require_admin_context,
-    require_user_context,
-)
+from weaver.integrations import assert_dev_integrations_allowed, list_integrations
 from core.models import (
     AuthSessionResponse,
     Conversation,
@@ -63,6 +74,7 @@ from core.models import (
     OAuthAuthorizeResponse,
     OrgGraphResponse,
     OrgSummaryResponse,
+    PublicAuthConfig,
     QueryRequest,
     QueryResponse,
     WorkspaceSyncStartResponse,
@@ -74,6 +86,7 @@ from core.models import (
 from api.routes.captures import router as captures_router
 from api.routes.connection_setup import router as connection_setup_router
 from api.routes.github import router as github_router
+from api.routes.llm_settings import router as llm_settings_router
 from api.routes.reviews import router as reviews_router
 from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
@@ -87,15 +100,18 @@ from brain.storage import fetch_knowledge_graph_debug, fetch_org_graph, upsert_d
 from core.jobs import job_store
 from core.durable_jobs import enqueue, get_job
 from brain.document_ingestion import ensure_supported_document
+from core.health import check_readiness
 from weaver.subscriptions import find_subscription
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage shared connection pools for the app lifecycle."""
 
+    validate_production_secrets()
     logger.info("MindLoom ingestion service starting up")
     await ensure_schema()
     try:
@@ -105,18 +121,41 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("MindLoom ingestion service shut down")
 
 
-app = FastAPI(title="MindLoom — Conversation Ingestion", version="2.0.0", lifespan=lifespan)
+_settings = get_settings()
+_disable_docs = _settings.app_env == "production"
+app = FastAPI(
+    title="MindLoom — Conversation Ingestion",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url=None if _disable_docs else "/docs",
+    redoc_url=None if _disable_docs else "/redoc",
+    openapi_url=None if _disable_docs else "/openapi.json",
+)
+
+from core.rate_limit import auth_limit, ingest_limit, limit, limiter, query_limit  # noqa: E402
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(LLMProviderError)
+async def llm_provider_error(_request: Request, exc: LLMProviderError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_settings.resolved_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 app.include_router(captures_router)
 app.include_router(connection_setup_router)
 app.include_router(github_router)
+app.include_router(llm_settings_router)
 app.include_router(reviews_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)
@@ -131,31 +170,84 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/auth/google/signin", response_model=AuthSessionResponse)
-async def auth_google_signin(request: GoogleSignInRequest) -> AuthSessionResponse:
-    """Simulated Google SSO: map email domain to an existing organization."""
+@app.get("/ready")
+async def ready() -> dict[str, object]:
+    """Readiness probe: Postgres, Redis, Neo4j, and fresh worker heartbeat."""
 
-    return await google_signin(
-        email=request.email,
-        name=request.name,
-        photo_url=request.photo_url,
+    return await check_readiness()
+
+
+@app.get("/auth/public-config", response_model=PublicAuthConfig)
+async def auth_public_config() -> PublicAuthConfig:
+    """Google client id for GIS. Safe to expose (it is already in browser JS)."""
+
+    settings = get_settings()
+    return PublicAuthConfig(
+        google_client_id=settings.google_client_id.strip(),
+        google_oauth_enabled=settings.google_oauth_enabled,
     )
 
 
-@app.post("/orgs", response_model=AuthSessionResponse)
-async def create_organization(request: CreateOrgRequest) -> AuthSessionResponse:
-    """Create a new organization and its first admin user."""
+@app.post("/auth/google/signin", response_model=AuthSessionResponse)
+@limit(auth_limit)
+async def auth_google_signin(
+    request: Request,
+    body: Annotated[GoogleSignInRequest, Body()],
+) -> AuthSessionResponse:
+    """Verify a Google ID token and map the email domain to an existing organization."""
 
+    identity = verify_google_id_token(body.id_token)
+    return await google_signin(identity=identity)
+
+
+@app.post("/orgs", response_model=AuthSessionResponse)
+@limit(auth_limit)
+async def create_organization(
+    request: Request,
+    body: Annotated[CreateOrgRequest, Body()],
+) -> AuthSessionResponse:
+    """Create a new organization; admin identity comes from a verified Google ID token."""
+
+    identity = verify_google_id_token(body.id_token)
     try:
         return await create_org(
-            name=request.name,
-            domain=request.domain,
-            admin_email=request.admin_email,
-            admin_name=request.admin_name,
-            admin_photo_url=request.admin_photo_url,
+            name=body.name,
+            domain=body.domain,
+            identity=identity,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/auth/me", response_model=AuthSessionResponse)
+async def auth_me(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> AuthSessionResponse:
+    """Return the current session for a valid Bearer token (issues a fresh access token)."""
+
+    from keeper.auth import get_org_by_id, get_user_by_id
+    from keeper.session_tokens import issue_access_token
+
+    org_id, user_id = ctx
+    org = await get_org_by_id(org_id)
+    user = await get_user_by_id(org_id, user_id)
+    if org is None or user is None:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    return AuthSessionResponse(
+        org_id=org.org_id,
+        org_name=org.name,
+        user_id=user.user_id,
+        email=user.email,
+        name=user.name,
+        photo_url=user.photo_url,
+        role=user.role,  # type: ignore[arg-type]
+        access_token=issue_access_token(
+            org_id=org.org_id,
+            user_id=user.user_id,
+            role=user.role,
+            email=user.email,
+        ),
+    )
 
 
 @app.get("/org/summary", response_model=OrgSummaryResponse)
@@ -166,10 +258,13 @@ async def org_summary(org_id: Annotated[str, Depends(require_org_id)]) -> OrgSum
 
 
 @app.post("/ingest/conversation")
+@limit(ingest_limit)
 async def ingest_conversation(
+    request: Request,
     background_tasks: BackgroundTasks,
-    conversation: Conversation,
-    org_id: Annotated[str, Depends(require_org_id)],
+    conversation: Annotated[Conversation, Body()],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    visibility: Annotated[str | None, Query()] = None,
 ) -> dict[str, str]:
     """Ingest a canonical conversation produced by any connector."""
 
@@ -177,7 +272,20 @@ async def ingest_conversation(
         raise HTTPException(status_code=400, detail="Conversation must have at least one participant.")
     if not conversation.messages:
         raise HTTPException(status_code=400, detail="Conversation must have at least one message.")
+    if visibility is not None and visibility not in ("private", "organization"):
+        raise HTTPException(
+            status_code=400,
+            detail="visibility must be 'private' or 'organization'.",
+        )
 
+    org_id, user_id = ctx
+    from keeper.visibility_acl import permissions_for_upload
+
+    visible_to = permissions_for_upload(
+        org_id=org_id,
+        uploaded_by=user_id,
+        visibility=visibility or "private",
+    )
     job_id = await enqueue(
         "conversation",
         org_id=org_id,
@@ -185,6 +293,8 @@ async def ingest_conversation(
         payload={
             "conversation_id": conversation.conversation_id,
             "conversation": conversation.model_dump(mode="json"),
+            "uploaded_by": user_id,
+            "visible_to": visible_to,
         },
     )
 
@@ -192,10 +302,12 @@ async def ingest_conversation(
 
 
 @app.post("/ingest/pdf")
+@limit(ingest_limit)
 async def ingest_pdf(
+    request: Request,
     background_tasks: BackgroundTasks,
     org_id: Annotated[str, Depends(require_org_id)],
-    file: UploadFile = File(...),
+    file: Annotated[UploadFile, File()],
 ) -> dict[str, str]:
     """Ingest an uploaded PDF: store it, chunk it structurally, and classify."""
 
@@ -224,10 +336,12 @@ async def ingest_pdf(
 
 
 @app.post("/ingest/document")
+@limit(ingest_limit)
 async def ingest_company_document(
+    request: Request,
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
-    file: UploadFile = File(...),
-    metadata_json: str = Form(default="{}"),
+    file: Annotated[UploadFile, File()],
+    metadata_json: Annotated[str, Form()] = "{}",
 ) -> dict[str, str]:
     """Queue a normal company document with optional provenance metadata."""
 
@@ -258,18 +372,20 @@ async def ingest_company_document(
 
 
 @app.post("/ingest/directory", response_model=DirectoryIngestResult)
+@limit(ingest_limit)
 async def ingest_directory(
-    request: DirectoryIngestRequest,
+    request: Request,
+    body: Annotated[DirectoryIngestRequest, Body()],
     ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
 ) -> DirectoryIngestResult:
     """Upsert an org-directory import (CSV / Google / ...) into the graph."""
 
-    if not request.people:
+    if not body.people:
         raise HTTPException(status_code=400, detail="Directory import contains no people.")
 
     try:
         org_id, _ = ctx
-        return await upsert_directory(request.people, org_id, source=request.source)
+        return await upsert_directory(body.people, org_id, source=body.source)
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -292,6 +408,8 @@ async def get_knowledge_graph_debug(
 ) -> KnowledgeGraphResponse:
     """Return all knowledge-graph nodes and edges for dev/debug visualisation."""
 
+    if get_settings().app_env == "production":
+        raise HTTPException(status_code=404, detail="Not found.")
     try:
         org_id, _ = ctx
         return await fetch_knowledge_graph_debug(org_id)
@@ -315,8 +433,10 @@ async def get_job_status(
 
 
 @app.post("/query", response_model=QueryResponse)
+@limit(query_limit)
 async def query(
-    request: QueryRequest,
+    request: Request,
+    body: Annotated[QueryRequest, Body()],
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> QueryResponse:
     """Answer a natural-language question from the knowledge base."""
@@ -325,20 +445,21 @@ async def query(
         org_id, user_id = ctx
         access_tokens = await get_user_access_tokens(org_id, user_id)
         retrieval = await retrieve(
-            request.question, request.history, org_id, access_tokens
+            body.question, body.history, org_id, access_tokens
         )
         from loombot.ask_agent import run_ask_agent
 
         response = await run_ask_agent(
-            question=request.question,
+            question=body.question,
             retrieval=retrieval,
-            history=request.history,
+            history=body.history,
             org_id=org_id,
             user_id=user_id,
-            ephemeral_documents=request.ephemeral_documents,
+            ephemeral_documents=body.ephemeral_documents,
         )
         if (
             response.proposed_message is None
+            and response.proposed_email is None
             and response.routed
             and response.expert
         ):
@@ -346,7 +467,7 @@ async def query(
             request_id = await create_expert_request(
                 org_id=org_id,
                 requester_user_id=user_id,
-                question=request.question,
+                question=body.question,
                 expert_name=response.expert.name,
                 expert_email=response.expert.email,
                 source_ids=[source.chunk_id for source in response.sources],
@@ -358,9 +479,11 @@ async def query(
 
 
 @app.post("/files/extract", response_model=FileExtractResponse)
+@limit(ingest_limit)
 async def extract_uploaded_file(
+    request: Request,
     org_id: Annotated[str, Depends(require_org_id)],
-    file: UploadFile = File(...),
+    file: Annotated[UploadFile, File()],
 ) -> FileExtractResponse:
     """Extract text from an uploaded file for chat-only (ephemeral) context."""
 
@@ -395,7 +518,7 @@ async def get_integrations(
 
 @app.get("/integrations/google/workspace/authorize", response_model=OAuthAuthorizeResponse)
 async def authorize_google_workspace(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> OAuthAuthorizeResponse:
     """Return a Google OAuth consent URL for Gmail + Drive read sync."""
 
@@ -410,10 +533,11 @@ async def authorize_google_workspace(
 
 @app.post("/integrations/google/workspace/connect-dev", response_model=IntegrationsListResponse)
 async def dev_connect_google_workspace(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> IntegrationsListResponse:
     """Simulated Workspace connect when Google OAuth credentials are not configured."""
 
+    assert_dev_integrations_allowed()
     org_id, user_id = ctx
     await connect_google_workspace_dev(org_id, user_id)
     return await list_integrations(org_id, user_id)
@@ -421,7 +545,7 @@ async def dev_connect_google_workspace(
 
 @app.get("/integrations/microsoft/teams/authorize", response_model=OAuthAuthorizeResponse)
 async def authorize_microsoft_teams(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> OAuthAuthorizeResponse:
     """Return a Microsoft OAuth consent URL for Teams read access."""
 
@@ -436,10 +560,11 @@ async def authorize_microsoft_teams(
 
 @app.post("/integrations/microsoft/teams/connect-dev", response_model=IntegrationsListResponse)
 async def dev_connect_microsoft_teams(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> IntegrationsListResponse:
     """Simulated Microsoft Teams connect when Microsoft OAuth is not configured."""
 
+    assert_dev_integrations_allowed()
     org_id, user_id = ctx
     await connect_microsoft_teams_dev(org_id, user_id)
     return await list_integrations(org_id, user_id)
@@ -481,8 +606,8 @@ async def microsoft_teams_callback(
 
 @app.post("/integrations/microsoft/teams/watch", response_model=TeamsWatchResponse)
 async def watch_microsoft_teams(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
-    request: TeamsWatchRequest,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    body: Annotated[TeamsWatchRequest, Body()],
 ) -> TeamsWatchResponse:
     """Start or renew a Microsoft Graph subscription for one Teams channel."""
 
@@ -490,8 +615,8 @@ async def watch_microsoft_teams(
     return await setup_teams_channel_watch(
         org_id,
         user_id,
-        team_id=request.team_id,
-        channel_id=request.channel_id,
+        team_id=body.team_id,
+        channel_id=body.channel_id,
     )
 
 
@@ -514,7 +639,7 @@ async def _queue_teams_sync(
 @app.post("/integrations/microsoft/teams/sync", response_model=TeamsSyncStartResponse)
 async def sync_microsoft_teams_now(
     background_tasks: BackgroundTasks,
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
     max_results: int = Query(25, ge=1, le=100),
 ) -> TeamsSyncStartResponse:
     """Queue an immediate Microsoft Teams sync for the current user."""
@@ -530,7 +655,7 @@ async def sync_microsoft_teams_now(
 
 @app.post("/integrations/google/workspace/gmail/watch", response_model=WorkspaceWatchResponse)
 async def watch_gmail(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> WorkspaceWatchResponse:
     """Start or renew Gmail INBOX push notifications for the current user."""
 
@@ -540,7 +665,7 @@ async def watch_gmail(
 
 @app.post("/integrations/google/workspace/drive/watch", response_model=WorkspaceWatchResponse)
 async def watch_drive(
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> WorkspaceWatchResponse:
     """Start or renew Drive changes notifications for the current user."""
 
@@ -578,7 +703,7 @@ async def _queue_workspace_sync(
 @app.post("/integrations/google/workspace/gmail/sync", response_model=WorkspaceSyncStartResponse)
 async def sync_gmail_now(
     background_tasks: BackgroundTasks,
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
     max_results: int = Query(25, ge=1, le=100),
 ) -> WorkspaceSyncStartResponse:
     """Queue an immediate Gmail incremental/backfill sync for the current user."""
@@ -596,7 +721,7 @@ async def sync_gmail_now(
 @app.post("/integrations/google/workspace/drive/sync", response_model=WorkspaceSyncStartResponse)
 async def sync_drive_now(
     background_tasks: BackgroundTasks,
-    ctx: Annotated[tuple[str, str], Depends(require_admin_context)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
     max_results: int = Query(25, ge=1, le=100),
 ) -> WorkspaceSyncStartResponse:
     """Queue an immediate Drive changes sync for the current user."""
@@ -641,14 +766,20 @@ async def microsoft_teams_webhook(
     if not isinstance(values, list) or not values:
         return GoogleWebhookResponse(accepted=True, provider="teams", queued=False)
 
+    expected_state = get_settings().microsoft_graph_client_state.strip()
+    if not expected_state:
+        raise HTTPException(
+            status_code=503,
+            detail="Microsoft Graph client state is not configured.",
+        )
+
     queued = False
     job_id: str | None = None
     for item in values:
         if not isinstance(item, dict):
-            continue
-        if item.get("clientState") != get_settings().microsoft_graph_client_state:
-            logger.warning("Rejected Microsoft notification with invalid clientState")
-            continue
+            raise HTTPException(status_code=401, detail="Invalid Microsoft notification payload.")
+        if item.get("clientState") != expected_state:
+            raise HTTPException(status_code=401, detail="Invalid Microsoft clientState.")
         subscription_id = str(item.get("subscriptionId") or "")
         if not subscription_id:
             continue
@@ -692,11 +823,13 @@ async def microsoft_teams_webhook(
 
 @app.post("/webhooks/google/pubsub", response_model=GoogleWebhookResponse)
 async def google_pubsub_webhook(
-    envelope: GooglePubSubEnvelope,
+    request: Request,
+    envelope: Annotated[GooglePubSubEnvelope, Body()],
     background_tasks: BackgroundTasks,
 ) -> GoogleWebhookResponse:
     """Receive Google Pub/Sub push messages, currently Gmail mailbox updates."""
 
+    verify_google_pubsub_oidc(request)
     payload = _decode_pubsub_data(envelope)
     email = str(payload.get("emailAddress") or "").lower()
     history_id = str(payload.get("historyId") or "")
@@ -733,8 +866,13 @@ async def google_drive_webhook(
 ) -> GoogleWebhookResponse:
     """Receive Drive changes.watch callbacks and queue a Drive change sync."""
 
-    expected_token = get_settings().google_drive_webhook_secret
-    if expected_token and x_goog_channel_token != expected_token:
+    expected_token = get_settings().google_drive_webhook_secret.strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Drive webhook secret is not configured.",
+        )
+    if x_goog_channel_token != expected_token:
         raise HTTPException(status_code=401, detail="Invalid Drive channel token.")
     if x_goog_resource_state == "sync":
         return GoogleWebhookResponse(accepted=True, provider="drive", queued=False)

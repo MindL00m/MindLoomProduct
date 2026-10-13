@@ -4,15 +4,14 @@ import { ArrowLeft, Lock } from "lucide-react";
 import { WizardCard } from "@/components/WizardCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
-import { Input } from "@/components/ui/input";
 import { GoogleIcon } from "@/components/icons";
-import { AuthError, googleSignIn } from "@/services/auth";
+import { requestGoogleIdToken } from "@/lib/googleAuth";
+import { AuthError, googleSignIn, toClientSession } from "@/services/auth";
 import { useSession } from "@/store/session";
 
 export default function SignIn() {
   const navigate = useNavigate();
   const setSession = useSession((s) => s.setSession);
-  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -20,23 +19,11 @@ export default function SignIn() {
   async function handleSignIn() {
     setError(null);
     setNotFound(false);
-    const trimmed = email.trim().toLowerCase();
-    if (!trimmed.includes("@")) {
-      setError("Enter a valid Google email address.");
-      return;
-    }
     setLoading(true);
     try {
-      const session = await googleSignIn(trimmed);
-      setSession({
-        orgId: session.org_id,
-        orgName: session.org_name,
-        userId: session.user_id,
-        email: session.email,
-        name: session.name,
-        photoUrl: session.photo_url,
-        role: session.role,
-      });
+      const idToken = await requestGoogleIdToken();
+      const session = await googleSignIn(idToken);
+      setSession(toClientSession(session));
       navigate("/dashboard");
     } catch (err) {
       if (err instanceof AuthError && err.status === 404) {
@@ -61,39 +48,22 @@ export default function SignIn() {
         </span>
       }
       title="Sign in with Google"
-      subtitle="Enter your work Google email. We'll load your organization's knowledge graph."
+      subtitle="Use your work Google account. We'll load your organization's knowledge graph."
     >
       <div className="space-y-4">
-        <div className="space-y-1.5">
-          <label htmlFor="google-email" className="text-sm font-medium">
-            Google email
-          </label>
-          <Input
-            id="google-email"
-            type="email"
-            placeholder="you@company.com"
-            value={email}
-            autoFocus
-            invalid={!!error}
-            onChange={(e) => setEmail(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void handleSignIn();
-            }}
-          />
-          {error && (
-            <p className="text-xs text-destructive">
-              {error}
-              {notFound && (
-                <>
-                  {" "}
-                  <Link to="/setup/org" className="underline underline-offset-2">
-                    Set up now
-                  </Link>
-                </>
-              )}
-            </p>
-          )}
-        </div>
+        {error && (
+          <p className="text-xs text-destructive">
+            {error}
+            {notFound && (
+              <>
+                {" "}
+                <Link to="/setup/org" className="underline underline-offset-2">
+                  Set up now
+                </Link>
+              </>
+            )}
+          </p>
+        )}
 
         <PrimaryButton
           size="lg"
@@ -107,7 +77,7 @@ export default function SignIn() {
 
         <p className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
           <Lock className="size-3.5" aria-hidden="true" />
-          Simulated sign-in for development — real Google OAuth can be wired later.
+          Secured with Google Identity — MindLoom never sees your password.
         </p>
 
         <div className="flex justify-center pt-1">

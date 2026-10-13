@@ -27,7 +27,7 @@ _EVIDENCE_MAP = """
   source_label: coalesce(x.source_label, ''),
   knowledge_type: coalesce(x.knowledge_type, ''),
   end_time: x.end_time,
-  excerpt: left(coalesce(x.raw_text, ''), 500)
+  excerpt: ''
 }
 """
 
@@ -41,7 +41,7 @@ WHERE c IS NULL
    OR any(token IN coalesce(c.visible_to, []) WHERE token IN $access_tokens)
 WITH e, c
 ORDER BY coalesce(c.end_time, e.last_signal_at) DESC
-WITH e, collect(c)[0..16] AS chunks
+WITH e, collect(c)[0..3] AS chunks
 OPTIONAL MATCH (issue:OpenIssue {{org_id: $org_id}})-[:ABOUT]->(e)
 WHERE size(coalesce(issue.visible_to, [])) = 0
    OR any(token IN coalesce(issue.visible_to, []) WHERE token IN $access_tokens)
@@ -53,8 +53,8 @@ WHERE ic IS NULL
 WITH e, chunks, issue, ic
 ORDER BY coalesce(ic.end_time, issue.last_seen_at) DESC
 WITH e, chunks,
-     collect(DISTINCT issue)[0..8] AS issues,
-     collect(ic)[0..8] AS issue_chunks
+     collect(DISTINCT issue)[0..3] AS issues,
+     collect(ic)[0..3] AS issue_chunks
 RETURN e.entity_id AS entity_id,
        e.name AS name,
        coalesce(e.work_status, 'open') AS work_status,
@@ -91,7 +91,7 @@ WHERE c IS NULL
    OR any(token IN coalesce(c.visible_to, []) WHERE token IN $access_tokens)
 WITH i, project, c
 ORDER BY coalesce(c.end_time, i.last_seen_at) DESC
-WITH i, project, collect(c)[0..8] AS chunks
+WITH i, project, collect(c)[0..3] AS chunks
 RETURN i.issue_id AS issue_id,
        i.title AS title,
        i.kind AS kind,
@@ -118,7 +118,7 @@ WHERE c IS NULL
    OR any(token IN coalesce(c.visible_to, []) WHERE token IN $access_tokens)
 WITH a, project, person, c
 ORDER BY coalesce(c.end_time, a.last_signal_at, a.created_at) DESC
-WITH a, project, person, collect(c)[0..8] AS chunks
+WITH a, project, person, collect(c)[0..3] AS chunks
 RETURN a.action_item_id AS action_item_id,
        a.text AS text,
        a.status AS status,
@@ -168,6 +168,33 @@ RETURN a.action_item_id AS item_id, a.status AS status
 """
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_QUALIFYING_KNOWLEDGE_TYPES = {"status_update", "problem_report"}
+_MAX_RECENT_UPDATES = 3
+
+
+def _is_qualifying_evidence(item: StatusEvidence) -> bool:
+    """True when evidence is an explicit ongoing-work signal, not a mention."""
+
+    return item.knowledge_type in _QUALIFYING_KNOWLEDGE_TYPES
+
+
+def _without_excerpt(item: StatusEvidence) -> StatusEvidence:
+    """Status cards show summaries, never raw source bodies."""
+
+    if not item.excerpt:
+        return item
+    return item.model_copy(update={"excerpt": ""})
+
+
+def _qualifying_evidence(items: list[StatusEvidence]) -> list[StatusEvidence]:
+    """Keep the newest status/problem signals and drop raw excerpts."""
+
+    filtered = [
+        _without_excerpt(item)
+        for item in sorted(items, key=_update_sort_key, reverse=True)
+        if _is_qualifying_evidence(item)
+    ]
+    return filtered[:_MAX_RECENT_UPDATES]
 
 
 def _evidence_list(raw: object) -> list[StatusEvidence]:
@@ -185,7 +212,7 @@ def _evidence_list(raw: object) -> list[StatusEvidence]:
                 source_label=str(row.get("source_label") or ""),
                 knowledge_type=str(row.get("knowledge_type") or ""),
                 end_time=_as_datetime(row.get("end_time")),
-                excerpt=str(row.get("excerpt") or ""),
+                excerpt="",
             )
         )
     return items
@@ -203,12 +230,12 @@ def _update_sort_key(item: StatusEvidence) -> tuple[datetime, int]:
     stamp = item.end_time or _EPOCH
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
-    kind_boost = 1 if item.knowledge_type in {"status_update", "problem_report"} else 0
+    kind_boost = 1 if item.knowledge_type in _QUALIFYING_KNOWLEDGE_TYPES else 0
     return (stamp, kind_boost)
 
 
 def merge_project_updates(*groups: list[StatusEvidence]) -> list[StatusEvidence]:
-    """Dedupe and sort project updates from chunks and related issues."""
+    """Dedupe, keep only ongoing-work signals, and return the newest few."""
 
     by_id: dict[str, StatusEvidence] = {}
     for group in groups:
@@ -216,14 +243,14 @@ def merge_project_updates(*groups: list[StatusEvidence]) -> list[StatusEvidence]
             existing = by_id.get(item.chunk_id)
             if existing is None or _update_sort_key(item) > _update_sort_key(existing):
                 by_id[item.chunk_id] = item
-    return sorted(by_id.values(), key=_update_sort_key, reverse=True)[:16]
+    return _qualifying_evidence(list(by_id.values()))
 
 
 def derive_current_status(updates: list[StatusEvidence]) -> str:
-    """Human-readable latest status line from connected-source updates."""
+    """Human-readable latest status line from connected-source summaries."""
 
     for item in updates:
-        text = (item.summary or item.excerpt or "").strip()
+        text = (item.summary or "").strip()
         if text:
             return text
     return "No recent updates from connected sources yet."
@@ -270,6 +297,8 @@ async def get_open_status(org_id: str, user_id: str) -> OpenStatusResponse:
             # Back-compat if an older query shape somehow appears.
             _evidence_list(row.get("evidence")),
         )
+        if not updates:
+            continue
         latest_at = updates[0].end_time if updates else None
         entity_signal = _as_datetime(row.get("last_signal_at"))
         if latest_at and entity_signal:
@@ -298,10 +327,12 @@ async def get_open_status(org_id: str, user_id: str) -> OpenStatusResponse:
             created_at=_as_datetime(row.get("created_at")),
             last_seen_at=_as_datetime(row.get("last_seen_at")),
             closed_at=_as_datetime(row.get("closed_at")),
-            evidence=_evidence_list(row.get("evidence")),
+            evidence=evidence,
         )
         for row in issue_rows
         if row.get("issue_id")
+        for evidence in [_qualifying_evidence(_evidence_list(row.get("evidence")))]
+        if evidence
     ]
     action_items = [
         StatusActionItem(
@@ -313,10 +344,12 @@ async def get_open_status(org_id: str, user_id: str) -> OpenStatusResponse:
             created_at=_as_datetime(row.get("created_at")),
             last_signal_at=_as_datetime(row.get("last_signal_at")),
             closed_at=_as_datetime(row.get("closed_at")),
-            evidence=_evidence_list(row.get("evidence")),
+            evidence=evidence,
         )
         for row in action_rows
         if row.get("action_item_id") and row.get("text")
+        for evidence in [_qualifying_evidence(_evidence_list(row.get("evidence")))]
+        if evidence
     ]
 
     logger.info(

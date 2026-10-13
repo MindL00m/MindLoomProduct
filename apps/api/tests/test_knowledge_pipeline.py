@@ -102,11 +102,14 @@ async def test_answer_returns_only_model_cited_graph_sources(monkeypatch):
             return type("Response", (), {"choices": [choice]})()
 
     class FakeClient:
-        def __init__(self, **_kwargs):
+        def __init__(self):
             self.chat = type("Chat", (), {"completions": FakeCompletions()})()
 
+    async def fake_client(_org_id: str):
+        return FakeClient()
+
     monkeypatch.setattr(answerer, "_attach_citations", citations)
-    monkeypatch.setattr(answerer, "AsyncOpenAI", FakeClient)
+    monkeypatch.setattr(answerer, "get_llm_client", fake_client)
     response = await generate_answer(
         "What is approved?",
         RetrievalResult(chunks=[first, second], experts=[], entities_found=[]),

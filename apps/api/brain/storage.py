@@ -379,49 +379,24 @@ def _stable_id(prefix: str, org_id: str, key: str) -> str:
 
 
 def _coerce_action_updates(metadata: ChunkMetadata) -> list[ActionItemUpdate]:
-    """Merge structured updates with legacy bare action_items strings."""
+    """Keep only explicit structured action-item lifecycle updates."""
 
-    updates = list(metadata.action_item_updates)
-    seen = {_canonical_key(item.text) for item in updates if item.text.strip()}
-    for text in metadata.action_items:
-        key = _canonical_key(text)
-        if not key or key in seen:
-            continue
-        updates.append(ActionItemUpdate(text=text, status="open"))
-        seen.add(key)
-    return [item for item in updates if item.text.strip()]
+    return [item for item in metadata.action_item_updates if item.text.strip()]
 
 
 def _coerce_issue_updates(metadata: ChunkMetadata) -> list[IssueUpdate]:
-    """Use explicit issue updates, or synthesize from knowledge_type."""
+    """Keep only explicit issue updates; do not infer from knowledge_type."""
 
-    updates = [item for item in metadata.issue_updates if item.title.strip()]
-    if updates:
-        return updates
-    if metadata.knowledge_type in ("problem_report", "status_update"):
-        title = (metadata.summary or "").strip() or metadata.knowledge_type.replace("_", " ")
-        return [
-            IssueUpdate(
-                title=title,
-                kind=metadata.knowledge_type,  # type: ignore[arg-type]
-                status="open",
-            )
-        ]
-    return []
+    return [item for item in metadata.issue_updates if item.title.strip()]
 
 
 def _coerce_project_updates(
     metadata: ChunkMetadata, entity_nodes: list[dict]
 ) -> list[ProjectUpdate]:
-    updates = [item for item in metadata.project_updates if item.name.strip()]
-    if updates:
-        return updates
-    # Mentioned project entities default to open until a close signal arrives.
-    return [
-        ProjectUpdate(name=str(ent["name"]), work_status="open")
-        for ent in entity_nodes
-        if ent.get("type") == "project" and ent.get("name")
-    ]
+    """Keep only explicit project lifecycle updates; mentions do not auto-open."""
+
+    _ = entity_nodes
+    return [item for item in metadata.project_updates if item.name.strip()]
 
 
 async def save_to_neo4j(

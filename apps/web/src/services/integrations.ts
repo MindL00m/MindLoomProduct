@@ -58,6 +58,7 @@ export interface IntegrationsListResponse {
   oauth_enabled: boolean;
   microsoft_oauth_enabled: boolean;
   zoom_oauth_enabled: boolean;
+  dev_integrations_allowed: boolean;
 }
 
 export interface WorkspaceWatchResponse {

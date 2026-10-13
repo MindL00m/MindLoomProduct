@@ -5,7 +5,7 @@ import base64
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from core.durable_jobs import enqueue
-from weaver.integrations import require_admin_context
+from weaver.integrations import require_user_context
 from core.models import DocumentMetadataInput
 from weaver.whatsapp import preview_export
 
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/integrations/whatsapp", tags=["whatsapp"])
 async def preview(
     file: UploadFile = File(...),
     timezone_name: str = Form(default="UTC"),
-    _ctx: tuple[str, str] = Depends(require_admin_context),
+    _ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict:
     filename = file.filename or "whatsapp.txt"
     if not filename.lower().endswith(".txt"):
@@ -35,7 +35,7 @@ async def import_export(
     file: UploadFile = File(...),
     timezone_name: str = Form(default="UTC"),
     metadata_json: str = Form(default="{}"),
-    ctx: tuple[str, str] = Depends(require_admin_context),
+    ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict[str, str]:
     org_id, user_id = ctx
     filename = file.filename or "whatsapp.txt"

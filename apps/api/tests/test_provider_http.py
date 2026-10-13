@@ -2,6 +2,8 @@ import httpx
 import pytest
 
 from core import provider_http
+
+
 @pytest.mark.asyncio
 async def test_request_with_backoff_retries_throttling(monkeypatch):
     calls = 0

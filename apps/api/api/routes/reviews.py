@@ -20,6 +20,7 @@ from keeper.review_workflows import (
     moderate_expert_answer,
     resolve_review,
     send_expert_message,
+    send_proposed_email,
     send_proposed_expert_message,
     start_expert_conversation,
     upsert_review_schedule,
@@ -70,6 +71,12 @@ class SendProposedMessageInput(BaseModel):
     recipient_user_id: str = Field(min_length=1)
     message: str = Field(min_length=1)
     client_request_id: str | None = None
+
+
+class SendProposedEmailInput(BaseModel):
+    recipient_email: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    body: str = Field(min_length=1)
 
 
 @router.get("")
@@ -132,6 +139,20 @@ async def send_proposed_message(
         requester_user_id=ctx[1],
         recipient_user_id=request.recipient_user_id,
         message=request.message,
+    )
+
+
+@router.post("/messages/send-proposed-email")
+async def send_proposed_email_route(
+    request: SendProposedEmailInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict[str, str]:
+    return await send_proposed_email(
+        org_id=ctx[0],
+        requester_user_id=ctx[1],
+        recipient_email=request.recipient_email,
+        subject=request.subject,
+        body=request.body,
     )
 
 

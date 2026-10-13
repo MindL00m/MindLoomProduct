@@ -21,7 +21,7 @@ import {
   summarizeDirectory,
   type DirectoryParseResult,
 } from "@/lib/directory";
-import { uploadCsvDirectory } from "@/services/mockApi";
+import { uploadCsvDirectory } from "@/services/directory";
 import { SetupError } from "@/services/types";
 import { useOnboarding } from "@/store/onboarding";
 import { cn } from "@/lib/utils";
@@ -110,11 +110,9 @@ export default function UploadCsv() {
     try {
       const { summary } = await uploadCsvDirectory(result.people);
       setDirectory(result.people, fileName ?? "directory.csv");
-      // Persist the authoritative server counts (with the org name) so the
-      // Sync + Ready screens reflect what was actually imported.
       setSummary({
         ...summary,
-        organization: organizationName || "Your organization",
+        organization: summary.organization || organizationName || "Your organization",
       });
       navigate("/dashboard?tab=organization");
     } catch (err) {

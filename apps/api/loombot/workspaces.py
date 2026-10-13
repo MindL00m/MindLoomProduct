@@ -373,16 +373,12 @@ def extract_loombot_question(body: str) -> str | None:
     return question or "What should the team know right now?"
 
 
-async def _loombot_reply_from_context(question: str, context_md: str) -> str:
-    from openai import AsyncOpenAI
+async def _loombot_reply_from_context(
+    question: str, context_md: str, org_id: str
+) -> str:
+    from core.llm_provider import get_llm_client
 
-    from core.config import get_settings
-
-    settings = get_settings()
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
-    )
+    client = await get_llm_client(org_id)
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
@@ -414,7 +410,7 @@ async def _loombot_reply(
                 "Use Resync in the workspace header to rebuild it from company knowledge."
             )
         try:
-            answer = await _loombot_reply_from_context(question, context_md)
+            answer = await _loombot_reply_from_context(question, context_md, org_id)
             if answer:
                 return answer
         except Exception:

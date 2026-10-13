@@ -101,7 +101,7 @@ async def test_propose_workspace_does_not_create(monkeypatch) -> None:
     monkeypatch.setattr(workspace_context, "propose_workspace_draft", fake_draft)
     monkeypatch.setattr(workspaces, "create_workspace", boom)
 
-    result, msg, pr, ws = await ask_agent._run_tool(
+    result, msg, pr, ws, _email = await ask_agent._run_tool(
         name="propose_workspace",
         arguments={"name": "Project X", "purpose": "Project X"},
         org_id="org-1",
@@ -127,8 +127,9 @@ async def test_loombot_context_only_skips_retrieve(monkeypatch) -> None:
         retrieve_called["n"] += 1
         return RetrievalResult(chunks=[], experts=[], entities_found=[])
 
-    async def fake_context_answer(question: str, context_md: str) -> str:
+    async def fake_context_answer(question: str, context_md: str, org_id: str) -> str:
         assert "Project X" in context_md
+        assert org_id == "org-1"
         assert "timeline" in question.lower() or True
         return "From CONTEXT.md: launch is Q3."
 

@@ -76,20 +76,28 @@ class _ChunkOutcome:
     failed: bool
 
 
-def _document_from_conversation(conversation: Conversation) -> DocumentInput:
+def _document_from_conversation(
+    conversation: Conversation,
+    *,
+    visible_to: list[str] | None = None,
+    uploaded_by: str | None = None,
+) -> DocumentInput:
     """Synthesise a :class:`DocumentInput` from a conversation payload.
 
     The blob is the canonical JSON of the conversation, so re-posting the exact
     same conversation hashes identically and de-duplicates.
     """
 
+    acl = list(visible_to or [])
     return DocumentInput(
         data=conversation.model_dump_json().encode("utf-8"),
         source=conversation.source,
         source_label=conversation.title or conversation.source,
         original_filename=None,
         mime_type="application/json",
-        visible_to=[],
+        visible_to=acl,
+        uploaded_by=uploaded_by,
+        permissions=acl,
     )
 
 
@@ -113,6 +121,17 @@ async def _process_chunk(
 
     try:
         metadata = await extract_chunk_metadata(chunk)
+        # Approved workflows should rank as high-authority how-to knowledge for Ask.
+        if source == "skill_file":
+            metadata = metadata.model_copy(
+                update={
+                    "knowledge_type": "question_answer",
+                    "confidence": "high",
+                    "confidence_reason": "Approved organizational workflow skill file.",
+                    "summary": metadata.summary
+                    or (chunk.raw_text[:180] + ("…" if len(chunk.raw_text) > 180 else "")),
+                }
+            )
         embedding = await embed_chunk(chunk, metadata)
         await save_to_postgres(chunk, metadata, embedding, org_id, visible_to)
         await save_to_neo4j(
@@ -147,6 +166,8 @@ async def run_ingestion(
     org_id: str,
     *,
     document: DocumentInput | None = None,
+    visible_to: list[str] | None = None,
+    uploaded_by: str | None = None,
     repository: DocumentRepository | None = None,
     storage: BlobStorage | None = None,
 ) -> IngestionResult:
@@ -164,6 +185,8 @@ async def run_ingestion(
         conversation: A validated-or-validatable canonical conversation.
         document: The raw source document; synthesised from the conversation
             when omitted.
+        visible_to: Optional ACL tokens when synthesising the document.
+        uploaded_by: Optional uploader id when synthesising the document.
         repository: Document graph repository (defaults to Neo4j).
         storage: Blob storage backend (defaults to the configured one).
 
@@ -184,7 +207,9 @@ async def run_ingestion(
     logger.info("[%s] validated %d messages", label, len(conversation.messages))
 
     # --- Intake: persist the raw document + Document node before chunking. ---
-    document = document or _document_from_conversation(conversation)
+    document = document or _document_from_conversation(
+        conversation, visible_to=visible_to, uploaded_by=uploaded_by
+    )
     store_result = await store_document(
         org_id=org_id,
         data=document.data,
@@ -316,6 +341,9 @@ async def run_ingestion_background(
     conversation: Conversation,
     org_id: str,
     job_store: dict[str, JobStatus],
+    *,
+    visible_to: list[str] | None = None,
+    uploaded_by: str | None = None,
 ) -> None:
     """Run :func:`run_ingestion` as a background job, updating ``job_store``.
 
@@ -328,6 +356,8 @@ async def run_ingestion_background(
         conversation: The conversation to ingest.
         job_store: In-memory mapping of job_id -> :class:`JobStatus` (v1 has no
             durable job store).
+        visible_to: Optional Ask ACL tokens for synthesised conversation docs.
+        uploaded_by: Optional uploader id for synthesised conversation docs.
     """
 
     job = job_store.get(job_id)
@@ -344,7 +374,12 @@ async def run_ingestion_background(
     logger.info("Job %s: processing conversation '%s'", job_id, conversation.conversation_id)
 
     try:
-        result = await run_ingestion(conversation, org_id)
+        result = await run_ingestion(
+            conversation,
+            org_id,
+            visible_to=visible_to,
+            uploaded_by=uploaded_by,
+        )
         job.status = "complete"
         job.progress = "Ingestion complete"
         job.result = result

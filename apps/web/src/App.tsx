@@ -8,11 +8,19 @@ import SignIn from "@/pages/setup/SignIn";
 import CreateOrg from "@/pages/setup/CreateOrg";
 import UploadCsv from "@/pages/setup/UploadCsv";
 import Dashboard from "@/pages/Dashboard";
+import DesktopAuth from "@/pages/DesktopAuth";
+import DownloadMac from "@/pages/DownloadMac";
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/setup" replace />} />
+
+      {/* Public pages for the macOS capture agent — not gated by guest/session. */}
+      <Route element={<SetupLayout />}>
+        <Route path="/desktop-auth" element={<DesktopAuth />} />
+        <Route path="/download" element={<DownloadMac />} />
+      </Route>
 
       <Route element={<SetupLayout />}>
         <Route element={<RequireGuest />}>

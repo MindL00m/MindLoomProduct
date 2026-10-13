@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 
 from core.config import get_settings
 from core.database import close_pools
-from core.durable_jobs import PROCESSING_QUEUE_NAME, QUEUE_NAME, execute
+from core.durable_jobs import PROCESSING_QUEUE_NAME, QUEUE_NAME, execute, touch_worker_heartbeat
 from core.schema import ensure_schema
 from weaver.connection_setup import run_periodic_connection_checks
 
@@ -32,6 +32,7 @@ async def main() -> None:
             item = await redis.brpoplpush(
                 QUEUE_NAME, PROCESSING_QUEUE_NAME, timeout=30
             )
+            await touch_worker_heartbeat(redis)
             if item:
                 await execute(json.loads(item))
                 await redis.lrem(PROCESSING_QUEUE_NAME, 1, item)

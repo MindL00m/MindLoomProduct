@@ -15,6 +15,7 @@ from core.models import (
     Participant,
 )
 from brain.pipeline import DocumentInput, run_ingestion
+from keeper.visibility_acl import permissions_for_upload
 
 SUPPORTED_DOCUMENT_EXTENSIONS = {
     ".pdf",
@@ -97,7 +98,12 @@ async def ingest_document(
         participants=[Participant(id="document", name=metadata.author or "Document")],
         messages=messages,
     )
-    visible_to = metadata.permissions or [f"org:{org_id}"]
+    visible_to = permissions_for_upload(
+        org_id=org_id,
+        uploaded_by=uploaded_by,
+        visibility=metadata.visibility,
+        permissions=metadata.permissions,
+    )
     return await run_ingestion(
         conversation,
         org_id,

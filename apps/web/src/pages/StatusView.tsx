@@ -106,7 +106,7 @@ function CurrentStatusBlock({
 
 function EvidenceDetail({
   evidence,
-  emptyLabel = "No linked source excerpts yet.",
+  emptyLabel = "No recent progress from connected sources yet.",
 }: {
   evidence: StatusEvidence[];
   emptyLabel?: string;
@@ -135,12 +135,6 @@ function EvidenceDetail({
           </p>
           {item.summary ? (
             <p className="mt-2 text-sm text-foreground/90">{item.summary}</p>
-          ) : null}
-          {item.excerpt && item.excerpt !== item.summary ? (
-            <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-              {item.excerpt}
-              {item.excerpt.length >= 500 ? "…" : ""}
-            </p>
           ) : null}
         </li>
       ))}
@@ -390,7 +384,7 @@ function DetailPanel({
               emptyLabel={
                 selected.kind === "project"
                   ? "No recent updates from connected sources yet."
-                  : "No linked source excerpts yet."
+                  : "No recent progress from connected sources yet."
               }
             />
           </section>

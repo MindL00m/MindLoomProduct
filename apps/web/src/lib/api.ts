@@ -1,16 +1,29 @@
 /** Backend API configuration and authenticated fetch wrapper. */
 
-import { getOrgId, getUserId, useSession } from "@/store/session";
+import { getAccessToken, useSession } from "@/store/session";
 
-export const API_BASE: string =
-  (import.meta.env.VITE_API_BASE as string | undefined) ??
-  (import.meta.env.DEV ? "/api" : "http://localhost:8000");
+function resolveApiBase(): string {
+  const baked = (import.meta.env.VITE_API_BASE as string | undefined)?.trim();
+  if (baked) return baked.replace(/\/$/, "");
+  if (import.meta.env.DEV) return "/api";
+  throw new Error(
+    "VITE_API_BASE must be set for production builds " +
+      "(e.g. /api for same-origin nginx proxy, or https://api.example.com).",
+  );
+}
+
+export const API_BASE: string = resolveApiBase();
 
 const STALE_SESSION_DETAILS = new Set([
   "Invalid or unknown organization.",
   "Invalid user for this organization.",
   "Missing organization context.",
   "Missing user context.",
+  "Missing access token.",
+  "Invalid access token.",
+  "Access token expired.",
+  "Access token is missing required claims.",
+  "Invalid session.",
 ]);
 
 /** Drop a persisted session that the API no longer recognizes (e.g. after DB reset). */
@@ -32,7 +45,7 @@ function clearStaleSessionIfNeeded(res: Response, skipAuth: boolean): void {
     });
 }
 
-/** Fetch with ``X-Org-Id`` and ``X-User-Id`` when a session exists. Set ``skipAuth`` for public endpoints. */
+/** Fetch with ``Authorization: Bearer`` when a session exists. Set ``skipAuth`` for public endpoints. */
 export async function apiFetch(
   path: string,
   init: RequestInit = {},
@@ -40,10 +53,8 @@ export async function apiFetch(
 ): Promise<Response> {
   const headers = new Headers(init.headers);
   if (!skipAuth) {
-    const orgId = getOrgId();
-    if (orgId) headers.set("X-Org-Id", orgId);
-    const userId = getUserId();
-    if (userId) headers.set("X-User-Id", userId);
+    const token = getAccessToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
   }
   try {
     const res = await fetch(`${API_BASE}${path}`, { ...init, headers });

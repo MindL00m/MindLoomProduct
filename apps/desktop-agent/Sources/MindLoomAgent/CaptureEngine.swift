@@ -8,6 +8,8 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
     private(set) var sessionStartedAt: Date?
     /// Events ingested into the current session aggregator (not lifetime disk log).
     private(set) var sessionEventCount = 0
+    /// True from End until the upload and Skill File draft finish.
+    private(set) var isFinishing = false
     /// Last non-agent regular app the user activated (for allowlist when our panel is focused).
     private(set) var lastUserFacingApp: NSRunningApplication?
 
@@ -111,7 +113,21 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
         setStatus(.capturing)
     }
 
+    /// Claims the End action synchronously so repeat clicks are ignored before the upload task runs.
+    func beginFinishing() -> Bool {
+        guard sessionId != nil, !isFinishing else { return false }
+        isFinishing = true
+        notifyStatus()
+        return true
+    }
+
     func endSessionAndUpload(analyze: Bool, note: String = "") async throws {
+        defer {
+            DispatchQueue.main.async { [weak self] in
+                self?.isFinishing = false
+                self?.notifyStatus()
+            }
+        }
         axCapture.stop()
         endWorkspaceObservation()
         aggregator.endSession()

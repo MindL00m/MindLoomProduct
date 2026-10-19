@@ -5,22 +5,20 @@ import {
   FileJson,
   FileText,
   Loader2,
+  MessageCircle,
   UploadCloud,
 } from "lucide-react";
 import {
   importWhatsAppExport,
   pollJob,
-  previewWhatsAppExport,
   uploadConversationJson,
   uploadDocument,
   type DocumentMetadata,
   type IngestionResult,
-  type WhatsAppPreview,
 } from "@/services/ingest";
 import { cn } from "@/lib/utils";
-import { PrimaryButton } from "@/components/PrimaryButton";
 
-type ItemKind = "document" | "json";
+type ItemKind = "document" | "json" | "whatsapp";
 type ItemStatus = "uploading" | "processing" | "complete" | "failed";
 
 interface UploadItem {
@@ -41,6 +39,19 @@ function kindOf(file: File): ItemKind | null {
   return null;
 }
 
+// Mirrors the bracket and dash message headers accepted by the API's WhatsApp parser.
+const WHATSAPP_MESSAGE_LINE =
+  /^\u200e?\[?\d{1,2}\/\d{1,2}\/\d{2,4},\s*\d{1,2}:\d{2}(?::\d{2})?(?:\s*[APap][Mm])?\]?\s*(?:-\s*)?[^:\n]+:\s/m;
+
+async function looksLikeWhatsAppExport(file: File): Promise<boolean> {
+  if (!file.name.toLowerCase().endsWith(".txt")) return false;
+  return WHATSAPP_MESSAGE_LINE.test(await file.slice(0, 64 * 1024).text());
+}
+
+function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
 export default function UploadData({ showHeading = true }: { showHeading?: boolean }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -58,7 +69,7 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
   const start = useCallback(
     async (file: File) => {
       const id = crypto.randomUUID();
-      const kind = kindOf(file);
+      let kind = kindOf(file);
       setItems((prev) => [
         { id, name: file.name, kind, status: "uploading" as ItemStatus },
         ...prev,
@@ -70,14 +81,26 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
       }
 
       try {
+        if (kind === "document" && (await looksLikeWhatsAppExport(file))) {
+          kind = "whatsapp";
+          update(id, { kind });
+        }
         const { job_id } =
           kind === "json"
             ? await uploadConversationJson(file, { visibility })
-            : await uploadDocument(file, {
-                ...metadata,
-                title: metadata.title || file.name,
-                visibility,
-              });
+            : kind === "whatsapp"
+              ? await importWhatsAppExport(file, browserTimeZone(), {
+                  ...metadata,
+                  title: metadata.title || file.name.replace(/\.txt$/i, ""),
+                  source_application: "WhatsApp",
+                  source_location: metadata.source_location || "WhatsApp chat export",
+                  visibility,
+                })
+              : await uploadDocument(file, {
+                  ...metadata,
+                  title: metadata.title || file.name,
+                  visibility,
+                });
         update(id, { status: "processing", message: "Chunking & classifying…" });
 
         const final = await pollJob(job_id, (status) => {
@@ -140,8 +163,6 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
         </div>
       </div>
 
-      <WhatsAppImport metadata={metadata} visibility={visibility} />
-
       <input
         id={inputId}
         ref={inputRef}
@@ -186,6 +207,10 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
         <span className="text-xs text-muted-foreground">
           PDF, DOCX, PPTX, XLSX, CSV, text, logs, JSONL, or conversation JSON
         </span>
+        <span className="text-xs text-muted-foreground">
+          WhatsApp chat exports (.txt, without media) are detected automatically and
+          read in your timezone ({browserTimeZone()}).
+        </span>
       </label>
 
       {items.length > 0 && (
@@ -199,116 +224,9 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
   );
 }
 
-function WhatsAppImport({
-  metadata,
-  visibility,
-}: {
-  metadata: DocumentMetadata;
-  visibility: "private" | "organization";
-}) {
-  const [file, setFile] = useState<File | null>(null);
-  const [timezoneName, setTimezoneName] = useState(
-    Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-  );
-  const [preview, setPreview] = useState<WhatsAppPreview | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function selectFile(selected: File | null) {
-    setFile(selected);
-    setPreview(null);
-    setStatus(null);
-    if (!selected) return;
-    setBusy(true);
-    try {
-      setPreview(await previewWhatsAppExport(selected, timezoneName));
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Preview failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function startImport() {
-    if (!file || !preview) return;
-    setBusy(true);
-    setStatus("Queuing WhatsApp export…");
-    try {
-      const { job_id } = await importWhatsAppExport(file, timezoneName, {
-        ...metadata,
-        title: metadata.title || file.name.replace(/\.txt$/i, ""),
-        source_application: "WhatsApp",
-        source_location: metadata.source_location || "WhatsApp chat export",
-        visibility,
-      });
-      const result = await pollJob(job_id, (job) => setStatus(job.progress || job.status));
-      if (result.status === "complete") {
-        setStatus(
-          `Imported ${result.result?.total_messages ?? preview.message_count} messages into searchable knowledge.`,
-        );
-        setFile(null);
-        setPreview(null);
-      } else {
-        setStatus(result.error || "WhatsApp import failed.");
-      }
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "WhatsApp import failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="rounded-lg border border-border bg-card p-4">
-      <div>
-        <h3 className="font-medium">WhatsApp export</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Export a WhatsApp chat without media, then upload its .txt file. Previewing does not import anything.
-          Search visibility follows the setting above.
-        </p>
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_220px]">
-        <input
-          type="file"
-          accept=".txt,text/plain"
-          className="block w-full rounded-md border border-border p-2 text-sm"
-          onChange={(event) => void selectFile(event.target.files?.[0] || null)}
-        />
-        <label className="text-sm">
-          Chat timezone
-          <input
-            className="mt-1 block w-full rounded-md border border-border bg-background px-3 py-2"
-            value={timezoneName}
-            onChange={(event) => setTimezoneName(event.target.value)}
-            onBlur={() => file && void selectFile(file)}
-            placeholder="Asia/Singapore"
-          />
-        </label>
-      </div>
-      {busy && !preview && <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Reading export…</p>}
-      {preview && (
-        <div className="mt-4 space-y-3 rounded-md bg-muted/50 p-3">
-          <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <span><strong>{preview.message_count}</strong><br />messages</span>
-            <span><strong>{preview.participant_count}</strong><br />participants</span>
-            <span><strong>{new Date(preview.first_message_at).toLocaleDateString()}</strong><br />first message</span>
-            <span><strong>{new Date(preview.last_message_at).toLocaleDateString()}</strong><br />last message</span>
-          </div>
-          <p className="text-xs text-muted-foreground">Participants: {preview.participants.join(", ")}</p>
-          <p className="text-xs text-muted-foreground">{preview.ignored_notice}</p>
-          <PrimaryButton disabled={busy} onClick={() => void startImport()}>
-            {busy && <Loader2 className="size-4 animate-spin" />}
-            Import WhatsApp knowledge
-          </PrimaryButton>
-        </div>
-      )}
-      {status && <p className="mt-3 text-sm text-muted-foreground">{status}</p>}
-    </section>
-  );
-}
-
 function UploadRow({ item }: { item: UploadItem }) {
-  const Icon = item.kind === "document" ? FileText : FileJson;
+  const Icon =
+    item.kind === "whatsapp" ? MessageCircle : item.kind === "document" ? FileText : FileJson;
   return (
     <li className="flex items-center gap-3 rounded-md border border-border bg-card p-3">
       <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-brand-50 text-brand-700">
@@ -317,7 +235,9 @@ function UploadRow({ item }: { item: UploadItem }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{item.name}</p>
         <p className="truncate text-xs text-muted-foreground">
-          {item.status === "complete" && item.result
+          {item.status === "complete" && item.result && item.kind === "whatsapp"
+            ? `WhatsApp chat · ${item.result.total_messages} message${item.result.total_messages === 1 ? "" : "s"} imported`
+            : item.status === "complete" && item.result
             ? `${item.result.total_chunks} chunk${item.result.total_chunks === 1 ? "" : "s"} added${
                 item.result.failed_chunks
                   ? ` · ${item.result.failed_chunks} failed`

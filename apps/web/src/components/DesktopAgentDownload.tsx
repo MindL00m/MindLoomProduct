@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Download, Monitor, Terminal } from "lucide-react";
+import { Check, Monitor, Terminal } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PrimaryButton } from "@/components/PrimaryButton";
-import { SecondaryButton } from "@/components/SecondaryButton";
 import {
   DESKTOP_AGENT_DOWNLOAD_URL,
   isAbsoluteUrl,
@@ -103,9 +102,8 @@ export function DesktopAgentDownload({
         {ready && !compact && (
           <div className="space-y-2">
             <p className="text-sm text-muted-foreground">
-              macOS blocks the zip from the browser (Apple cannot check it for
-              malicious software) because this build is not notarized. Install
-              with Terminal instead — that path clears quarantine.
+              Install from Terminal. It downloads the app, puts it in your
+              Applications folder, and opens it.
             </p>
             <ol className="list-decimal space-y-1 pl-4 text-sm text-muted-foreground">
               <li>Copy the command below and paste it into Terminal, then press Return.</li>
@@ -125,14 +123,6 @@ export function DesktopAgentDownload({
               {copied ? <Check className="size-4" /> : <Terminal className="size-4" />}
               {copied ? "Copied" : "Copy Terminal install"}
             </PrimaryButton>
-          ) : null}
-          {ready ? (
-            <SecondaryButton asChild>
-              <a href={DESKTOP_AGENT_DOWNLOAD_URL} download="LoomCapture-macos.zip">
-                <Download className="size-4" />
-                Download zip
-              </a>
-            </SecondaryButton>
           ) : null}
         </div>
       </CardContent>

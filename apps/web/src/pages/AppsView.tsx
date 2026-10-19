@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   LayoutGrid,
   Loader2,
-  MessageCircle,
   MessageSquare,
+  Plus,
   Settings2,
   Unplug,
-  Upload,
+  X,
 } from "lucide-react";
 import { GoogleIcon } from "@/components/icons";
 import { PrimaryButton } from "@/components/PrimaryButton";
@@ -16,7 +15,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ConnectionWizard } from "@/pages/integrations/ConnectionWizard";
 import GitHubConnector from "@/pages/integrations/GitHubConnector";
-import { dashboardHref } from "@/lib/navigation";
 import {
   connectGoogleWorkspaceDev,
   connectMicrosoftTeamsDev,
@@ -68,6 +66,7 @@ export default function AppsView({
   const [banner, setBanner] = useState<string | null>(null);
   const [reviews, setReviews] = useState<KnowledgeReview[]>([]);
   const [answerEdits, setAnswerEdits] = useState<Record<string, string>>({});
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   const workspace = integrations.find((item) => item.provider === "google_workspace");
   const teams = integrations.find((item) => item.provider === "microsoft_teams");
@@ -150,6 +149,7 @@ export default function AppsView({
         await connectZoomDev();
       }
       await loadIntegrations();
+      setCatalogOpen(false);
       setWizardProvider(provider);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Workspace connection failed.");
@@ -161,6 +161,80 @@ export default function AppsView({
   if (loading && integrations.length === 0) {
     return <div className="flex justify-center py-16"><Loader2 className="animate-spin" /></div>;
   }
+
+  const connectors: { id: string; connected: boolean; card: ReactNode }[] = [
+    {
+      id: "google_workspace",
+      connected: Boolean(workspace?.connected),
+      card: (
+        <WorkspaceCard
+          title="Google Workspace"
+          description="Continuously connect approved Gmail, Google Calendars, shared drives, and folders."
+          icon={<GoogleIcon className="size-6" />}
+          integration={workspace}
+          busy={busyProvider === "google_workspace"}
+          connectLabel={oauthEnabled ? "Authorize Google" : "Authorize Google (dev)"}
+          onConnect={() => void connectWorkspace("google_workspace")}
+          onManage={() => setWizardProvider("google_workspace")}
+          onPause={(paused) => void setConnectionPaused("google_workspace", paused).then(loadIntegrations)}
+          onDisconnect={() => void disconnectConnection("google_workspace").then(loadIntegrations)}
+        />
+      ),
+    },
+    {
+      id: "zoom",
+      connected: Boolean(zoom?.connected),
+      card: (
+        <WorkspaceCard
+          title="Zoom"
+          description="Continuously import approved cloud-recording transcripts, summaries, and meeting chats."
+          icon={<MessageSquare className="size-6" />}
+          integration={zoom}
+          busy={busyProvider === "zoom"}
+          connectLabel={zoomOauthEnabled ? "Authorize Zoom" : "Authorize Zoom (dev)"}
+          onConnect={() => void connectWorkspace("zoom")}
+          onManage={() => setWizardProvider("zoom")}
+          onPause={(paused) => void setConnectionPaused("zoom", paused).then(loadIntegrations)}
+          onDisconnect={() => void disconnectConnection("zoom").then(loadIntegrations)}
+        />
+      ),
+    },
+    {
+      id: "microsoft_teams",
+      connected: Boolean(teams?.connected),
+      card: (
+        <WorkspaceCard
+          title="Microsoft 365"
+          description="Continuously connect approved Outlook mail and calendars, SharePoint, Teams channels, and private chats."
+          icon={<MessageSquare className="size-6" />}
+          integration={teams}
+          busy={busyProvider === "microsoft_teams"}
+          connectLabel={microsoftOauthEnabled ? "Authorize Microsoft" : "Authorize Microsoft (dev)"}
+          onConnect={() => void connectWorkspace("microsoft_teams")}
+          onManage={() => setWizardProvider("microsoft_teams")}
+          onPause={(paused) => void setConnectionPaused("microsoft_teams", paused).then(loadIntegrations)}
+          onDisconnect={() => void disconnectConnection("microsoft_teams").then(loadIntegrations)}
+        />
+      ),
+    },
+    {
+      id: "github",
+      connected: Boolean(github?.connected),
+      card: (
+        <GitHubConnector
+          connected={github?.connected}
+          account={github?.account_email}
+          selectedCount={github?.selected_resource_count}
+          onChanged={() => {
+            setCatalogOpen(false);
+            void loadIntegrations();
+          }}
+        />
+      ),
+    },
+  ];
+  const activeConnectors = connectors.filter((connector) => connector.connected);
+  const availableConnectors = connectors.filter((connector) => !connector.connected);
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
@@ -189,95 +263,46 @@ export default function AppsView({
         />
       )}
 
-      <WorkspaceCard
-        title="Google Workspace"
-        description="Continuously connect approved Gmail, Google Calendars, shared drives, and folders."
-        icon={<GoogleIcon className="size-6" />}
-        integration={workspace}
-        busy={busyProvider === "google_workspace"}
-        connectLabel={oauthEnabled ? "Authorize Google" : "Authorize Google (dev)"}
-        onConnect={() => void connectWorkspace("google_workspace")}
-        onManage={() => setWizardProvider("google_workspace")}
-        onPause={(paused) => void setConnectionPaused("google_workspace", paused).then(loadIntegrations)}
-        onDisconnect={() => void disconnectConnection("google_workspace").then(loadIntegrations)}
-      />
-
-      <WorkspaceCard
-        title="Zoom"
-        description="Continuously import approved cloud-recording transcripts, summaries, and meeting chats."
-        icon={<MessageSquare className="size-6" />}
-        integration={zoom}
-        busy={busyProvider === "zoom"}
-        connectLabel={zoomOauthEnabled ? "Authorize Zoom" : "Authorize Zoom (dev)"}
-        onConnect={() => void connectWorkspace("zoom")}
-        onManage={() => setWizardProvider("zoom")}
-        onPause={(paused) => void setConnectionPaused("zoom", paused).then(loadIntegrations)}
-        onDisconnect={() => void disconnectConnection("zoom").then(loadIntegrations)}
-      />
-
-      <WorkspaceCard
-        title="Microsoft 365"
-        description="Continuously connect approved Outlook mail and calendars, SharePoint, Teams channels, and private chats."
-        icon={<MessageSquare className="size-6" />}
-        integration={teams}
-        busy={busyProvider === "microsoft_teams"}
-        connectLabel={microsoftOauthEnabled ? "Authorize Microsoft" : "Authorize Microsoft (dev)"}
-        onConnect={() => void connectWorkspace("microsoft_teams")}
-        onManage={() => setWizardProvider("microsoft_teams")}
-        onPause={(paused) => void setConnectionPaused("microsoft_teams", paused).then(loadIntegrations)}
-        onDisconnect={() => void disconnectConnection("microsoft_teams").then(loadIntegrations)}
-      />
-
-      <GitHubConnector
-        connected={github?.connected}
-        account={github?.account_email}
-        selectedCount={github?.selected_resource_count}
-        onChanged={() => void loadIntegrations()}
-      />
-
-      <Card>
-        <CardHeader className="flex-row items-start gap-3">
-          <span className="flex size-11 items-center justify-center rounded-lg border">
-            <MessageCircle className="size-6" />
-          </span>
-          <div>
-            <CardTitle className="text-lg">WhatsApp exports</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Preview and import approved WhatsApp chat exports into searchable knowledge.
-            </p>
-          </div>
-        </CardHeader>
-        <CardContent>
+      {activeConnectors.length === 0 ? (
+        <div className="flex flex-col items-center gap-3 rounded-lg border-2 border-dashed border-border px-6 py-10 text-center">
           <p className="text-sm text-muted-foreground">
-            Use{" "}
-            <Link to={`${dashboardHref("import")}#manual-import`} className="font-medium text-primary hover:underline">
-              Upload data
-            </Link>
-            . WhatsApp exports are manual snapshots, not a live connection.
+            No connectors yet. Connect a workspace app to keep MindLoom in sync with it.
           </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex-row items-start gap-3">
-          <span className="flex size-11 items-center justify-center rounded-lg border"><Upload className="size-6" /></span>
-          <div>
-            <CardTitle className="text-lg">Manual uploads</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Add files that are not stored in a connected workspace. Uploaded files use the same MindLoom ingestion pipeline.
+          <PrimaryButton onClick={() => setCatalogOpen(true)}>
+            <Plus className="size-4" />
+            Add connector
+          </PrimaryButton>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">
+              {activeConnectors.length} connected
             </p>
+            {availableConnectors.length > 0 && (
+              <SecondaryButton onClick={() => setCatalogOpen(true)}>
+                <Plus className="size-4" />
+                Add connector
+              </SecondaryButton>
+            )}
           </div>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Use{" "}
-            <Link to={`${dashboardHref("import")}#manual-import`} className="font-medium text-primary hover:underline">
-              Upload data
-            </Link>{" "}
-            under Weaver.
-          </p>
-        </CardContent>
-      </Card>
+          {activeConnectors.map((connector) => (
+            <div key={connector.id}>{connector.card}</div>
+          ))}
+        </>
+      )}
+
+      {catalogOpen && (
+        <ConnectorCatalog onClose={() => setCatalogOpen(false)} error={error}>
+          {availableConnectors.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Every available connector is already connected.</p>
+          ) : (
+            availableConnectors.map((connector) => (
+              <div key={connector.id}>{connector.card}</div>
+            ))
+          )}
+        </ConnectorCatalog>
+      )}
 
       {isAdmin && (
       <Card>
@@ -356,6 +381,66 @@ export default function AppsView({
       </Card>
       )}
 
+    </div>
+  );
+}
+
+function ConnectorCatalog({
+  onClose,
+  error,
+  children,
+}: {
+  onClose: () => void;
+  error: string | null;
+  children: ReactNode;
+}) {
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-foreground/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="connector-catalog-heading"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[85dvh] w-full max-w-3xl flex-col rounded-lg border border-border bg-background shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h3 id="connector-catalog-heading" className="text-base font-semibold text-foreground">
+              Add a connector
+            </h3>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              MindLoom only uses the locations and permissions you approve.
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
+          {error && (
+            <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          {children}
+        </div>
+      </div>
     </div>
   );
 }

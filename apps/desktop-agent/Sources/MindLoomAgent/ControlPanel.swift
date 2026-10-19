@@ -559,7 +559,7 @@ final class ControlPanel: NSObject {
         signInButton.isEnabled = !signingIn
         cancelSignInButton.isEnabled = signingIn
 
-        let detail: String
+        var detail: String
         switch engine.status {
         case .idle:
             statusLabel.stringValue = "Idle"
@@ -585,6 +585,11 @@ final class ControlPanel: NSObject {
             statusLabel.stringValue = "Needs Accessibility"
             statusDot.fillColor = LoomTheme.destructive
             detail = "Grant permission, quit, and reopen the app."
+        }
+        if engine.isFinishing {
+            statusLabel.stringValue = "Processing Skill File…"
+            statusDot.fillColor = LoomTheme.warning
+            detail = "Uploading this session and drafting a Skill File. This can take a minute."
         }
         statusDetailLabel.stringValue = detail
 
@@ -613,8 +618,10 @@ final class ControlPanel: NSObject {
         }
 
         let sessionLive = engine.sessionId != nil
-        pauseButton?.isEnabled = sessionLive
-        endButton?.isEnabled = sessionLive && !signingIn
+        let finishing = engine.isFinishing
+        pauseButton?.isEnabled = sessionLive && !finishing
+        endButton?.isEnabled = sessionLive && !signingIn && !finishing
+        endButton?.loomTitle = finishing ? "Processing Skill File…" : "End"
         startButton?.isEnabled = !sessionLive || engine.status == .idle || engine.status == .needsPermission
     }
 
@@ -741,6 +748,7 @@ final class ControlPanel: NSObject {
     }
 
     @objc private func endSession() {
+        guard engine.beginFinishing() else { return }
         Task { await finish(analyze: true) }
     }
 

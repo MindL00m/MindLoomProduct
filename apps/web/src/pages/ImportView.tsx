@@ -30,8 +30,8 @@ export default function ImportView({
           Connected sources
         </h3>
         <p className="mt-1 mb-5 text-sm text-muted-foreground">
-          Connect Google Workspace, Microsoft 365, Zoom, or GitHub. MindLoom only
-          uses the locations and permissions you approve.
+          Apps MindLoom keeps in sync. Use Add connector to connect Google
+          Workspace, Microsoft 365, Zoom, or GitHub.
         </p>
         <AppsView
           isAdmin={isAdmin}
@@ -52,8 +52,8 @@ export default function ImportView({
           Upload files
         </h3>
         <p className="mt-1 mb-5 text-sm text-muted-foreground">
-          Add documents and exported conversations. Their content and source
-          context are retained together.
+          Add documents and exported conversations, including WhatsApp chat
+          exports. Their content and source context are retained together.
         </p>
         <UploadData showHeading={false} />
       </section>

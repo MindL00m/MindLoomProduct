@@ -64,6 +64,7 @@ final class StatusItemController: NSObject {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         let statusLine = NSMenuItem(
             title: "Status: \(statusLabel(engine.status))",
             action: nil,
@@ -88,7 +89,9 @@ final class StatusItemController: NSObject {
             } else {
                 menu.addItem(item("Pause Capture", #selector(pauseSession)))
             }
-            menu.addItem(item("End", #selector(endSession)))
+            let end = item(engine.isFinishing ? "Processing Skill File…" : "End", #selector(endSession))
+            end.isEnabled = !engine.isFinishing
+            menu.addItem(end)
         }
 
         menu.addItem(NSMenuItem.separator())
@@ -160,6 +163,7 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func endSession() {
+        guard engine.beginFinishing() else { return }
         Task { await finish(analyze: true) }
     }
 

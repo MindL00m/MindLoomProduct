@@ -221,6 +221,10 @@ def _evidence_list(raw: object) -> list[StatusEvidence]:
 def _as_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return value
+    to_native = getattr(value, "to_native", None)
+    if callable(to_native):
+        native = to_native()
+        return native if isinstance(native, datetime) else None
     return None
 
 

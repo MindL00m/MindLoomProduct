@@ -6,30 +6,30 @@
 
 @layer base {
   :root {
-    /* Frozen mist — light theme tokens (HSL channels, no hsl() wrapper). */
-    --background: 0 0% 100%;
-    --foreground: 60 3% 15%;
+    /* Deep water — light theme tokens (HSL channels, no hsl() wrapper). */
+    --background: 180 20% 99%;
+    --foreground: 185 100% 10%; /* abyss #003135 */
 
     --card: 0 0% 100%;
-    --card-foreground: 60 3% 15%;
+    --card-foreground: 185 100% 10%;
 
-    --muted: 220 14% 97%;
-    --muted-foreground: 70 4% 47%; /* mist-700 */
+    --muted: 188 40% 96%;
+    --muted-foreground: 186 18% 36%;
 
-    --border: 60 5% 89%;
-    --input: 60 5% 89%;
-    --ring: 18 60% 45%; /* loom rust */
+    --border: 188 30% 87%;
+    --input: 188 30% 87%;
+    --ring: 173 58% 39%; /* logo teal */
 
-    --primary: 18 60% 45%; /* #b85c2c */
+    --primary: 173 58% 39%; /* logo teal #2a9d8f */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 38 45% 94%;
-    --secondary-foreground: 60 3% 15%;
+    --secondary: 189 51% 93%;
+    --secondary-foreground: 185 95% 16%; /* deep #024950 */
 
-    --accent: 38 45% 94%; /* cream #f2e6cf */
-    --accent-foreground: 60 3% 15%;
+    --accent: 189 51% 90%; /* sky #afdde5, lightened */
+    --accent-foreground: 185 95% 16%;
 
-    --destructive: 0 72% 51%;
+    --destructive: 12 49% 40%; /* rust #964734 */
     --destructive-foreground: 0 0% 100%;
 
     --success: 142 55% 36%;

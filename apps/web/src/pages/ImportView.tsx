@@ -31,7 +31,7 @@ export default function ImportView({
         </h3>
         <p className="mt-1 mb-5 text-sm text-muted-foreground">
           Apps MindLoom keeps in sync. Use Add connector to connect Google
-          Workspace, Microsoft 365, Zoom, or GitHub.
+          Workspace, Microsoft 365, Zoom, GitHub, or Slack.
         </p>
         <AppsView
           isAdmin={isAdmin}

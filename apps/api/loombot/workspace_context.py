@@ -94,8 +94,14 @@ async def resolve_members_from_experts(
                         match = hit
                         break
 
-        if match is None:
-            unmatched.append({"name": name, "email": email or None, "reason": reason})
+        # Directory-only people have no user_id and cannot be workspace members.
+        if match is None or not str(match.get("user_id") or "").strip():
+            unmatched.append({
+                "name": name,
+                "email": email or None,
+                "reason": "Has not signed in to MindLoom yet"
+                + (f" (relevant because: {reason})." if reason else "."),
+            })
             continue
 
         user_id = str(match["user_id"])
@@ -119,10 +125,11 @@ async def resolve_members_from_queries(
     queries: list[str],
     *,
     exclude_user_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Resolve optional name/email/title queries to signed-in users."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve name/email/title queries to signed-in users; return (members, unmatched)."""
 
     members: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in queries:
         query = " ".join(str(raw or "").split())
@@ -131,9 +138,37 @@ async def resolve_members_from_queries(
         hits = await lookup_messageable_people(
             org_id, query, exclude_user_id=exclude_user_id, limit=3
         )
-        if len(hits) != 1:
+        signed_in = [hit for hit in hits if str(hit.get("user_id") or "").strip()]
+        directory_only = [hit for hit in hits if hit not in signed_in]
+        exact = [
+            hit for hit in signed_in
+            if query.lower() in {
+                str(hit.get("name") or "").lower(),
+                str(hit.get("email") or "").lower(),
+            }
+        ]
+        if len(exact) == 1:
+            person = exact[0]
+        elif len(signed_in) == 1:
+            person = signed_in[0]
+        else:
+            person = None
+        if person is None:
+            hint: dict[str, Any] = {}
+            if len(signed_in) > 1:
+                names = ", ".join(str(hit.get("name") or hit.get("email")) for hit in signed_in)
+                reason = f"'{query}' matched several people ({names}); add the right one by email."
+            elif directory_only:
+                hint = directory_only[0]
+                reason = "In the company directory, but has not signed in to MindLoom yet."
+            else:
+                reason = f"No one in MindLoom or the directory matched '{query}'."
+            unmatched.append({
+                "name": str(hint.get("name") or query),
+                "email": hint.get("email") or None,
+                "reason": reason,
+            })
             continue
-        person = hits[0]
         user_id = str(person["user_id"])
         if user_id in seen:
             continue
@@ -144,7 +179,7 @@ async def resolve_members_from_queries(
             "email": str(person["email"]),
             "reason": f"Matched query '{query}'.",
         })
-    return members
+    return members, unmatched
 
 
 async def generate_workspace_context(
@@ -269,7 +304,7 @@ async def propose_workspace_draft(
     members, unmatched = await resolve_members_from_experts(
         org_id, retrieval.experts, exclude_user_id=user_id
     )
-    query_members = await resolve_members_from_queries(
+    query_members, query_unmatched = await resolve_members_from_queries(
         org_id, member_queries or [], exclude_user_id=user_id
     )
     seen = {m["user_id"] for m in members}
@@ -277,6 +312,11 @@ async def propose_workspace_draft(
         if person["user_id"] not in seen:
             members.append(person)
             seen.add(person["user_id"])
+    unmatched_emails = {str(p.get("email") or "").lower() for p in unmatched if p.get("email")}
+    for person in query_unmatched:
+        email = str(person.get("email") or "").lower()
+        if not email or email not in unmatched_emails:
+            unmatched.append(person)
 
     member_labels = [
         f"{m['name']} <{m['email']}>" + (f" — {m['reason']}" if m.get("reason") else "")

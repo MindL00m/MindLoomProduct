@@ -88,6 +88,7 @@ from api.routes.connection_setup import router as connection_setup_router
 from api.routes.github import router as github_router
 from api.routes.llm_settings import router as llm_settings_router
 from api.routes.reviews import router as reviews_router
+from api.routes.slack import router as slack_router
 from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
 from api.routes.workspaces import router as workspaces_router
@@ -157,6 +158,7 @@ app.include_router(connection_setup_router)
 app.include_router(github_router)
 app.include_router(llm_settings_router)
 app.include_router(reviews_router)
+app.include_router(slack_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)
 app.include_router(workspaces_router)

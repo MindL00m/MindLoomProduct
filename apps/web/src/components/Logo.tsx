@@ -17,7 +17,7 @@ export function Logo({
         className="h-9 w-9 rounded-lg object-contain"
       />
       {showText && (
-        <span className="text-base font-semibold tracking-tight text-foreground">
+        <span className="text-base font-semibold tracking-tight">
           MindLoom
         </span>
       )}

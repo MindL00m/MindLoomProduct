@@ -276,6 +276,12 @@ async def execute(message: dict[str, Any]) -> None:
                 "Expert notification delivery: "
                 + ", ".join(f"{channel}={status}" for channel, status in outcomes.items())
             )
+        elif kind == "slack_backfill":
+            from weaver.slack import backfill_install
+
+            count = await backfill_install(str(payload["install_id"]), int(payload.get("days") or 7))
+            local[job_id].status = "complete"
+            local[job_id].progress = f"Slack backfill complete: {count} thread(s)"
         elif kind == "expert_thread_ingest":
             from keeper.review_workflows import ingest_expert_thread
 

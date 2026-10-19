@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     await ensure_schema()
     redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    from weaver.slack import run_periodic_slack_flush
+
     scheduler = asyncio.create_task(run_periodic_connection_checks())
+    slack_flush = asyncio.create_task(run_periodic_slack_flush())
     try:
         # Recover work reserved by this single worker before a process crash.
         while True:
@@ -38,6 +41,7 @@ async def main() -> None:
                 await redis.lrem(PROCESSING_QUEUE_NAME, 1, item)
     finally:
         scheduler.cancel()
+        slack_flush.cancel()
         await redis.aclose()
         await close_pools()
 

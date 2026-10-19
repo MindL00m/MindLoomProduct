@@ -157,7 +157,7 @@ export default function Dashboard() {
       {/* Sidebar */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-border bg-background transition-transform lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-brand-800 bg-brand-900 text-white transition-transform lg:static lg:translate-x-0",
           mobileNavOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -182,8 +182,8 @@ export default function Dashboard() {
                 className={cn(
                   "flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   view === section.view
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    ? "bg-primary text-primary-foreground"
+                    : "text-brand-100/80 hover:bg-brand-800 hover:text-white",
                 )}
               >
                 <section.icon className="size-4" aria-hidden="true" />
@@ -198,7 +198,7 @@ export default function Dashboard() {
             <div key={section.id} role="group" aria-labelledby={`nav-${section.id}`}>
               <p
                 id={`nav-${section.id}`}
-                className="flex items-center gap-2 px-3 pb-1 text-xs font-semibold text-foreground/70"
+                className="flex items-center gap-2 px-3 pb-1 text-xs font-semibold text-brand-200/80"
               >
                 <section.icon className="size-3.5" aria-hidden="true" />
                 {section.label}
@@ -215,8 +215,8 @@ export default function Dashboard() {
                       className={cn(
                         "flex w-full items-center gap-3 rounded-md py-2 pl-6 pr-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                         view === item.id
-                          ? "bg-primary/10 text-primary"
-                          : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                          ? "bg-primary text-primary-foreground"
+                          : "text-brand-100/80 hover:bg-brand-800 hover:text-white",
                       )}
                     >
                       <item.icon className="size-4" aria-hidden="true" />
@@ -234,10 +234,10 @@ export default function Dashboard() {
             ),
           )}
         </nav>
-        <div className="border-t border-border p-4">
+        <div className="border-t border-brand-800 p-4">
           <p className="truncate text-sm font-medium">{orgName || "Organization"}</p>
-          <p className="truncate text-xs text-muted-foreground">{email}</p>
-          <p className="mt-1 text-xs capitalize text-muted-foreground">{role}</p>
+          <p className="truncate text-xs text-brand-200/70">{email}</p>
+          <p className="mt-1 text-xs capitalize text-brand-200/70">{role}</p>
         </div>
       </aside>
 

@@ -328,6 +328,29 @@ _DURABLE_INTEGRATIONS_SQL = [
 )""",
 """CREATE INDEX IF NOT EXISTS idx_skill_files_org
   ON skill_files (org_id, updated_at DESC)""",
+"""CREATE TABLE IF NOT EXISTS slack_installations (
+    install_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL UNIQUE REFERENCES organizations (org_id) ON DELETE CASCADE,
+    team_id TEXT UNIQUE,
+    team_name TEXT,
+    bot_user_id TEXT,
+    app_id TEXT,
+    bot_token_enc TEXT,
+    signing_secret_enc TEXT,
+    scopes TEXT NOT NULL DEFAULT '',
+    ingest_channel_ids TEXT NOT NULL DEFAULT '[]',
+    ingest_mention_threads BOOLEAN NOT NULL DEFAULT TRUE,
+    answer_mentions BOOLEAN NOT NULL DEFAULT TRUE,
+    unlinked_user_policy TEXT NOT NULL DEFAULT 'ignore'
+        CHECK (unlinked_user_policy IN ('ignore', 'org')),
+    status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'active', 'error')),
+    last_event_at TIMESTAMPTZ,
+    last_error TEXT,
+    installed_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
 ]
 
 

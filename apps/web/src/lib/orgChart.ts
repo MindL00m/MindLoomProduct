@@ -132,9 +132,9 @@ export function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-/** Deterministic brandy accent color per node, for avatar fallbacks. */
+/** Deterministic brand accent color per node, for avatar fallbacks. */
 export function avatarColor(id: string): string {
-  const palette = ["#DD700B", "#7C7D75", "#B85C09", "#8F4707", "#5b5c55"];
+  const palette = ["#2a9d8f", "#024950", "#964734", "#1a675f", "#003135"];
   let hash = 0;
   for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
   return palette[Math.abs(hash) % palette.length];

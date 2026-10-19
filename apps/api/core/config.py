@@ -188,6 +188,13 @@ class Settings(BaseSettings):
         default="http://localhost:5173",
         description="Frontend origin used for OAuth success/error redirects.",
     )
+    public_api_url: str = Field(
+        default="http://localhost:8000",
+        description=(
+            "Public base URL of this API, used in the Slack app manifest so Slack "
+            "can deliver events. Locally this must be an HTTPS tunnel, not localhost."
+        ),
+    )
     microsoft_client_id: str = Field(
         default="",
         description="Microsoft Entra app client ID for Teams sync.",

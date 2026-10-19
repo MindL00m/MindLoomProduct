@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Database,
   FileText,
+  Hash,
   GitPullRequest,
   Loader2,
   MessageSquare,
@@ -1039,10 +1040,20 @@ function ProposedWorkspaceCard({
               </ul>
             )}
             {unmatched.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                {unmatched.length} person(s) mentioned in CONTEXT.md but not
-                signed into MindLoom.
-              </p>
+              <div className="pt-1">
+                <p className="text-xs font-medium text-foreground">
+                  Not added ({unmatched.length})
+                </p>
+                <ul className="space-y-0.5 text-xs text-muted-foreground">
+                  {unmatched.map((person) => (
+                    <li key={`${person.name}-${person.email ?? ""}`}>
+                      <span className="text-foreground">{person.name}</span>
+                      {person.email ? ` (${person.email})` : ""}
+                      {person.reason ? `: ${person.reason}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
           <button
@@ -1397,7 +1408,11 @@ function SourceRow({
       </span>
       <div className="min-w-0 flex-1">
         <p className="flex items-center gap-1.5 text-sm font-medium">
-          <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+          {source.citation?.source === "slack" ? (
+            <Hash className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
           <span className="truncate">{citationText(source)}</span>
         </p>
         <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">

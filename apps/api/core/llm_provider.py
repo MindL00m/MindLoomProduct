@@ -8,6 +8,7 @@ response and streaming contract for both providers.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -18,6 +19,8 @@ from sqlalchemy import text
 
 from core.config import get_settings
 from core.database import get_session_factory
+
+logger = logging.getLogger(__name__)
 
 Provider = Literal["openai", "local"]
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -85,6 +88,9 @@ def limit_messages(messages: list[dict[str, Any]], context_window: int) -> list[
             break
         kept.append(message)
         used += cost
+    # A tool result whose assistant tool_calls turn was trimmed is a 400 error.
+    while kept and kept[-1].get("role") == "tool":
+        kept.pop()
     remaining = max(64, budget - used)
     if system and _content_tokens(system[0].get("content")) > remaining:
         system = [{
@@ -94,12 +100,40 @@ def limit_messages(messages: list[dict[str, Any]], context_window: int) -> list[
     return [*system, *reversed(kept)]
 
 
-# Models that rejected ``reasoning_effort`` (e.g. gpt-4o-mini, many local servers).
-_MODELS_WITHOUT_REASONING_EFFORT: set[tuple[str | None, str]] = set()
+# Optional request fields that some models reject (gpt-4o-mini has no
+# reasoning_effort; reasoning models refuse temperature=0 and max_tokens; some
+# local servers lack tool_choice). A rejected field is dropped, or renamed for
+# max_tokens, and remembered per model so later calls skip it.
+_REJECTABLE_PARAMS = (
+    "reasoning_effort",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "parallel_tool_calls",
+    "tool_choice",
+)
+_REJECTED_PARAMS: dict[tuple[str | None, str], set[str]] = {}
 
 
-def _rejects_reasoning_effort(exc: BaseException) -> bool:
-    return isinstance(exc, BadRequestError) and "reasoning_effort" in str(exc)
+def _rejected_param(exc: BaseException, kwargs: dict[str, Any]) -> str | None:
+    if not isinstance(exc, BadRequestError):
+        return None
+    named = getattr(exc, "param", None)
+    if named in _REJECTABLE_PARAMS and named in kwargs:
+        return named
+    message = str(exc)
+    for param in _REJECTABLE_PARAMS:
+        if param in kwargs and param in message:
+            return param
+    return None
+
+
+def _drop_params(kwargs: dict[str, Any], params: set[str]) -> None:
+    for param in params:
+        if param == "max_tokens" and "max_tokens" in kwargs:
+            kwargs.setdefault("max_completion_tokens", kwargs.pop("max_tokens"))
+        else:
+            kwargs.pop(param, None)
 
 
 class _CompletionsAdapter:
@@ -112,20 +146,25 @@ class _CompletionsAdapter:
         kwargs["messages"] = limit_messages(
             list(kwargs.get("messages") or []), self._config.context_window
         )
-        model_key = (self._config.base_url, self._config.model)
-        if model_key in _MODELS_WITHOUT_REASONING_EFFORT:
-            kwargs.pop("reasoning_effort", None)
-        else:
-            kwargs["reasoning_effort"] = "none"
+        rejected = _REJECTED_PARAMS.setdefault(
+            (self._config.base_url, self._config.model), set()
+        )
+        kwargs["reasoning_effort"] = "none"
+        _drop_params(kwargs, rejected)
         try:
-            try:
-                return await self._completions.create(**kwargs)
-            except Exception as exc:
-                if "reasoning_effort" not in kwargs or not _rejects_reasoning_effort(exc):
-                    raise
-                _MODELS_WITHOUT_REASONING_EFFORT.add(model_key)
-                kwargs.pop("reasoning_effort")
-                return await self._completions.create(**kwargs)
+            while True:
+                try:
+                    return await self._completions.create(**kwargs)
+                except Exception as exc:
+                    param = _rejected_param(exc, kwargs)
+                    if param is None:
+                        raise
+                    logger.info(
+                        "Model %s rejected %s; retrying without it",
+                        self._config.model, param,
+                    )
+                    rejected.add(param)
+                    _drop_params(kwargs, {param})
         except Exception as exc:
             if self._config.provider == "local":
                 raise LLMProviderError(

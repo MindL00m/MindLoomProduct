@@ -2,8 +2,10 @@ import type { Config } from "tailwindcss";
 
 /**
  * Loom palette.
- *   brand (rust)    #b85c2c
- *   cream           #f2e6cf
+ *   brand (logo teal)  #2a9d8f
+ *   abyss / deep       #003135 / #024950 (brand-900 / brand-800)
+ *   sky                #afdde5 (brand-200)
+ *   rust               #964734
  *
  * Semantic tokens (background / foreground / border / ...) are exposed as CSS
  * variables in src/index.css so components stay theme-agnostic.
@@ -54,24 +56,31 @@ const config: Config = {
         },
         // Raw palette, available as e.g. bg-brand, text-mist-700.
         brand: {
-          DEFAULT: "#b85c2c",
-          50: "#faf3ee",
-          100: "#f4e4d9",
-          200: "#e8c4b0",
-          300: "#d9956f",
-          400: "#c97547",
-          500: "#b85c2c",
-          600: "#9a4a24",
-          700: "#7c3b1d",
-          800: "#5e2d16",
-          900: "#401f0f",
+          DEFAULT: "#2a9d8f",
+          50: "#eef8f9",
+          100: "#d7eff2",
+          200: "#afdde5",
+          300: "#7cc7c9",
+          400: "#4fb2ad",
+          500: "#2a9d8f",
+          600: "#218276",
+          700: "#1a675f",
+          800: "#024950",
+          900: "#003135",
+        },
+        rust: {
+          DEFAULT: "#964734",
+          50: "#f8eeeb",
+          100: "#f0d9d3",
+          500: "#964734",
+          600: "#7d3b2b",
+          700: "#5f2d21",
         },
         mist: {
-          200: "#D9DADF",
-          400: "#ADACA7",
-          700: "#7C7D75",
+          200: "#d5e3e5",
+          400: "#9bb3b6",
+          700: "#4b6b6e",
         },
-        cream: "#f2e6cf",
       },
       borderRadius: {
         lg: "16px",

@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ConnectionWizard } from "@/pages/integrations/ConnectionWizard";
 import GitHubConnector from "@/pages/integrations/GitHubConnector";
+import { SlackConnectorCard, SlackSetup } from "@/pages/integrations/SlackSetup";
 import {
   connectGoogleWorkspaceDev,
   connectMicrosoftTeamsDev,
@@ -34,6 +35,7 @@ import {
   moderateExpertAnswer,
   type KnowledgeReview,
 } from "@/services/reviews";
+import { getSlackStatus, type SlackStatus } from "@/services/slack";
 
 interface AppsViewProps {
   isAdmin: boolean;
@@ -67,6 +69,8 @@ export default function AppsView({
   const [reviews, setReviews] = useState<KnowledgeReview[]>([]);
   const [answerEdits, setAnswerEdits] = useState<Record<string, string>>({});
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [slack, setSlack] = useState<SlackStatus | null>(null);
+  const [slackOpen, setSlackOpen] = useState(false);
 
   const workspace = integrations.find((item) => item.provider === "google_workspace");
   const teams = integrations.find((item) => item.provider === "microsoft_teams");
@@ -84,6 +88,7 @@ export default function AppsView({
       setZoomOauthEnabled(data.zoom_oauth_enabled);
       setDevIntegrationsAllowed(Boolean(data.dev_integrations_allowed));
       setReviews(isAdmin ? await listKnowledgeReviews().catch(() => []) : []);
+      setSlack(await getSlackStatus().catch(() => null));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load apps.");
     } finally {
@@ -232,9 +237,25 @@ export default function AppsView({
         />
       ),
     },
+    {
+      id: "slack",
+      connected: Boolean(slack?.connected) || slack?.status === "error",
+      card: (
+        <SlackConnectorCard
+          status={slack}
+          isAdmin={isAdmin}
+          onSetup={() => {
+            setCatalogOpen(false);
+            setSlackOpen(true);
+          }}
+        />
+      ),
+    },
   ];
   const activeConnectors = connectors.filter((connector) => connector.connected);
-  const availableConnectors = connectors.filter((connector) => !connector.connected);
+  const availableConnectors = connectors.filter(
+    (connector) => !connector.connected && (connector.id !== "slack" || isAdmin),
+  );
 
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6">
@@ -242,7 +263,7 @@ export default function AppsView({
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Connected workspaces</h2>
           <p className="mt-1 text-muted-foreground">
-            Connect Google, Microsoft 365, Zoom, or GitHub. MindLoom only uses the locations and
+            Connect Google, Microsoft 365, Zoom, GitHub, or Slack. MindLoom only uses the locations and
             permissions you approve.
           </p>
         </div>
@@ -250,6 +271,13 @@ export default function AppsView({
 
       {banner && <div className="rounded-md border border-brand-200 bg-brand-50 p-3 text-sm text-brand-900">{banner}</div>}
       {error && <div className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+
+      {slackOpen && (
+        <SlackSetup
+          onClose={() => setSlackOpen(false)}
+          onChanged={() => void loadIntegrations()}
+        />
+      )}
 
       {wizardProvider && (
         <ConnectionWizard

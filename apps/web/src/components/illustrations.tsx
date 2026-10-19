@@ -5,12 +5,12 @@ import { motion } from "framer-motion";
 export function OrgNetworkIllustration({ className }: { className?: string }) {
   const nodes = [
     { cx: 100, cy: 26, r: 13, fill: "hsl(var(--primary))" },
-    { cx: 44, cy: 74, r: 10, fill: "#7C7D75" },
-    { cx: 156, cy: 74, r: 10, fill: "#ADACA7" },
-    { cx: 26, cy: 116, r: 7, fill: "#ADACA7" },
-    { cx: 74, cy: 120, r: 7, fill: "#ADACA7" },
-    { cx: 134, cy: 120, r: 7, fill: "#7C7D75" },
-    { cx: 174, cy: 116, r: 7, fill: "#ADACA7" },
+    { cx: 44, cy: 74, r: 10, fill: "#024950" },
+    { cx: 156, cy: 74, r: 10, fill: "#964734" },
+    { cx: 26, cy: 116, r: 7, fill: "#afdde5" },
+    { cx: 74, cy: 120, r: 7, fill: "#afdde5" },
+    { cx: 134, cy: 120, r: 7, fill: "#024950" },
+    { cx: 174, cy: 116, r: 7, fill: "#afdde5" },
   ];
   const edges = [
     [0, 1],

@@ -73,6 +73,32 @@ async def test_resolve_members_from_experts_matches_email(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_member_queries_report_people_who_cannot_join(monkeypatch) -> None:
+    directory = {
+        "amey": [{"user_id": "", "name": "Amey Agarwal", "email": "amey@example.com"}],
+        "priya": [{"user_id": "u-priya", "name": "Priya Shah", "email": "priya@example.com"}],
+        "alex": [
+            {"user_id": "u-a1", "name": "Alex Kim", "email": "alex.kim@example.com"},
+            {"user_id": "u-a2", "name": "Alex Roy", "email": "alex.roy@example.com"},
+        ],
+    }
+
+    async def fake_lookup(org_id, query, exclude_user_id=None, limit=8):
+        return directory.get(query.lower(), [])
+
+    monkeypatch.setattr(workspace_context, "lookup_messageable_people", fake_lookup)
+    members, unmatched = await workspace_context.resolve_members_from_queries(
+        "org-1", ["Amey", "Priya", "Alex", "Nobody"], exclude_user_id="u-me"
+    )
+    assert [m["user_id"] for m in members] == ["u-priya"]
+    reasons = {person["name"]: person["reason"] for person in unmatched}
+    assert "not signed in" in reasons["Amey Agarwal"]
+    assert "several people" in reasons["Alex"]
+    assert "No one" in reasons["Nobody"]
+    assert all(person["name"] != "Amey Agarwal" for person in members)
+
+
+@pytest.mark.asyncio
 async def test_propose_workspace_does_not_create(monkeypatch) -> None:
     created = {"called": False}
 
@@ -192,7 +218,7 @@ async def test_propose_workspace_draft_builds_context(monkeypatch) -> None:
         )
 
     async def fake_queries(*_a, **_k):
-        return []
+        return [], []
 
     async def fake_generate(**kwargs):
         return "# Purpose\n\nProject X workspace context\n"

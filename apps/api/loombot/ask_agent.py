@@ -1,13 +1,16 @@
-"""Ask agent with RAG plus Expert Messages and GitHub repository tools."""
+"""Ask agent with RAG plus messaging, GitHub, workspace, and data lookup tools."""
 
 from __future__ import annotations
 
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import HTTPException
 
+from loombot import data_tools
 from loombot.answerer import generate_answer
 from core.config import get_settings
 from core.llm_provider import get_llm_client
@@ -33,8 +36,13 @@ _MAX_TOOL_ROUNDS = 5
 
 _AGENT_SYSTEM = """\
 You are MindLoom, a company knowledge assistant that can draft Expert Messages,
-draft emails, work with GitHub repositories when a token is configured, and
-propose project workspaces with a CONTEXT.md file for Loombot.
+draft emails, work with GitHub repositories when a token is configured,
+propose project workspaces with a CONTEXT.md file for Loombot, count mail in the
+user's connected mailboxes, and report project status from the Status board and
+knowledge graph.
+
+Today is {today} (UTC). Resolve relative dates such as "today", "this week", or
+"last month" against this date.
 
 You have retrieval context below for factual questions. Use it for knowledge answers
 and cite sources with [SOURCE: chunk_id] when applicable.
@@ -70,22 +78,47 @@ GitHub rules:
   was opened or a file was committed.
 - For owner/repo, accept "owner/repo" or separate owner and repo fields.
 - Summarize tool results clearly; quote short snippets when useful.
-- If a tool says GitHub is not connected or a repository/permission was not granted,
-  tell the user to open Apps, paste a fine-grained personal access token, and choose
-  exactly which repositories and actions MindLoom may use.
+- If a GitHub tool says GitHub is not connected or a repository/permission was not
+  granted, tell the user to open Import, paste a fine-grained personal access token,
+  and choose exactly which repositories and actions MindLoom may use. This applies
+  to GitHub only.
 
 Workspace rules:
 - When the user asks to create, make, set up, or spin up a workspace for a project
   or topic, you MUST call propose_workspace.
 - Use a clear workspace name and a purpose that captures the project/topic.
-- Optionally pass member_queries for specific people by name/email/title; the tool
-  also resolves people from knowledge-graph experts for the purpose.
+- When the user names people ("with Amey", "for Priya and Alex"), pass each one
+  as its own entry in member_queries. The tool also adds knowledge-graph experts
+  for the purpose.
+- If the draft lists unmatched_people, tell the user who could not be added and why.
 - propose_workspace does NOT create the workspace. The UI shows members + CONTEXT.md
   for approval. Your final text should only say a draft workspace is ready.
 - Never claim a workspace was created.
 
-- For ordinary knowledge questions that are not messaging, GitHub, or workspace
-  creation, answer from context without tools.
+Data rules:
+- "How many emails / unread / what's in my inbox" questions: call count_emails.
+  Pass start_date and end_date as inclusive YYYY-MM-DD dates when the user names a
+  period; omit both for all time. Use folder "all_received" only when the user asks
+  about all mail rather than the inbox.
+- Report each mailbox's count with its account and the period used. If exact is
+  false, say "at least". If a mailbox is unavailable, say why and how to connect it.
+  Never estimate a count from the Context excerpts; they are only a sample.
+- Status, progress, blockers, open issues, or action items for a project: call
+  project_status with the project name without the word "project" (for "project
+  tiramisu" pass "tiramisu"). With no project named, call it with no arguments for
+  an overview of open work.
+- Summarize project status as: current state (work_status and current_status), the
+  latest updates with dates, open issues or blockers, and action items with
+  assignees. Cite evidence with [SOURCE: chunk_id] using the tool's chunk_id values.
+  If found is false, say the project is not on the Status board and answer from
+  Context if it has anything relevant.
+- Counts of other indexed items (Drive files, meetings, Teams chats, WhatsApp
+  chats, uploads, skill files, or "what do you have from X"): call
+  knowledge_inventory and say the number covers what MindLoom has indexed.
+- If a tool returns an error, explain it plainly. Never invent numbers.
+
+- For ordinary knowledge questions that are not messaging, GitHub, workspace
+  creation, or data lookups, answer from context without tools.
 
 Context:
 {context_string}
@@ -343,7 +376,115 @@ _TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "count_emails",
+            "description": (
+                "Count messages in the user's own connected Gmail and/or Outlook "
+                "mailbox, live from the mail provider, and return the most recent "
+                "few with subject, sender, and date."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["auto", "gmail", "outlook"],
+                        "description": "Mailbox to read. auto checks every connected one.",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Inclusive first day, YYYY-MM-DD. Omit for all time.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "Inclusive last day, YYYY-MM-DD. Omit for up to now.",
+                    },
+                    "folder": {
+                        "type": "string",
+                        "enum": ["inbox", "all_received"],
+                        "description": (
+                            "inbox (default) or all_received (Gmail only: every "
+                            "received message, including archived)."
+                        ),
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "Count only unread messages.",
+                    },
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Optional Gmail search terms, e.g. 'from:priya@acme.com' "
+                            "or 'subject:invoice'. Ignored for Outlook."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_inventory",
+            "description": (
+                "Count documents MindLoom has indexed that the user may see, grouped "
+                "by source (gmail, outlook_email, google_drive, google_calendar, "
+                "microsoft_teams, sharepoint, zoom, whatsapp_export, slack, skill_file, pdf, "
+                "...), with the most recent titles."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Optional source filter such as gmail, email, drive, "
+                            "calendar, teams, zoom, whatsapp, skill_file, or pdf. "
+                            "Omit for every source."
+                        ),
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Inclusive first day, YYYY-MM-DD.",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "Inclusive last day, YYYY-MM-DD.",
+                    },
+                    "title_contains": {
+                        "type": "string",
+                        "description": "Optional case-insensitive title filter.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "project_status",
+            "description": (
+                "Current status of a project from the Status board (open work, "
+                "issues, blockers, action items) and the knowledge graph (latest "
+                "mentions, including closed projects). Omit project for an overview "
+                "of all open work."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": "string",
+                        "description": "Project name, e.g. 'tiramisu'.",
+                    },
+                },
+            },
+        },
+    },
 ]
+
+_DATA_TOOLS = {"count_emails", "knowledge_inventory", "project_status"}
 
 
 def _history_messages(history: list[ChatMessage]) -> list[dict[str, str]]:
@@ -351,31 +492,70 @@ def _history_messages(history: list[ChatMessage]) -> list[dict[str, str]]:
     return [{"role": turn.role, "content": turn.content} for turn in recent]
 
 
+_MESSAGE_VERBS = r"(?:message|tell|notify|ping|ask|dm|text|e-?mail|remind|send)"
+# Words after a messaging verb that mean the user is asking a question
+# ("tell me about…", "ask whether…", "email policy") rather than messaging someone.
+_NOT_A_RECIPIENT = (
+    r"(?!(?:me|us|about|if|whether|how|what|why|when|which|who|for|of|from|in|on|is|"
+    r"was|are|policy|policies|address|addresses|settings|server|thread|threads|"
+    r"template|templates|signature|list|history)\b)"
+)
+_MESSAGING_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        rf"^(?:(?:hey|hi|ok|okay)[,!\s]+)?(?:please\s+|pls\s+|can you\s+|could you\s+|"
+        rf"would you\s+|go ahead and\s+)?{_MESSAGE_VERBS}\s+{_NOT_A_RECIPIENT}\S",
+        rf"\b(?:you to|please|can you|could you|would you|then|and also)\s+"
+        rf"{_MESSAGE_VERBS}\s+{_NOT_A_RECIPIENT}\S",
+        r"\bsend\s+(?:a|an|the)?\s*(?:quick\s+|short\s+)?"
+        r"(?:message|e-?mail|note|dm|text|reminder)\b",
+        r"\b(?:write|draft|compose)\s+(?:a|an|the)?\s*(?:quick\s+|short\s+)?"
+        r"(?:message|e-?mail|note|reply)\b",
+        r"\blet\s+(?!me\b|us\b)[\w.@'-]+(?:\s+[\w.@'-]+){0,3}\s+know\b",
+        r"\breach out to\b",
+    )
+)
+
+
 def _wants_messaging(question: str) -> bool:
-    lowered = question.lower()
-    triggers = (
-        "message ",
-        "tell ",
-        "notify ",
-        "ping ",
-        "ask ",
-        "send ",
-        "let know",
-        "reach out",
-        "dm ",
-        "text ",
-        "an email",
-        "e-mail",
+    lowered = " ".join(question.lower().split())
+    return any(pattern.search(lowered) for pattern in _MESSAGING_PATTERNS)
+
+
+_COUNT_WORDS = re.compile(r"\b(?:how many|number of|count(?: of)?|total)\b")
+_COUNTABLE = re.compile(
+    r"\b(?:e-?mails?|mails?|messages?|inbox|meetings?|events?|calls?|documents?|"
+    r"docs?|files?|chats?|threads?|uploads?|sources?|projects?|issues?|"
+    r"action items?|tasks?|skill files?|recordings?)\b"
+)
+_DATA_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\bunread\b",
+        r"\b(?:my|the) inbox\b",
+        r"\b(?:e-?mails?|mail)\b.{0,40}\b(?:did|have) i\s+(?:get|got|gotten|receive|received)\b",
+        r"\b(?:did|have) i\s+(?:get|got|gotten|receive|received)\b.{0,40}\be-?mails?\b",
+        r"\bstatus\b",
+        r"\bprogress\b",
+        r"\bupdates? (?:on|for|about)\b",
+        r"\bhow(?:'s| is| are)\b.{0,60}\bgoing\b",
+        r"\bwhere (?:are|do) we stand\b",
+        r"\bon track\b",
+        r"\bblock(?:ed|er|ers|ing)\b",
+        r"\bopen (?:issues?|projects?|action items?|items?|work|questions?)\b",
+        r"\baction items?\b",
+        r"\bwhat(?:'s| is| are)\s+(?:left|outstanding|pending)\b",
     )
-    if any(token in lowered for token in triggers):
+)
+
+
+def _wants_data(question: str) -> bool:
+    """Counts of mail or indexed items, or project/work status questions."""
+
+    lowered = " ".join(question.lower().split())
+    if _COUNT_WORDS.search(lowered) and _COUNTABLE.search(lowered):
         return True
-    return bool(
-        re.search(
-            r"\be-?mail\s+(?:to\s+)?(?:the\s+)?(?!policy\b|address\b|settings\b|server\b)\S+",
-            lowered,
-        )
-    )
-    return any(token in lowered for token in triggers)
+    return any(pattern.search(lowered) for pattern in _DATA_PATTERNS)
 
 
 def _wants_github(question: str) -> bool:
@@ -972,7 +1152,100 @@ async def _run_tool(
         )
         return result, None, None, workspace, None
 
+    if name == "count_emails":
+        return await data_tools.count_emails(
+            org_id,
+            user_id,
+            provider=str(arguments.get("provider") or "auto"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            folder=str(arguments.get("folder") or "inbox"),
+            unread_only=bool(arguments.get("unread_only")),
+            search=arguments.get("search"),
+        ), None, None, None, None
+
+    if name == "knowledge_inventory":
+        return await data_tools.knowledge_inventory(
+            org_id,
+            user_id,
+            source=arguments.get("source"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            title_contains=arguments.get("title_contains"),
+        ), None, None, None, None
+
+    if name == "project_status":
+        return await data_tools.project_status(
+            org_id, user_id, project=arguments.get("project")
+        ), None, None, None, None
+
     return {"error": f"Unknown tool: {name}"}, None, None, None, None
+
+
+async def _safe_run_tool(**kwargs: Any) -> tuple[
+    Any,
+    ProposedExpertMessage | None,
+    ProposedPullRequest | None,
+    ProposedWorkspace | None,
+    ProposedEmail | None,
+]:
+    """Run a tool, turning failures into a tool result instead of a 500."""
+
+    try:
+        return await _run_tool(**kwargs)
+    except HTTPException as exc:
+        return {"error": str(exc.detail)}, None, None, None, None
+    except Exception as exc:  # noqa: BLE001 - the model explains tool failures
+        logger.exception("Ask tool %s failed", kwargs.get("name"))
+        return (
+            {"error": f"{kwargs.get('name')} failed ({exc.__class__.__name__}). Try again shortly."},
+            None, None, None, None,
+        )
+
+
+def _workspace_answer(workspace: ProposedWorkspace) -> str:
+    answer = (
+        f"I prepared a workspace draft for **{workspace.name}**. "
+        "Review the members and CONTEXT.md, then approve to create it."
+    )
+    if workspace.unmatched_people:
+        missing = "; ".join(
+            f"{person.name}: {person.reason}" if person.reason else person.name
+            for person in workspace.unmatched_people
+        )
+        answer += f"\n\nI couldn't add everyone. {missing}"
+    return answer
+
+
+_CITED_CHUNK_RE = re.compile(r"\[SOURCE:\s*([^\]\s]+)\s*\]", re.IGNORECASE)
+
+
+async def _with_cited_sources(
+    answer: str, sources: list[Any], org_id: str, user_id: str
+) -> list[Any]:
+    """Add chunks the answer cites from tool results so citations render."""
+
+    known = {source.chunk_id for source in sources}
+    missing = [
+        chunk_id
+        for chunk_id in dict.fromkeys(_CITED_CHUNK_RE.findall(answer or ""))
+        if chunk_id not in known and not chunk_id.startswith(("directory:", "issue:"))
+    ]
+    if not missing:
+        return sources
+    try:
+        from brain.retrieval import _load_chunks_by_ids
+        from keeper.auth import get_user_access_tokens
+        from loombot.answerer import _attach_citations
+
+        extra = await _load_chunks_by_ids(
+            missing[:12], org_id, await get_user_access_tokens(org_id, user_id)
+        )
+        await _attach_citations(extra, org_id)
+    except Exception:  # noqa: BLE001 - citations are non-critical
+        logger.warning("Could not load chunks cited by tool results", exc_info=True)
+        return sources
+    return [*sources, *extra]
 
 
 async def run_ask_agent(
@@ -984,12 +1257,13 @@ async def run_ask_agent(
     user_id: str,
     ephemeral_documents: list[EphemeralDocument] | None = None,
 ) -> QueryResponse:
-    """Answer via RAG, using tools for messaging, GitHub, or workspaces when needed."""
+    """Answer via RAG, using tools for messaging, GitHub, workspaces, or data."""
 
     wants_msg = _wants_messaging(question)
     wants_gh = _wants_github(question)
     wants_ws = _wants_workspace(question)
-    if not wants_msg and not wants_gh and not wants_ws:
+    wants_data = _wants_data(question)
+    if not wants_msg and not wants_gh and not wants_ws and not wants_data:
         return await generate_answer(
             question, retrieval, history, org_id, ephemeral_documents
         )
@@ -1025,6 +1299,7 @@ async def run_ask_agent(
             "content": _AGENT_SYSTEM.format(
                 context_string=context_string,
                 gmail_status=gmail_status,
+                today=datetime.now(timezone.utc).strftime("%A, %d %B %Y"),
             ),
         },
         *_history_messages(history or []),
@@ -1037,28 +1312,7 @@ async def run_ask_agent(
     pr_proposal: ProposedPullRequest | None = None
     ws_proposal: ProposedWorkspace | None = None
     used_github = False
-
-    if not client.configuration.supports_tools:
-        if wants_msg:
-            proposal, email_proposal = await _ensure_proposals(
-                question=question, org_id=org_id, user_id=user_id,
-                people_cache=people_cache, proposal=None, email_proposal=None,
-                google_connected=google_connected,
-            )
-            return QueryResponse(
-                answer=_messaging_answer() or base.answer, sources=[], expert=None,
-                confidence="high" if proposal or email_proposal else base.confidence,
-                routed=False, routed_reason=None, proposed_message=proposal,
-                proposed_email=email_proposal,
-            )
-        # Knowledge answers already use explicit retrieval then prompting. Actions
-        # that require structured arguments fail safely instead of being guessed.
-        if wants_gh or wants_ws:
-            base.answer += (
-                "\n\nThe active local model is configured without structured tool "
-                "calling, so I did not perform the requested action."
-            )
-        return base
+    used_data = False
 
     def _messaging_answer() -> str:
         if email_proposal is not None:
@@ -1078,6 +1332,28 @@ async def run_ask_agent(
                 f"({proposal.recipient_email}). Approve it in the card below to send."
             )
         return ""
+
+    if not client.configuration.supports_tools:
+        if wants_msg:
+            proposal, email_proposal = await _ensure_proposals(
+                question=question, org_id=org_id, user_id=user_id,
+                people_cache=people_cache, proposal=None, email_proposal=None,
+                google_connected=google_connected,
+            )
+            return QueryResponse(
+                answer=_messaging_answer() or base.answer, sources=[], expert=None,
+                confidence="high" if proposal or email_proposal else base.confidence,
+                routed=False, routed_reason=None, proposed_message=proposal,
+                proposed_email=email_proposal,
+            )
+        # Knowledge answers already use explicit retrieval then prompting. Actions
+        # that require structured arguments fail safely instead of being guessed.
+        if wants_gh or wants_ws or wants_data:
+            base.answer += (
+                "\n\nThe active local model is configured without structured tool "
+                "calling, so I could not use connectors or the Status board for this."
+            )
+        return base
 
     for round_idx in range(_MAX_TOOL_ROUNDS):
         create_kwargs: dict[str, Any] = {
@@ -1143,20 +1419,23 @@ async def run_ask_agent(
                     "Review the diff and approve to open the PR."
                 )
             elif not answer and ws_proposal is not None:
-                answer = (
-                    f"I prepared a workspace draft for **{ws_proposal.name}**. "
-                    "Review the members and CONTEXT.md, then approve to create it."
-                )
+                answer = _workspace_answer(ws_proposal)
             elif not answer:
                 answer = (choice.content or "").strip() or base.answer
+            sources = (
+                await _with_cited_sources(answer, base.sources, org_id, user_id)
+                if proposal is None and email_proposal is None
+                else []
+            )
             return QueryResponse(
                 answer=answer,
-                sources=base.sources if proposal is None and email_proposal is None else [],
+                sources=sources,
                 expert=None,
                 expert_request_created=False,
                 confidence=(
                     "high"
-                    if proposal or email_proposal or pr_proposal or ws_proposal or used_github
+                    if proposal or email_proposal or pr_proposal or ws_proposal
+                    or used_github or used_data
                     else base.confidence
                 ),
                 routed=False,
@@ -1193,7 +1472,9 @@ async def run_ask_agent(
                 "propose_github_pr"
             ):
                 used_github = True
-            result, maybe_proposal, maybe_pr, maybe_ws, maybe_email = await _run_tool(
+            if call.function.name in _DATA_TOOLS:
+                used_data = True
+            result, maybe_proposal, maybe_pr, maybe_ws, maybe_email = await _safe_run_tool(
                 name=call.function.name,
                 arguments=args if isinstance(args, dict) else {},
                 org_id=org_id,
@@ -1213,7 +1494,7 @@ async def run_ask_agent(
                 {
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": json.dumps(result),
+                    "content": json.dumps(data_tools.jsonable(result), default=str),
                 }
             )
         if (proposal is not None or email_proposal is not None) and not wants_gh and not wants_ws:
@@ -1269,12 +1550,8 @@ async def run_ask_agent(
         )
 
     if ws_proposal is not None:
-        answer = (
-            f"I prepared a workspace draft for **{ws_proposal.name}**. "
-            "Review the members and CONTEXT.md, then approve to create it."
-        )
         return QueryResponse(
-            answer=answer,
+            answer=_workspace_answer(ws_proposal),
             sources=base.sources,
             expert=None,
             expert_request_created=False,
@@ -1286,47 +1563,31 @@ async def run_ask_agent(
             proposed_workspace=ws_proposal,
         )
 
-    if used_github or wants_gh:
-        # Ask the model for a final prose answer from tool results.
-        final = await client.chat.completions.create(
-            model=_MODEL,
-            messages=[
-                *messages,
-                {
-                    "role": "user",
-                    "content": (
-                        "Respond to the user now using the GitHub tool results. "
-                        "Do not call more tools. If a PR draft was proposed, remind "
-                        "them to approve the diff in the UI."
-                    ),
-                },
-            ],
-            temperature=0,
-        )
-        answer = (final.choices[0].message.content or "").strip() or base.answer
-        return QueryResponse(
-            answer=answer,
-            sources=base.sources,
-            expert=None,
-            expert_request_created=False,
-            confidence="high",
-            routed=False,
-            routed_reason=None,
-            proposed_message=None,
-            proposed_pull_request=None,
-            proposed_workspace=None,
-        )
-
-    answer = (
-        "I couldn't find a single matching signed-in teammate to message. "
-        "Try a name, email, or exact title."
+    # Tool rounds ran out (or stopped) with results the model has not answered yet.
+    final = await client.chat.completions.create(
+        model=_MODEL,
+        messages=[
+            *messages,
+            {
+                "role": "user",
+                "content": (
+                    "Respond to the user now using the tool results above. Do not "
+                    "call more tools. If a draft was proposed, remind them to "
+                    "approve it in the UI."
+                ),
+            },
+        ],
+        tools=_TOOLS,
+        tool_choice="none",
+        temperature=0,
     )
+    answer = (final.choices[0].message.content or "").strip() or base.answer
     return QueryResponse(
         answer=answer,
-        sources=base.sources,
+        sources=await _with_cited_sources(answer, base.sources, org_id, user_id),
         expert=None,
         expert_request_created=False,
-        confidence="medium",
+        confidence="high" if used_github or used_data else base.confidence,
         routed=False,
         routed_reason=None,
         proposed_message=None,

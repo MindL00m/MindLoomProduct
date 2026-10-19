@@ -13,6 +13,19 @@ import pytest
 from core import llm_provider
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rejected_params(monkeypatch) -> None:
+    monkeypatch.setattr(llm_provider, "_REJECTED_PARAMS", {})
+
+
+def _bad_request(message: str, param: str | None = None) -> openai.BadRequestError:
+    return openai.BadRequestError(
+        message,
+        response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com")),
+        body={"message": message, "param": param} if param else None,
+    )
+
+
 class _Mappings:
     def __init__(self, row): self.row = row
     def mappings(self): return self
@@ -79,12 +92,9 @@ async def test_adapter_always_sets_reasoning_effort_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_adapter_drops_reasoning_effort_for_models_that_reject_it(monkeypatch) -> None:
-    monkeypatch.setattr(llm_provider, "_MODELS_WITHOUT_REASONING_EFFORT", set())
-    rejection = openai.BadRequestError(
-        "Error code: 400 - Unrecognized request argument supplied: reasoning_effort",
-        response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com")),
-        body=None,
+async def test_adapter_drops_reasoning_effort_for_models_that_reject_it() -> None:
+    rejection = _bad_request(
+        "Error code: 400 - Unrecognized request argument supplied: reasoning_effort"
     )
     create = AsyncMock(side_effect=[rejection, "answer", "second answer"])
     sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
@@ -102,19 +112,57 @@ async def test_adapter_drops_reasoning_effort_for_models_that_reject_it(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_adapter_does_not_retry_other_bad_requests(monkeypatch) -> None:
-    monkeypatch.setattr(llm_provider, "_MODELS_WITHOUT_REASONING_EFFORT", set())
-    rejection = openai.BadRequestError(
-        "Error code: 400 - Invalid 'messages'",
-        response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com")),
-        body=None,
-    )
-    create = AsyncMock(side_effect=rejection)
+async def test_adapter_does_not_retry_other_bad_requests() -> None:
+    create = AsyncMock(side_effect=_bad_request("Error code: 400 - Invalid 'messages'"))
     sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
     client = llm_provider.LLMClientAdapter(sdk, llm_provider.LLMConfiguration())
     with pytest.raises(openai.BadRequestError):
         await client.chat.completions.create(model="ignored", messages=[])
     assert create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_adapter_retries_without_each_unsupported_sampling_param() -> None:
+    create = AsyncMock(side_effect=[
+        _bad_request(
+            "Unsupported value: 'temperature' does not support 0 with this model.",
+            param="temperature",
+        ),
+        _bad_request(
+            "Unsupported parameter: 'max_tokens' is not supported with this model. "
+            "Use 'max_completion_tokens' instead.",
+            param="max_tokens",
+        ),
+        "answer",
+    ])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client = llm_provider.LLMClientAdapter(
+        sdk, llm_provider.LLMConfiguration(model="o-series", context_window=128_000)
+    )
+    answer = await client.chat.completions.create(
+        model="ignored",
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0,
+        max_tokens=300,
+    )
+    assert answer == "answer"
+    final = create.await_args_list[-1].kwargs
+    assert "temperature" not in final
+    assert "max_tokens" not in final
+    assert final["max_completion_tokens"] == 300
+
+
+def test_context_limit_drops_tool_results_whose_call_was_trimmed() -> None:
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "x " * 3000, "tool_calls": [{"id": "call-1"}]},
+        {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+        {"role": "user", "content": "follow up"},
+    ]
+    limited = llm_provider.limit_messages(messages, 1024)
+    assert [message["role"] for message in limited] == ["system", "user"]
+    assert limited[-1]["content"] == "follow up"
 
 
 @pytest.mark.asyncio

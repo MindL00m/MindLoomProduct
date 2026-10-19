@@ -22,7 +22,7 @@ Shared infrastructure lives in `apps/api/core/`.
 ## Repository layout
 
 ```text
-apps/
+apps/ 
 ├── web/                 # Main React + TypeScript user interface
 ├── api/                 # Main Python API, grouped by agent (see apps/api/README.md)
 ├── desktop-agent/       # MindLoom Capture for Mac: Accessibility capture agent (menu bar)

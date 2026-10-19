@@ -1,0 +1,159 @@
+apps/api/loombot/workspace_context.py
+  s_351cb2ad9b6846::t_c6ad99a68d700f 128-129,132,141,143-149,156,159-160,164,166,169-170,182
+  s_351cb2ad9b6846::t_4b9f70fe5bfe6c 99-104
+  s_351cb2ad9b6846::t_b3d11c82dba345 142,150-155,157-158,161-163,165,167-168
+  s_351cb2ad9b6846::t_6148edf95d4d70 307,315-319
+  s_351cb2ad9b6846::t_28ef8ff69990b3 97-98
+apps/web/src/index.css
+  s_351cb2ad9b6846::t_3913a383efad66 9-11,14,16-17,19-21,23,26-27,29-30,32
+apps/web/src/components/Logo.tsx
+  s_351cb2ad9b6846::t_de4d0ed5b5750e 20
+apps/web/src/services/slack.ts
+  s_351cb2ad9b6846::t_ccc4b7d07a6a4a 1-98
+apps/web/src/components/illustrations.tsx
+  s_351cb2ad9b6846::t_6b98166b6e9888 8-13
+apps/web/src/pages/integrations/SlackSetup.tsx
+  s_351cb2ad9b6846::t_7e615ec5419c15 126,128-131
+  s_351cb2ad9b6846::t_33407827617ae5 1-87,89-125,132-136,139-140,142-371,373-469
+  s_351cb2ad9b6846::t_1e015aa32fbeb4 127
+  s_351cb2ad9b6846::t_fccbc65b890d1d 372
+  s_351cb2ad9b6846::t_890672a6c8fcd4 88
+  s_351cb2ad9b6846::t_2c7bd1e4debeb7 137-138,141
+apps/web/src/pages/ImportView.tsx
+  s_351cb2ad9b6846::t_f0e1a881919395 34
+apps/api/lens/status_board.py
+  s_351cb2ad9b6846::t_0d05d48b2576af 224-227
+apps/api/tests/test_llm_provider.py
+  s_351cb2ad9b6846::t_cb8522b555db69 115-116,124-165
+  s_351cb2ad9b6846::t_044ffeec9f67ea 95-97
+  s_351cb2ad9b6846::t_785f0df2d23cf7 16-28
+  s_351cb2ad9b6846::t_97cc172ee9b51b 166-167
+apps/web/tailwind.config.ts
+  s_351cb2ad9b6846::t_d7d109585b5033 59-77
+  s_351cb2ad9b6846::t_4dd736c5e554ac 80-82
+  s_351cb2ad9b6846::t_2b8ece67e06d36 5-8
+apps/api/core/durable_jobs.py
+  s_351cb2ad9b6846::t_49d9dc490908ac 279-284
+apps/api/db/init.sql
+  s_351cb2ad9b6846::t_06d809a50eaa5f 28-52
+docker-compose.yml
+  s_351cb2ad9b6846::t_8f63edd98e7725 115
+apps/api/weaver/slack.py
+  s_351cb2ad9b6846::t_30559bbef5cde5 617-624
+  s_351cb2ad9b6846::t_f05f6ef998d317 1086
+  s_351cb2ad9b6846::t_eb72223e203a55 432
+  s_351cb2ad9b6846::t_5db85bf7111952 422
+  s_351cb2ad9b6846::t_6469dd80680293 632-633,635-638
+  s_351cb2ad9b6846::t_e7da1aa0f74daa 1-310,324-421,423-431,433-616,625-631,634,639-744,747-825,827-915,918-1085,1087-1250
+  s_351cb2ad9b6846::t_e067de14b5826c 311-323
+  s_351cb2ad9b6846::t_6257b327d55219 745-746
+  s_351cb2ad9b6846::t_249252b34485db 826
+  s_351cb2ad9b6846::t_c1422b8aa5bc5f 916-917
+apps/web/src/pages/Dashboard.tsx
+  s_351cb2ad9b6846::t_6bd234d44d59a3 237,239-240
+  s_351cb2ad9b6846::t_5cd3807f287aba 160
+  s_351cb2ad9b6846::t_f9f2fe4d9131fe 201
+  s_351cb2ad9b6846::t_d080037f4f1e73 218-219
+  s_351cb2ad9b6846::t_00c36f35669411 185-186
+apps/api/api/routes/slack.py
+  s_351cb2ad9b6846::t_71225d67f2e556 1-129
+apps/web/src/lib/orgChart.ts
+  s_351cb2ad9b6846::t_6abe81f7def09e 135,137
+apps/api/tests/test_workspace_context.py
+  s_351cb2ad9b6846::t_3bca8e954bd14e 76-100
+  s_351cb2ad9b6846::t_9e0c2ef2ed8714 221
+  s_351cb2ad9b6846::t_3aa28cd8856fec 75
+apps/web/src/pages/AskView.tsx
+  s_351cb2ad9b6846::t_3c8de87b248f24 1411-1415
+  s_351cb2ad9b6846::t_7e84846cb73c95 6
+  s_351cb2ad9b6846::t_53d017c2938781 1043-1056
+apps/api/tests/test_ask_data_tools.py
+  s_351cb2ad9b6846::t_74a8606a7c028d 1-373,459-465
+  s_351cb2ad9b6846::t_92900fadc9ddac 374-458
+apps/api/main.py
+  s_351cb2ad9b6846::t_6f316e014ed873 91
+  s_351cb2ad9b6846::t_b868e3515303a4 161
+apps/web/src/pages/AppsView.tsx
+  s_351cb2ad9b6846::t_2b7d264621e086 18
+  s_351cb2ad9b6846::t_6247e9ce79de03 38
+  s_351cb2ad9b6846::t_caf9bc210ffa3b 240-241,243-253,256-258
+  s_351cb2ad9b6846::t_71c91152a3b515 72-73
+  s_351cb2ad9b6846::t_dbd2991d00ebea 91
+  s_351cb2ad9b6846::t_be93ec08167007 242
+  s_351cb2ad9b6846::t_bbc73517e11a81 275-281
+  s_351cb2ad9b6846::t_fcfb159ba98df4 266
+apps/api/core/config.py
+  s_351cb2ad9b6846::t_094a6228a5de38 191-197
+docs/19_10_26.md
+  s_351cb2ad9b6846::t_085fa48b457d1c 1-58
+apps/api/core/llm_provider.py
+  s_351cb2ad9b6846::t_f55c23fd55ce38 103-136,149-153,155-167
+  s_351cb2ad9b6846::t_97db36f4b34f92 92
+  s_351cb2ad9b6846::t_78d279be7e098f 23-24
+  s_351cb2ad9b6846::t_f6351384af925a 11
+  s_351cb2ad9b6846::t_a5a0fa86d45166 91,93
+apps/api/loombot/data_tools.py
+  s_351cb2ad9b6846::t_49b0f6b1213437 154-156
+  s_351cb2ad9b6846::t_48c1c219ef9d93 43
+  s_351cb2ad9b6846::t_57c26892084265 1-42,44-153,157-236,240-624
+  s_351cb2ad9b6846::t_d3267024519c42 237-239
+apps/api/tests/test_slack.py
+  s_351cb2ad9b6846::t_2f7ab04a89a0d9 218
+  s_351cb2ad9b6846::t_d6987badee75c6 1-217,219-388
+apps/api/loombot/ask_agent.py
+  s_351cb2ad9b6846::t_71d901fdf0a6bf 1351,1354
+  s_351cb2ad9b6846::t_4c65c2baa92c3f 39-45
+  s_351cb2ad9b6846::t_3a5e6388bc9f03 8,11,13
+  s_351cb2ad9b6846::t_e1054ebbb33c3a 1475-1477
+  s_351cb2ad9b6846::t_a0f2ff68a44acd 1422
+  s_351cb2ad9b6846::t_a909bea787f074 1155-1181,1185-1205,1220-1248
+  s_351cb2ad9b6846::t_db04f0b9ea164b 90-93
+  s_351cb2ad9b6846::t_f9a44ae6c81d9d 1497
+  s_351cb2ad9b6846::t_c5c23e922a4bfa 434
+  s_351cb2ad9b6846::t_95ef5823d19e70 1328,1333,1425-1429,1432,1437-1438
+  s_351cb2ad9b6846::t_102aa85101d81d 1260,1265-1266
+  s_351cb2ad9b6846::t_ad61e70eb060c0 1
+  s_351cb2ad9b6846::t_71446bb5cbecca 1302
+  s_351cb2ad9b6846::t_374b2d4c26b54f 1566-1579,1582,1584,1587,1590
+  s_351cb2ad9b6846::t_275c158810505c 1580-1581
+  s_351cb2ad9b6846::t_51123e804db167 81-84
+  s_351cb2ad9b6846::t_b38050a0536def 1315
+  s_351cb2ad9b6846::t_14eb5c8e798a6d 1554
+  s_351cb2ad9b6846::t_29bfd273ff488a 1206-1219
+  s_351cb2ad9b6846::t_3fabfe71bfa237 495-519,521-547,549-556,558
+  s_351cb2ad9b6846::t_45e01c0e9c231e 379-433,435-484,487
+  s_351cb2ad9b6846::t_ae8fa0a44613e0 98-121
+  s_351cb2ad9b6846::t_707fbb922b4894 488
+  s_351cb2ad9b6846::t_2021104964048c 1249-1250
+  s_351cb2ad9b6846::t_99b58d533699b1 1316-1318,1325-1327
+  s_351cb2ad9b6846::t_1056e0d6fa3f73 1329-1332
+  s_351cb2ad9b6846::t_1598ed362c444e 1334
+apps/api/core/schema.py
+  s_351cb2ad9b6846::t_bad7bf7d6a23f1 331-353
+apps/api/.env.example
+  s_351cb2ad9b6846::t_abd40ae37b6df0 86-91
+apps/api/worker.py
+  s_351cb2ad9b6846::t_c50af40097f5e3 24-25,27
+  s_351cb2ad9b6846::t_7bd7c7c1281419 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8c6a02a5a6f6182bad66e38d98aaee127c5d55d",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_351cb2ad9b6846": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "68229d71-84ce-420f-861a-36341889c079",
+        "model": "grok-4.7"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

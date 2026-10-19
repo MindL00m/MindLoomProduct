@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import httpx
 import tiktoken
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from sqlalchemy import text
 
 from core.config import get_settings
@@ -94,6 +94,14 @@ def limit_messages(messages: list[dict[str, Any]], context_window: int) -> list[
     return [*system, *reversed(kept)]
 
 
+# Models that rejected ``reasoning_effort`` (e.g. gpt-4o-mini, many local servers).
+_MODELS_WITHOUT_REASONING_EFFORT: set[tuple[str | None, str]] = set()
+
+
+def _rejects_reasoning_effort(exc: BaseException) -> bool:
+    return isinstance(exc, BadRequestError) and "reasoning_effort" in str(exc)
+
+
 class _CompletionsAdapter:
     def __init__(self, completions: Any, config: LLMConfiguration):
         self._completions = completions
@@ -104,9 +112,20 @@ class _CompletionsAdapter:
         kwargs["messages"] = limit_messages(
             list(kwargs.get("messages") or []), self._config.context_window
         )
-        kwargs["reasoning_effort"] = "none"
+        model_key = (self._config.base_url, self._config.model)
+        if model_key in _MODELS_WITHOUT_REASONING_EFFORT:
+            kwargs.pop("reasoning_effort", None)
+        else:
+            kwargs["reasoning_effort"] = "none"
         try:
-            return await self._completions.create(**kwargs)
+            try:
+                return await self._completions.create(**kwargs)
+            except Exception as exc:
+                if "reasoning_effort" not in kwargs or not _rejects_reasoning_effort(exc):
+                    raise
+                _MODELS_WITHOUT_REASONING_EFFORT.add(model_key)
+                kwargs.pop("reasoning_effort")
+                return await self._completions.create(**kwargs)
         except Exception as exc:
             if self._config.provider == "local":
                 raise LLMProviderError(

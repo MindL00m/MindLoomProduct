@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import openai
 import pytest
 
 from core import llm_provider
@@ -75,6 +76,45 @@ async def test_adapter_always_sets_reasoning_effort_none() -> None:
         reasoning_effort="high",
     )
     assert create.await_args.kwargs["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_adapter_drops_reasoning_effort_for_models_that_reject_it(monkeypatch) -> None:
+    monkeypatch.setattr(llm_provider, "_MODELS_WITHOUT_REASONING_EFFORT", set())
+    rejection = openai.BadRequestError(
+        "Error code: 400 - Unrecognized request argument supplied: reasoning_effort",
+        response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com")),
+        body=None,
+    )
+    create = AsyncMock(side_effect=[rejection, "answer", "second answer"])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    config = llm_provider.LLMConfiguration(model="gpt-4o-mini", context_window=128_000)
+    client = llm_provider.LLMClientAdapter(sdk, config)
+    messages = [{"role": "user", "content": "hello"}]
+
+    assert await client.chat.completions.create(model="ignored", messages=messages) == "answer"
+    assert "reasoning_effort" in create.await_args_list[0].kwargs
+    assert "reasoning_effort" not in create.await_args_list[1].kwargs
+
+    assert await client.chat.completions.create(model="ignored", messages=messages) == "second answer"
+    assert create.await_count == 3
+    assert "reasoning_effort" not in create.await_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_adapter_does_not_retry_other_bad_requests(monkeypatch) -> None:
+    monkeypatch.setattr(llm_provider, "_MODELS_WITHOUT_REASONING_EFFORT", set())
+    rejection = openai.BadRequestError(
+        "Error code: 400 - Invalid 'messages'",
+        response=httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com")),
+        body=None,
+    )
+    create = AsyncMock(side_effect=rejection)
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client = llm_provider.LLMClientAdapter(sdk, llm_provider.LLMConfiguration())
+    with pytest.raises(openai.BadRequestError):
+        await client.chat.completions.create(model="ignored", messages=[])
+    assert create.await_count == 1
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,24 @@
+apps/web/Dockerfile
+  s_bc587fc2ebbe68::t_e3322253d3aea7 9-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f5e37aea0e256e2708da471463b036020450e004",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_bc587fc2ebbe68": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "5fef2b84-efc8-491d-96ae-dabd00055562",
+        "model": "grok-4.7"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

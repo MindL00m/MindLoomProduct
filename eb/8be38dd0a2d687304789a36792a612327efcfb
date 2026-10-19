@@ -1,0 +1,28 @@
+apps/api/tests/test_llm_provider.py
+  s_351cb2ad9b6846::t_bd6b4534fa8bb1 10
+  s_351cb2ad9b6846::t_07f428dc3cdba2 81-119
+apps/api/core/llm_provider.py
+  s_351cb2ad9b6846::t_2b6e9d7edaeec4 97-104,115-119,121-128
+  s_351cb2ad9b6846::t_76de3eb159c68d 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eb8be38dd0a2d687304789a36792a612327efcfb",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_351cb2ad9b6846": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "68229d71-84ce-420f-861a-36341889c079",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

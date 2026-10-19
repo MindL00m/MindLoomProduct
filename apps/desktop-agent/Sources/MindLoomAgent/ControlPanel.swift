@@ -1,15 +1,18 @@
 import AppKit
+import GuideCore
 
-/// Always-visible control window with a three-page flow:
-/// 1) Sign in  2) Capture  3) Setup (from the capture page).
+/// Always-visible control window with a four-page flow:
+/// 1) Sign in  2) Capture  3) Setup and 4) Guides (both from the capture page).
 final class ControlPanel: NSObject {
     private enum Page {
         case signIn
         case capture
         case setup
+        case guides
     }
 
     private let engine: CaptureEngine
+    private let guides: GuideController
     private var config: AgentConfig
     private let window: NSPanel
 
@@ -17,6 +20,13 @@ final class ControlPanel: NSObject {
     private let signInPage = NSView()
     private let capturePage = NSView()
     private let setupPage = NSView()
+    private let guidesPage = NSView()
+    private let guidesList = NSStackView()
+    private let guidesStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private var guidesNavButton: LoomButton!
+    private var refreshGuidesButton: LoomButton!
+    private var backFromGuidesButton: LoomButton!
+    private var listedGuides: [Guide] = []
 
     private let statusDot = LoomStatusDot()
     private let statusLabel = NSTextField(labelWithString: "Idle")
@@ -47,11 +57,12 @@ final class ControlPanel: NSObject {
 
     var onConfigChange: ((AgentConfig) -> Void)?
 
-    init(engine: CaptureEngine, config: AgentConfig) {
+    init(engine: CaptureEngine, guides: GuideController, config: AgentConfig) {
         self.engine = engine
+        self.guides = guides
         self.config = config
         self.window = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 540),
             styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -83,6 +94,10 @@ final class ControlPanel: NSObject {
         refresh()
     }
 
+    func refreshGuides() {
+        rebuildGuidesList()
+    }
+
     private func configureWindow() {
         window.title = "Loom Capture"
         window.titleVisibility = .hidden
@@ -98,7 +113,7 @@ final class ControlPanel: NSObject {
     }
 
     private func buildUI() {
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 500))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 540))
         content.wantsLayer = true
         content.layer?.backgroundColor = LoomTheme.background.cgColor
         window.contentView = content
@@ -115,8 +130,9 @@ final class ControlPanel: NSObject {
         buildSignInPage()
         buildCapturePage()
         buildSetupPage()
+        buildGuidesPage()
 
-        for page in [signInPage, capturePage, setupPage] {
+        for page in [signInPage, capturePage, setupPage, guidesPage] {
             page.translatesAutoresizingMaskIntoConstraints = false
             page.isHidden = true
             pageContainer.addSubview(page)
@@ -178,6 +194,12 @@ final class ControlPanel: NSObject {
             target: self,
             action: #selector(openSetup)
         )
+        guidesNavButton = LoomButton(
+            title: "Guides",
+            style: .secondary,
+            target: self,
+            action: #selector(openGuides)
+        )
         signOutButton = LoomButton(title: "Sign out", style: .destructive, target: self, action: #selector(signOut))
 
         let sessionColumn = LoomLayout.column(
@@ -198,6 +220,7 @@ final class ControlPanel: NSObject {
                 makeAccountAllowlistCard(),
                 sessionColumn,
                 flexibleSpacer(),
+                guidesNavButton,
                 setupNavButton,
                 signOutButton,
             ]
@@ -246,6 +269,125 @@ final class ControlPanel: NSObject {
             ]
         )
         pinStack(stack, to: setupPage)
+    }
+
+    private func buildGuidesPage() {
+        refreshGuidesButton = LoomButton(
+            title: "Refresh",
+            style: .secondary,
+            target: self,
+            action: #selector(refreshGuidesList)
+        )
+        backFromGuidesButton = LoomButton(
+            title: "Back",
+            style: .secondary,
+            target: self,
+            action: #selector(closeGuides)
+        )
+        guidesStatusLabel.font = .systemFont(ofSize: 11)
+        guidesStatusLabel.textColor = LoomTheme.mutedForeground
+
+        guidesList.orientation = .vertical
+        guidesList.alignment = .leading
+        guidesList.spacing = 8
+        guidesList.translatesAutoresizingMaskIntoConstraints = false
+
+        let documentView = FlippedView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(guidesList)
+        NSLayoutConstraint.activate([
+            guidesList.topAnchor.constraint(equalTo: documentView.topAnchor),
+            guidesList.leadingAnchor.constraint(equalTo: documentView.leadingAnchor),
+            guidesList.trailingAnchor.constraint(equalTo: documentView.trailingAnchor),
+            guidesList.bottomAnchor.constraint(equalTo: documentView.bottomAnchor),
+        ])
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.documentView = documentView
+        NSLayoutConstraint.activate([
+            documentView.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            documentView.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+        ])
+        scroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+
+        let stack = LoomLayout.column(
+            spacing: 10,
+            views: [
+                makeBrandHeader(subtitle: "Step-by-step walkthroughs from approved Skill Files."),
+                makeSectionHeading("Guides"),
+                guidesStatusLabel,
+                scroll,
+                refreshGuidesButton,
+                backFromGuidesButton,
+            ]
+        )
+        pinStack(stack, to: guidesPage)
+        rebuildGuidesList()
+    }
+
+    private func rebuildGuidesList() {
+        guidesList.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let library = guides.library
+        let frontmost = engine.preferredAllowlistCandidate()?.bundleIdentifier
+        listedGuides = library.guides.sorted { lhs, rhs in
+            let l = frontmost.map { lhs.bundleIds.contains($0) } ?? false
+            let r = frontmost.map { rhs.bundleIds.contains($0) } ?? false
+            if l != r { return l }
+            if lhs.application != rhs.application { return lhs.application < rhs.application }
+            return lhs.title < rhs.title
+        }
+
+        if library.isLoading {
+            guidesStatusLabel.stringValue = "Loading guides…"
+        } else if let error = library.lastError {
+            guidesStatusLabel.stringValue = "Could not load guides. \(error)"
+        } else if listedGuides.isEmpty {
+            guidesStatusLabel.stringValue = "No approved Skill Files yet. Approve one in Workflows on the web app."
+        } else {
+            guidesStatusLabel.stringValue = "\(listedGuides.count) guide(s). Guides for allowlisted apps advance automatically."
+        }
+
+        for (index, guide) in listedGuides.enumerated() {
+            let row = makeGuideRow(guide, index: index)
+            guidesList.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: guidesList.widthAnchor).isActive = true
+        }
+    }
+
+    private func makeGuideRow(_ guide: Guide, index: Int) -> NSView {
+        let title = NSTextField(wrappingLabelWithString: guide.title)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = LoomTheme.foreground
+
+        let mode = guides.canAutoAdvance(guide)
+            ? "\(guide.autoStepCount)/\(guide.steps.count) steps auto-advance"
+            : "\(guide.steps.count) steps · manual"
+        let app = guide.application.isEmpty ? "Workflow" : guide.application
+        let detail = NSTextField(wrappingLabelWithString: "\(app) · \(mode)")
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = LoomTheme.mutedForeground
+
+        let start = LoomButton(title: "Start", style: .primary, target: self, action: #selector(startGuide(_:)))
+        start.tag = index
+        start.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        let text = NSStackView(views: [title, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [text, start])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        return paddedCard(views: [row], spacing: 0)
     }
 
     private func pinStack(_ stack: NSStackView, to page: NSView) {
@@ -374,6 +516,7 @@ final class ControlPanel: NSObject {
             self.signInPage.isHidden = page != .signIn
             self.capturePage.isHidden = page != .capture
             self.setupPage.isHidden = page != .setup
+            self.guidesPage.isHidden = page != .guides
         }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
@@ -388,6 +531,8 @@ final class ControlPanel: NSObject {
             window.title = "Loom Capture — Sign in"
         case .setup:
             window.title = "Loom Capture — Setup"
+        case .guides:
+            window.title = "Loom Capture — Guides"
         case .capture:
             window.title = "Loom Capture"
         }
@@ -540,6 +685,7 @@ final class ControlPanel: NSObject {
             )
             return
         }
+        guides.signedOut()
         config.accessToken = ""
         config.email = ""
         AgentConfigStore.save(config)
@@ -573,6 +719,25 @@ final class ControlPanel: NSObject {
 
     @objc private func closeSetup() {
         showPage(.capture, animated: true)
+    }
+
+    @objc private func openGuides() {
+        rebuildGuidesList()
+        showPage(.guides, animated: true)
+        guides.library.refresh()
+    }
+
+    @objc private func closeGuides() {
+        showPage(.capture, animated: true)
+    }
+
+    @objc private func refreshGuidesList() {
+        guides.library.refresh()
+    }
+
+    @objc private func startGuide(_ sender: LoomButton) {
+        guard listedGuides.indices.contains(sender.tag) else { return }
+        guides.start(listedGuides[sender.tag])
     }
 
     @objc private func endSession() {
@@ -672,4 +837,9 @@ final class ControlPanel: NSObject {
             alert.beginSheetModal(for: self.window) { _ in }
         }
     }
+}
+
+/// Scroll document view that lays out top-down.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

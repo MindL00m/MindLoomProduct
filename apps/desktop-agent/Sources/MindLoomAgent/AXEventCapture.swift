@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import GuideCore
 
 protocol AXEventCaptureDelegate: AnyObject {
     func axCaptureDidEmit(_ event: LocalInteractionEvent)

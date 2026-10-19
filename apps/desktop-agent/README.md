@@ -144,6 +144,32 @@ Local raw events (debug / retention) are appended under `~/.mindloom/events/` an
 6. Review the proposed Skill File in the web app **Workflows** tab (source badge: **Desktop**).
 7. Approve to ingest into the knowledge graph (same path as browser skills).
 
+## Guided walkthroughs
+
+Approved Skill Files play back in Loom Capture as floating, step-by-step guides.
+
+- **Suggestions:** when you switch to an **allowlisted** app that has approved guides,
+  a panel in the top-right offers them. **Not now** snoozes that app for 30 minutes.
+- **Guides page:** open **Guides** from the capture page to start any guide you can see,
+  with the frontmost app's guides listed first.
+- **Auto-advance:** desktop-captured skills store a step anchor (bundle id, action,
+  role, identifier, title, window title) for each step the drafter could tie to an
+  observed control. When you perform that action, the guide moves on by itself. It
+  also looks up to 2 steps ahead, so skipped steps don't stall it. Steps without an
+  anchor, and every step of a guide for a non-allowlisted app, use **Next** / **Back**.
+- **Privacy:** guide mode attaches AX observers only to allowlisted apps, and
+  guide-mode events are never written to `~/.mindloom/events/` or uploaded.
+
+Matching depends on what macOS Accessibility reports. Controls that don't take focus
+when clicked (some buttons, custom-drawn UIs) won't auto-advance; use **Next** for those.
+
+The matcher lives in `Sources/GuideCore` with no AppKit dependency. Command Line Tools
+don't ship XCTest, so its checks run as an executable:
+
+```bash
+swift run GuideCoreChecks
+```
+
 ## Smoke test
 
 1. Start the stack: `docker compose up --build` from the repo root.
@@ -172,7 +198,11 @@ Local raw events (debug / retention) are appended under `~/.mindloom/events/` an
       "endedAt": "…",
       "primaryApp": "Notes",
       "apps": ["Notes"],
+      "bundleIds": ["com.apple.Notes"],
       "stepHints": ["Focus Notes", "Click New Note"],
+      "anchors": [
+        { "bundleId": "com.apple.Notes", "action": "click", "role": "AXButton", "title": "New Note" }
+      ],
       "fieldInteractions": [
         { "role": "AXTextArea", "label": "Note body", "durationMs": 1200 }
       ],
@@ -183,4 +213,6 @@ Local raw events (debug / retention) are appended under `~/.mindloom/events/` an
 }
 ```
 
-`POST /captures/activity-sessions/{sessionId}/analyze` drafts a Skill File from those summaries (text-only LLM; no vision).
+`POST /captures/activity-sessions/{sessionId}/analyze` drafts a Skill File from those summaries (text-only LLM; no vision). The drafter links each step to an anchor where it can, which fills the skill's `bundle_ids` and `guide_steps`.
+
+`GET /captures/guides[?bundle_id=…]` returns approved Skill Files the caller can see, shaped for playback (`skill_id`, `title`, `bundle_ids`, `steps[{text, anchor}]`, `warnings`, `important_fields`). Skills without anchors, such as older or expert-answer skills, come back as manual-only steps. `GET /captures/guides/{skill_id}` returns a single guide.

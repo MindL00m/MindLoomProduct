@@ -1,4 +1,5 @@
 import Foundation
+import GuideCore
 
 final class TaskAggregator {
     private let idleGap: TimeInterval
@@ -80,12 +81,21 @@ final class TaskAggregator {
         openEvents.removeAll()
 
         var appCounts: [String: Int] = [:]
+        var bundleIds: [String] = []
         var stepHints: [String] = []
+        var anchors: [StepAnchor] = []
+        var seenAnchors: Set<StepAnchor> = []
         var fieldInteractions: [FieldInteractionSummary] = []
         var lastHint: String?
 
         for event in events {
             appCounts[event.appName, default: 0] += 1
+            if !event.bundleId.isEmpty, !bundleIds.contains(event.bundleId) {
+                bundleIds.append(event.bundleId)
+            }
+            if let anchor = Self.anchor(for: event), seenAnchors.insert(anchor).inserted {
+                anchors.append(anchor)
+            }
             let hint: String
             switch event.action {
             case .focus:
@@ -120,6 +130,9 @@ final class TaskAggregator {
         if stepHints.count > 40 {
             stepHints = Array(stepHints.prefix(20)) + ["…"] + Array(stepHints.suffix(19))
         }
+        if anchors.count > 40 {
+            anchors = Array(anchors.prefix(20)) + Array(anchors.suffix(20))
+        }
 
         let primaryApp = appCounts.max(by: { $0.value < $1.value })?.key ?? first.appName
         let activeMs = max(0, Int(endedAt.timeIntervalSince(first.ts) * 1000))
@@ -129,10 +142,43 @@ final class TaskAggregator {
             endedAt: endedAt,
             primaryApp: primaryApp,
             apps: appCounts.keys.sorted(),
+            bundleIds: bundleIds,
             stepHints: stepHints,
+            anchors: anchors,
             fieldInteractions: fieldInteractions,
             stats: TaskStats(eventCount: events.count, activeMs: activeMs)
         )
         completedTasks.append(summary)
+    }
+
+    /// Matchable identity for guide auto-advance. App focus and field blur are not steps;
+    /// redacted secure fields never produce anchors.
+    static func anchor(for event: LocalInteractionEvent) -> StepAnchor? {
+        switch event.action {
+        case .focus, .fieldBlur:
+            return nil
+        case .navigate:
+            guard !event.windowTitle.isEmpty else { return nil }
+            return StepAnchor(
+                bundleId: event.bundleId,
+                action: .navigate,
+                role: event.control.role,
+                identifier: nil,
+                title: nil,
+                windowTitle: event.windowTitle
+            )
+        case .click, .menu, .fieldFocus:
+            let title = event.control.title
+            guard title != "[redacted]" else { return nil }
+            guard title?.isEmpty == false || event.control.identifier?.isEmpty == false else { return nil }
+            return StepAnchor(
+                bundleId: event.bundleId,
+                action: event.action,
+                role: event.control.role,
+                identifier: event.control.identifier,
+                title: title,
+                windowTitle: event.windowTitle.isEmpty ? nil : event.windowTitle
+            )
+        }
     }
 }

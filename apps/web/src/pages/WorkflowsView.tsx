@@ -12,6 +12,7 @@ import {
   listActivitySessions,
   listSkillFiles,
   analyzeActivitySession,
+  guideAutoStepLabel,
   reviewSkillFile,
   skillSourceLabel,
   skillVisibilityLabel,
@@ -354,6 +355,14 @@ export default function WorkflowsView() {
                     >
                       {skillVisibilityLabel(skill)}
                     </span>
+                    {guideAutoStepLabel(skill) && (
+                      <span
+                        className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+                        title="Loom Capture can play this as a guide and advance these steps automatically."
+                      >
+                        Desktop guide · {guideAutoStepLabel(skill)}
+                      </span>
+                    )}
                   </div>
                   <span className="text-[11px] text-muted-foreground">
                     {skill.application || skillSourceLabel(skill)}

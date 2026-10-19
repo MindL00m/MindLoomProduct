@@ -12,8 +12,17 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
     private(set) var lastUserFacingApp: NSRunningApplication?
 
     var onStatusChange: ((CaptureStatus) -> Void)?
+    /// Live events for an active guide. Never logged to disk or uploaded.
+    var onGuideEvent: ((LocalInteractionEvent) -> Void)?
+    /// An auto-advancing guide needs AX events even when no capture session is running.
+    var guideObservationEnabled = false {
+        didSet {
+            guard guideObservationEnabled != oldValue else { return }
+            refreshObserverAttachment()
+        }
+    }
 
-    private var config: AgentConfig
+    private(set) var config: AgentConfig
     private let axCapture = AXEventCapture()
     private var aggregator: TaskAggregator
     private var workspaceObserver: NSObjectProtocol?
@@ -41,6 +50,7 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
         if sessionId == nil {
             aggregator = TaskAggregator(idleGapSeconds: config.idleGapSeconds)
             sessionEventCount = 0
+            refreshObserverAttachment()
         } else if !isPaused, status == .capturing || status == .needsPermission {
             attachToFrontmostAllowlistedApp()
             notifyStatus()
@@ -86,7 +96,7 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
     func pause() {
         guard sessionId != nil else { return }
         isPaused = true
-        axCapture.stop()
+        refreshObserverAttachment()
         setStatus(.paused)
     }
 
@@ -118,6 +128,7 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
             self.sessionEventCount = 0
             self.aggregator.reset()
             setStatus(.idle)
+            DispatchQueue.main.async { [weak self] in self?.refreshObserverAttachment() }
         }
         guard !tasks.isEmpty else {
             let hint: String
@@ -153,8 +164,11 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
     }
 
     func axCaptureDidEmit(_ event: LocalInteractionEvent) {
-        guard sessionId != nil, !isPaused, status == .capturing else { return }
         guard allowlistBundleIds.contains(event.bundleId) else { return }
+        if guideObservationEnabled {
+            onGuideEvent?(event)
+        }
+        guard sessionId != nil, !isPaused, status == .capturing else { return }
         AgentConfigStore.appendLocalEvent(event)
         aggregator.ingest(event)
         sessionEventCount += 1
@@ -171,7 +185,21 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
                 return
             }
             self?.rememberFrontmostIfUserApp(app)
+            // Running capture sessions have their own activation observer.
+            if self?.sessionId == nil || self?.isPaused == true {
+                self?.refreshObserverAttachment()
+            }
         }
+    }
+
+    /// Attach to the frontmost allowlisted app while capture or a guide needs events.
+    private func refreshObserverAttachment() {
+        let capturing = sessionId != nil && !isPaused
+        guard AccessibilityPermission.isTrusted, capturing || guideObservationEnabled else {
+            axCapture.stop()
+            return
+        }
+        attachToFrontmostAllowlistedApp()
     }
 
     private func rememberFrontmostIfUserApp(_ app: NSRunningApplication?) {

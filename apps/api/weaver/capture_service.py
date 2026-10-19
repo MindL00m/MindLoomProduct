@@ -36,11 +36,14 @@ from core.models import (
     CaptureRecord,
     CaptureSummary,
     Conversation,
+    GuideStep,
+    GuideSummary,
     IncomingMessage,
     Participant,
     SkillFileDraft,
     SkillFileReview,
     SkillFileUpdate,
+    StepAnchor,
 )
 from brain.pipeline import DocumentInput
 from brain.source_registry import ingest_external_source, mark_external_source_deleted
@@ -70,8 +73,12 @@ Infer the application, goal, ordered steps, important field labels (not values),
 warnings, decision guidance, and links to projects/processes/systems suggested by
 app and control names. Ask only concise follow-up questions needed to resolve
 material uncertainty. Return JSON with: title, purpose, application, context,
-steps, important_fields, warnings, decision_guidance, follow_up_questions.
-Every list value must be a list of strings.
+steps, important_fields, warnings, decision_guidance, follow_up_questions,
+step_anchor_ids.
+Every list value must be a list of strings, except step_anchor_ids: a list the
+same length as steps where each entry is the id of the observed anchor (for
+example "a3") that best marks the step as done, or null if no anchor fits.
+Only use anchor ids that appear in the Anchors section.
 Never invent confidential field values, identifiers, or typed content that were
 not present in the summaries."""
 
@@ -461,7 +468,102 @@ def _format_activity_session_for_prompt(session: ActivitySessionRecord) -> str:
         else:
             lines.append("- (none)")
         lines.append("")
+    anchors = collect_session_anchors(session)
+    if anchors:
+        lines.append("## Anchors (observed controls; reference by id in step_anchor_ids)")
+        lines.extend(
+            f"[a{index}] {describe_anchor(anchor)} in {anchor.bundle_id}"
+            for index, anchor in enumerate(anchors, 1)
+        )
+        lines.append("")
     return "\n".join(lines)
+
+
+MAX_SESSION_ANCHORS = 80
+
+
+def _anchor_key(anchor: StepAnchor) -> tuple[str, str, str, str, str]:
+    return (
+        anchor.bundle_id,
+        anchor.action,
+        anchor.role,
+        anchor.identifier or "",
+        anchor.title or anchor.window_title or "",
+    )
+
+
+def collect_session_anchors(session: ActivitySessionRecord) -> list[StepAnchor]:
+    """Ordered, de-duplicated anchors across all task segments."""
+
+    seen: set[tuple[str, str, str, str, str]] = set()
+    anchors: list[StepAnchor] = []
+    for task in session.tasks:
+        for anchor in task.anchors:
+            key = _anchor_key(anchor)
+            if key in seen:
+                continue
+            seen.add(key)
+            anchors.append(anchor)
+            if len(anchors) >= MAX_SESSION_ANCHORS:
+                return anchors
+    return anchors
+
+
+def session_bundle_ids(session: ActivitySessionRecord) -> list[str]:
+    ids: list[str] = []
+    for task in session.tasks:
+        for bundle_id in [*task.bundle_ids, *(a.bundle_id for a in task.anchors)]:
+            if bundle_id and bundle_id not in ids:
+                ids.append(bundle_id)
+    return ids
+
+
+def describe_anchor(anchor: StepAnchor) -> str:
+    label = anchor.title or anchor.identifier or anchor.role or "control"
+    if anchor.action == "navigate":
+        return f'Open window "{anchor.window_title or label}"'
+    if anchor.action == "menu":
+        return f'Choose menu "{label}"'
+    if anchor.action in ("field_focus", "field_blur"):
+        return f'Fill in "{label}"'
+    if anchor.action == "click":
+        return f'Click "{label}"'
+    return f'Focus "{label}"'
+
+
+def resolve_guide_steps(
+    steps: list[str],
+    anchor_ids: list[Any],
+    anchors: list[StepAnchor],
+) -> list[GuideStep]:
+    """Attach anchors to LLM steps by ``a<N>`` id; unknown or missing ids become manual steps."""
+
+    guide: list[GuideStep] = []
+    for index, step in enumerate(steps):
+        raw = anchor_ids[index] if index < len(anchor_ids) else None
+        anchor: StepAnchor | None = None
+        if isinstance(raw, str):
+            token = raw.strip().strip("[]").lower()
+            if token.startswith("a") and token[1:].isdigit():
+                position = int(token[1:]) - 1
+                if 0 <= position < len(anchors):
+                    anchor = anchors[position]
+        guide.append(GuideStep(text=step, anchor=anchor))
+    return guide
+
+
+def realign_guide_steps(previous: list[GuideStep], steps: list[str]) -> list[GuideStep]:
+    """Rebuild guide steps after a reviewer edit, keeping anchors only for unchanged text."""
+
+    pool: dict[str, list[StepAnchor | None]] = {}
+    for item in previous:
+        pool.setdefault(item.text, []).append(item.anchor)
+    guide: list[GuideStep] = []
+    for step in steps:
+        candidates = pool.get(step)
+        anchor = candidates.pop(0) if candidates else None
+        guide.append(GuideStep(text=step, anchor=anchor))
+    return guide
 
 
 async def _jpeg_data_url(storage_path: str) -> str:
@@ -756,6 +858,10 @@ def _heuristic_activity_skill(session: ActivitySessionRecord, *, org_id: str) ->
             line = f"{label} ({field.role})" if field.role else label
             if line not in fields:
                 fields.append(line)
+    anchors = [a for a in collect_session_anchors(session) if a.action != "field_blur"]
+    guide_steps = [GuideStep(text=describe_anchor(a), anchor=a) for a in anchors[:40]]
+    if guide_steps:
+        steps = [item.text for item in guide_steps]
     if not steps:
         steps = [f"Worked in {app}"]
     title = f"{app} workflow" if app != "Desktop" else "Captured desktop workflow"
@@ -776,6 +882,8 @@ def _heuristic_activity_skill(session: ActivitySessionRecord, *, org_id: str) ->
         decision_guidance=[],
         follow_up_questions=[],
         source_capture_ids=[task.task_id for task in session.tasks],
+        bundle_ids=session_bundle_ids(session),
+        guide_steps=guide_steps,
         source="desktop_ax",
         created_at=now,
         updated_at=now,
@@ -813,6 +921,13 @@ async def analyze_activity_session(session_id: str, *, org_id: str) -> SkillFile
         payload = json.loads(response.choices[0].message.content or "{}")
         now = datetime.now(timezone.utc)
         primary_apps = [task.primary_app for task in session.tasks if task.primary_app]
+        steps = [str(item) for item in payload.get("steps") or []]
+        raw_anchor_ids = payload.get("step_anchor_ids")
+        guide_steps = resolve_guide_steps(
+            steps,
+            raw_anchor_ids if isinstance(raw_anchor_ids, list) else [],
+            collect_session_anchors(session),
+        )
         draft = SkillFileDraft(
             skill_id=str(uuid4()),
             session_id=session_id,
@@ -823,12 +938,14 @@ async def analyze_activity_session(session_id: str, *, org_id: str) -> SkillFile
                 or (primary_apps[0] if primary_apps else "Desktop")
             ),
             context=[str(item) for item in payload.get("context") or []],
-            steps=[str(item) for item in payload.get("steps") or []],
+            steps=steps,
             important_fields=[str(item) for item in payload.get("important_fields") or []],
             warnings=[str(item) for item in payload.get("warnings") or []],
             decision_guidance=[str(item) for item in payload.get("decision_guidance") or []],
             follow_up_questions=[str(item) for item in payload.get("follow_up_questions") or []],
             source_capture_ids=[task.task_id for task in session.tasks],
+            bundle_ids=session_bundle_ids(session),
+            guide_steps=guide_steps,
             source="desktop_ax",
             created_at=now,
             updated_at=now,
@@ -1094,6 +1211,8 @@ async def review_skill_file(
     current = SkillFileDraft.model_validate(current_data)
     updates = review.model_dump(exclude_none=True)
     updates["updated_at"] = datetime.now(timezone.utc)
+    if "steps" in updates and current.guide_steps:
+        updates["guide_steps"] = realign_guide_steps(current.guide_steps, updates["steps"])
     updated = current.model_copy(update=updates)
 
     # Publish/unpublish BEFORE persisting terminal status so a KG failure does not
@@ -1118,3 +1237,48 @@ async def review_skill_file(
 
     await _persist_skill(updated)
     return updated
+
+
+def guide_payload(skill: SkillFileDraft) -> GuideSummary:
+    """Shape a skill for walkthrough playback; legacy skills become manual-only steps."""
+
+    steps = skill.guide_steps or [GuideStep(text=step) for step in skill.steps]
+    return GuideSummary(
+        skill_id=skill.skill_id,
+        title=skill.title,
+        purpose=skill.purpose,
+        application=skill.application,
+        bundle_ids=skill.bundle_ids,
+        steps=steps,
+        warnings=skill.warnings,
+        important_fields=skill.important_fields,
+        updated_at=skill.updated_at,
+    )
+
+
+async def list_guides(
+    *,
+    org_id: str,
+    viewer_user_id: str,
+    bundle_id: str | None = None,
+) -> list[GuideSummary]:
+    """Approved, viewer-visible skills with at least one step."""
+
+    guides: list[GuideSummary] = []
+    for row in await list_skill_files(org_id=org_id, viewer_user_id=viewer_user_id):
+        if row.get("status") != "approved":
+            continue
+        skill = SkillFileDraft.model_validate(row)
+        if bundle_id and bundle_id not in skill.bundle_ids:
+            continue
+        guide = guide_payload(skill)
+        if guide.steps:
+            guides.append(guide)
+    return guides
+
+
+async def get_guide(skill_id: str, *, org_id: str, viewer_user_id: str) -> GuideSummary:
+    row = await _get_skill_row(skill_id, org_id=org_id)
+    if row is None or not can_view_skill(row, viewer_user_id) or row.get("status") != "approved":
+        raise ValueError("Guide was not found.")
+    return guide_payload(SkillFileDraft.model_validate(row))

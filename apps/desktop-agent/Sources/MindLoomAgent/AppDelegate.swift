@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
     private var controlPanel: ControlPanel?
     private var engine: CaptureEngine?
+    private var guideController: GuideController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Regular policy so the control window is a normal visible app window.
@@ -15,7 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let engine = CaptureEngine(config: config)
         self.engine = engine
 
-        let panel = ControlPanel(engine: engine, config: config)
+        let library = GuideLibrary(config: config)
+        let guides = GuideController(engine: engine, library: library)
+        let panel = ControlPanel(engine: engine, guides: guides, config: config)
         let status = StatusItemController(engine: engine, config: config)
         engine.onStatusChange = { _ in
             status.applyExternalStatus(engine.status)
@@ -23,8 +26,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         panel.onConfigChange = { updated in
             status.reloadConfig(updated)
+            library.reloadConfig(updated)
+        }
+        library.onChange = {
+            panel.refreshGuides()
         }
 
+        self.guideController = guides
         self.controlPanel = panel
         self.statusController = status
         panel.show()

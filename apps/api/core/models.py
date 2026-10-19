@@ -79,6 +79,29 @@ class ActivityTaskStats(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+StepAnchorAction = Literal["focus", "click", "menu", "field_focus", "field_blur", "navigate"]
+
+
+class StepAnchor(BaseModel):
+    """Structured control identity the desktop agent can match against live AX events."""
+
+    bundle_id: str = Field(alias="bundleId")
+    action: StepAnchorAction
+    role: str = ""
+    identifier: Optional[str] = None
+    title: Optional[str] = None
+    window_title: Optional[str] = Field(default=None, alias="windowTitle")
+
+    model_config = {"populate_by_name": True}
+
+
+class GuideStep(BaseModel):
+    """One walkthrough step; ``anchor`` is None when the step needs a manual Next."""
+
+    text: str
+    anchor: Optional[StepAnchor] = None
+
+
 class ActivityTaskSummary(BaseModel):
     """Aggregated on-device task segment from the macOS Accessibility agent."""
 
@@ -87,7 +110,9 @@ class ActivityTaskSummary(BaseModel):
     ended_at: datetime = Field(alias="endedAt")
     primary_app: str = Field(default="", alias="primaryApp")
     apps: list[str] = Field(default_factory=list)
+    bundle_ids: list[str] = Field(default_factory=list, alias="bundleIds")
     step_hints: list[str] = Field(default_factory=list, alias="stepHints")
+    anchors: list[StepAnchor] = Field(default_factory=list)
     field_interactions: list[ActivityFieldInteraction] = Field(
         default_factory=list, alias="fieldInteractions"
     )
@@ -136,6 +161,8 @@ class SkillFileDraft(BaseModel):
     decision_guidance: list[str] = Field(default_factory=list)
     follow_up_questions: list[str] = Field(default_factory=list)
     source_capture_ids: list[str] = Field(default_factory=list)
+    bundle_ids: list[str] = Field(default_factory=list)
+    guide_steps: list[GuideStep] = Field(default_factory=list)
     source: SkillSource = "browser"
     status: Literal["proposed", "approved", "rejected"] = "proposed"
     visibility: ContentVisibility = "private"
@@ -144,6 +171,20 @@ class SkillFileDraft(BaseModel):
     updated_at: datetime
     org_id: str = "default"
     created_by: str = "browser-user"
+
+
+class GuideSummary(BaseModel):
+    """Approved Skill File shaped for desktop walkthrough playback."""
+
+    skill_id: str
+    title: str
+    purpose: str
+    application: str
+    bundle_ids: list[str] = Field(default_factory=list)
+    steps: list[GuideStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    important_fields: list[str] = Field(default_factory=list)
+    updated_at: datetime
 
 
 class SkillFileReview(BaseModel):

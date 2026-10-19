@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
 
 from keeper.auth import require_user_context
 from weaver.capture_service import (
@@ -10,8 +10,10 @@ from weaver.capture_service import (
     analyze_activity_session,
     analyze_capture_session,
     ensure_activity_skill,
+    get_guide,
     list_activity_sessions,
     list_captures,
+    list_guides,
     list_skill_files,
     list_summaries,
     review_skill_file,
@@ -25,6 +27,7 @@ from core.models import (
     ActivitySessionRecord,
     CaptureCreate,
     CaptureRecord,
+    GuideSummary,
     SkillFileDraft,
     SkillFileReview,
     SkillFileUpdate,
@@ -158,6 +161,29 @@ async def patch_skill(
             skill_id, update, org_id=org_id, actor_user_id=user_id
         )
     except (ValueError, SkillAccessError) as exc:
+        raise _skill_http_error(exc) from exc
+
+
+@router.get("/guides", response_model=list[GuideSummary])
+async def guides(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    bundle_id: Annotated[str | None, Query()] = None,
+) -> list[GuideSummary]:
+    """Approved Skill Files shaped for Loom Capture walkthroughs."""
+
+    org_id, user_id = ctx
+    return await list_guides(org_id=org_id, viewer_user_id=user_id, bundle_id=bundle_id)
+
+
+@router.get("/guides/{skill_id}", response_model=GuideSummary)
+async def guide(
+    skill_id: str,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> GuideSummary:
+    org_id, user_id = ctx
+    try:
+        return await get_guide(skill_id, org_id=org_id, viewer_user_id=user_id)
+    except ValueError as exc:
         raise _skill_http_error(exc) from exc
 
 

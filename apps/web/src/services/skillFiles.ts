@@ -3,6 +3,23 @@ import { apiFetch } from "@/lib/api";
 export type SkillSource = "browser" | "desktop_ax" | "expert";
 export type ContentVisibility = "private" | "organization";
 
+/** Matchable control identity; keys are snake_case or camelCase depending on the endpoint. */
+export interface StepAnchor {
+  bundle_id?: string;
+  bundleId?: string;
+  action: string;
+  role?: string;
+  identifier?: string | null;
+  title?: string | null;
+  window_title?: string | null;
+  windowTitle?: string | null;
+}
+
+export interface GuideStep {
+  text: string;
+  anchor?: StepAnchor | null;
+}
+
 export interface SkillFile {
   skill_id: string;
   session_id: string;
@@ -16,6 +33,8 @@ export interface SkillFile {
   decision_guidance: string[];
   follow_up_questions: string[];
   source_capture_ids: string[];
+  bundle_ids?: string[];
+  guide_steps?: GuideStep[];
   source?: SkillSource;
   status: "proposed" | "approved" | "rejected";
   visibility?: ContentVisibility;
@@ -53,6 +72,14 @@ export function skillSourceLabel(skill: SkillFile): string {
   if (skill.source === "desktop_ax") return "Desktop";
   if (skill.source === "expert") return "Expert";
   return "Browser";
+}
+
+/** e.g. "4/6 steps auto-detect"; null when Loom Capture cannot auto-advance any step. */
+export function guideAutoStepLabel(skill: SkillFile): string | null {
+  const steps = skill.guide_steps ?? [];
+  const auto = steps.filter((step) => step.anchor).length;
+  if (!auto) return null;
+  return `${auto}/${steps.length} steps auto-detect`;
 }
 
 export function skillVisibilityLabel(skill: SkillFile): string {

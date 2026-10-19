@@ -1,4 +1,5 @@
 import Foundation
+import GuideCore
 
 enum APIClientError: Error, LocalizedError {
     case invalidURL
@@ -62,6 +63,18 @@ final class APIClient {
         let object = try JSONSerialization.jsonObject(with: data)
         guard let dict = object as? [String: Any] else { throw APIClientError.decodeFailed }
         return dict
+    }
+
+    func listGuides() async throws -> [Guide] {
+        var request = URLRequest(url: try endpoint("/captures/guides"))
+        try applyAuth(&request)
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        do {
+            return try decoder.decode([Guide].self, from: data)
+        } catch {
+            throw APIClientError.decodeFailed
+        }
     }
 
     private func applyAuth(_ request: inout URLRequest) throws {

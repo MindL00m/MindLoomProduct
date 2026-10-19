@@ -1,19 +1,11 @@
 import Foundation
+import GuideCore
 
 enum CaptureStatus: String {
     case idle
     case capturing
     case paused
     case needsPermission
-}
-
-enum InteractionAction: String, Codable {
-    case focus
-    case click
-    case menu
-    case fieldFocus = "field_focus"
-    case fieldBlur = "field_blur"
-    case navigate
 }
 
 struct ControlIdentity: Codable, Equatable {
@@ -56,7 +48,9 @@ struct TaskSummary: Codable {
     var endedAt: Date
     var primaryApp: String
     var apps: [String]
+    var bundleIds: [String]
     var stepHints: [String]
+    var anchors: [StepAnchor]
     var fieldInteractions: [FieldInteractionSummary]
     var stats: TaskStats
 }

@@ -10,7 +10,12 @@ export function Logo({
   showText?: boolean;
 }) {
   return (
-    <div className={cn("flex items-center gap-2", className)}>
+    <a
+      href="https://mindloomai.org"
+      target="_blank"
+      rel="noreferrer"
+      className={cn("flex items-center gap-2 rounded-md hover:opacity-80", className)}
+    >
       <img
         src="/mindloom-logo.png"
         alt="MindLoom"
@@ -21,6 +26,6 @@ export function Logo({
           MindLoom
         </span>
       )}
-    </div>
+    </a>
   );
 }

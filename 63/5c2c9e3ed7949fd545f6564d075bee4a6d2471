@@ -1,0 +1,24 @@
+apps/web/src/components/Logo.tsx
+  s_fbaec34187ecab::t_c91acc2221fa69 13-18,29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "635c2c9e3ed7949fd545f6564d075bee4a6d2471",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_fbaec34187ecab": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "2ef5bd1d-263a-47bf-8fc4-2844763a2f75",
+        "model": "grok-4.6"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

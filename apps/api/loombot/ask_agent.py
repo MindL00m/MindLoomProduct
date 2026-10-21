@@ -15,7 +15,7 @@ from loombot import data_tools
 from loombot import files as files_service
 from loombot.answerer import generate_answer
 from core.config import get_settings
-from core.llm_provider import DEFAULT_OPENAI_MODEL, get_llm_client
+from core.llm_provider import DEFAULT_OPENAI_MODEL, LLMClientAdapter, get_llm_client
 from core.models import (
     ChatMessage,
     EphemeralDocument,
@@ -36,7 +36,7 @@ from keeper.review_workflows import lookup_messageable_people
 logger = logging.getLogger(__name__)
 
 _MODEL = DEFAULT_OPENAI_MODEL  # informational; the adapter uses the org setting
-_MAX_TOOL_ROUNDS = 6
+_MAX_TOOL_ROUNDS = 8
 
 _AGENT_SYSTEM = """\
 You are MindLoom, a company knowledge assistant that can draft Expert Messages,
@@ -48,6 +48,19 @@ Files tab.
 
 Today is {today} (UTC). Resolve relative dates such as "today", "this week", or
 "last month" against this date.
+
+How to work:
+- Work step by step. Before calling tools, decide what you need; call a tool,
+  read its result, then decide the next step. Chain as many tools as the task
+  needs (for example read_csv_file, then search_emails, then write_csv_file) and
+  keep going until the request is done.
+- Never tell the user you cannot search their email, update their files, draft a
+  message, or track a status when a tool does it. Use the tool.
+- If a step fails or finds nothing, adjust (looser search, check the file names)
+  before giving up, then explain plainly what happened.
+- When a request names a file loosely ("the prices", "my leads sheet"), match it
+  to the user's file list below; read it before changing it.
+{plan_hint}
 
 You have retrieval context below for factual questions. Use it for knowledge answers
 and cite sources with [SOURCE: chunk_id] when applicable.
@@ -1915,6 +1928,78 @@ async def _with_cited_sources(
     return [*sources, *extra]
 
 
+_PLANNER_SYSTEM = """\
+You route requests for MindLoom, a company assistant, and plan the steps.
+Decide whether the request needs tools, which act on live data or take actions:
+- lookup_person, propose_email, propose_expert_message: draft messages or emails to people
+- github_list_repos, github_get_repo, github_get_file, propose_github_pr: GitHub repos and changes
+- propose_workspace: create a project workspace
+- search_emails: find or read the user's own email live (by sender, topic, date)
+- count_emails: count the user's mail
+- knowledge_inventory: count indexed documents by source
+- track_status: status reports and tracking a subject over time
+- project_status: overview of all open work
+- list_csv_files, read_csv_file, write_csv_file, set_file_monitoring: the user's CSV
+  files in the Files tab (create, read, change, keep updated)
+Questions about company knowledge, policies, people, or past discussions need no
+tools: retrieved context answers them. Use tools when the request involves the
+user's mailbox, files, messages, GitHub, workspaces, counts, or status tracking.
+Return a JSON object: {"use_tools": true | false, "plan": [short steps naming tools]}
+with at most 6 steps, and an empty plan when use_tools is false.
+"""
+
+
+def _plan_hint(plan: list[str]) -> str:
+    if not plan:
+        return ""
+    steps = "\n".join(f"{i}. {step}" for i, step in enumerate(plan, 1))
+    return f"\nSuggested plan (adapt it if tool results call for it):\n{steps}\n"
+
+
+async def _plan_request(
+    client: Any,
+    question: str,
+    history: list[ChatMessage],
+    user_files: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Short planning call: does this request need tools, and in which steps?"""
+
+    recent = "\n".join(
+        f"{turn.role}: {' '.join(turn.content.split())[:300]}" for turn in history[-4:]
+    )
+    prompt = (
+        f"User's CSV files: {', '.join(f['name'] for f in user_files[:40]) or 'none'}\n"
+        f"Recent conversation:\n{recent or '(none)'}\n\n"
+        f"Request: {question}"
+    )
+    response = await client.chat.completions.create(
+        model=_MODEL,
+        messages=[
+            {"role": "system", "content": _PLANNER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+        max_tokens=300,
+        response_format={"type": "json_object"},
+    )
+    content = response.choices[0].message.content or ""
+    match = re.search(r"\{.*\}", content, re.S)
+    try:
+        parsed = json.loads(match.group(0)) if match else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        return {"use_tools": False, "plan": []}
+    plan = [
+        " ".join(str(step).split())[:200]
+        for step in (parsed.get("plan") or [])
+        if str(step).strip()
+    ][:6]
+    use_tools = parsed.get("use_tools") is True
+    logger.info("Ask planner: use_tools=%s plan=%s", use_tools, plan)
+    return {"use_tools": use_tools, "plan": plan if use_tools else []}
+
+
 def _only_cited(answer: str, sources: list[Any]) -> list[Any]:
     """Drop retrieved-but-uncited sources from answers about the user's files."""
 
@@ -1939,10 +2024,24 @@ async def run_ask_agent(
     wants_data = _wants_data(question)
     user_files = await _user_files(org_id, user_id)
     wants_files = _wants_files(question, [f["name"] for f in user_files], history)
+    plan: list[str] = []
+    client: LLMClientAdapter | None = None
     if not wants_msg and not wants_gh and not wants_ws and not wants_data and not wants_files:
-        return await generate_answer(
-            question, retrieval, history, org_id, ephemeral_documents
-        )
+        # No keyword matched. Let a short planning call decide whether the request
+        # needs tools (e.g. "update the prices from priya@x.com") before falling
+        # back to a plain knowledge answer.
+        decision: dict[str, Any] = {}
+        try:
+            client = await get_llm_client(org_id)
+            if client.configuration.supports_tools:
+                decision = await _plan_request(client, question, history or [], user_files)
+        except Exception:  # noqa: BLE001 - planning is an optimisation, never a failure
+            logger.warning("Ask planning call failed; answering from knowledge", exc_info=True)
+        if not decision.get("use_tools"):
+            return await generate_answer(
+                question, retrieval, history, org_id, ephemeral_documents
+            )
+        plan = decision["plan"]
 
     # Build a knowledge answer path first so tool turns still get sources
     # when the model mixes intents; tools may replace the final answer.
@@ -1968,7 +2067,8 @@ async def run_ask_agent(
         else "not connected for this user — still draft the email so they can connect or copy it"
     )
 
-    client = await get_llm_client(org_id)
+    if client is None:
+        client = await get_llm_client(org_id)
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -1976,6 +2076,7 @@ async def run_ask_agent(
                 context_string=context_string,
                 gmail_status=gmail_status,
                 files_status=_files_status(user_files),
+                plan_hint=_plan_hint(plan),
                 today=datetime.now(timezone.utc).strftime("%A, %d %B %Y"),
             ),
         },

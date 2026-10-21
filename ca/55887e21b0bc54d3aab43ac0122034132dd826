@@ -1,0 +1,26 @@
+apps/api/tests/test_slack.py
+  s_218d62697339ad::t_2e8e86e0e80d42 452-478
+apps/api/weaver/slack.py
+  s_218d62697339ad::t_27204333af56c3 503-518,520-525,527,533
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca55887e21b0bc54d3aab43ac0122034132dd826",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_218d62697339ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69cc522b-4948-4666-baec-7d8d3dffdf3c",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

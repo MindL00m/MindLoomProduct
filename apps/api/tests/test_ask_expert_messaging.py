@@ -531,3 +531,29 @@ async def test_create_expert_request_without_email_uses_name_only_query(monkeypa
     assert result is None
     assert ":email" not in captured["sql"]
     assert captured["params"] == {"org": "org-1", "name": "Amey Agarwal"}
+
+
+@pytest.mark.parametrize("question", [
+    "sohamraychaudhuri@mindloomai.org send to this email tiramisu project is done 90 percent",
+    "priya@acme.com tell her the launch slipped",
+    "Tiramisu is 90% done, send it to priya@acme.com",
+    "forward this to alex@acme.com",
+])
+def test_recipient_first_send_requests_are_messaging(question: str) -> None:
+    assert ask_agent._wants_messaging(question)
+
+
+@pytest.mark.parametrize("question", [
+    "What did priya@acme.com send me?",
+    "What is sohamraychaudhuri@mindloomai.org's role?",
+    "Is priya@acme.com on the launch team?",
+    "Send me the latest status of tiramisu",
+])
+def test_questions_mentioning_addresses_are_not_messaging(question: str) -> None:
+    assert not ask_agent._wants_messaging(question)
+
+
+def test_recipient_hint_prefers_an_email_address() -> None:
+    assert ask_agent._extract_recipient_query(
+        "sohamraychaudhuri@mindloomai.org send to this email tiramisu project is done 90 percent"
+    ) == "sohamraychaudhuri@mindloomai.org"

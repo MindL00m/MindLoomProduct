@@ -1059,9 +1059,28 @@ _MESSAGING_PATTERNS = tuple(
 )
 
 
+_EMAIL_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+_SEND_ANYWHERE = re.compile(
+    r"\b(?:send|forward|email|e-mail|message|tell|notify|ping|text|write)\b(?!\s+(?:me|us)\b)"
+)
+_SEND_TO = re.compile(r"\b(?:send|forward)\s+(?:it\s+|this\s+|that\s+|these\s+|them\s+)?to\b")
+# "What did priya@x.com send me?" is a mailbox question, not a request to send.
+_ASKING_ABOUT_MAIL = re.compile(
+    r"\b(?:did|has|have|had|was|were|when|who)\b.{0,60}\b(?:sen[dt]|e-?mailed|wrote|messaged)\b"
+)
+
+
 def _wants_messaging(question: str) -> bool:
     lowered = " ".join(question.lower().split())
-    return any(pattern.search(lowered) for pattern in _MESSAGING_PATTERNS)
+    if any(pattern.search(lowered) for pattern in _MESSAGING_PATTERNS):
+        return True
+    if _ASKING_ABOUT_MAIL.search(lowered):
+        return False
+    # Requests that lead with the recipient, e.g. "priya@acme.com send to this
+    # email: the launch is 90% done", or "send this to Priya" mid-sentence.
+    if _EMAIL_ADDRESS.search(lowered) and _SEND_ANYWHERE.search(lowered):
+        return True
+    return bool(_SEND_TO.search(lowered))
 
 
 _COUNT_WORDS = re.compile(r"\b(?:how many|number of|count(?: of)?|total)\b")
@@ -1188,8 +1207,11 @@ def _wants_workspace(question: str) -> bool:
 
 
 def _extract_recipient_query(question: str) -> str | None:
-    """Best-effort recipient hint from a messaging ask (title/name)."""
+    """Best-effort recipient hint from a messaging ask (address, title, or name)."""
 
+    address = _EMAIL_ADDRESS.search(question or "")
+    if address:
+        return address.group(0).strip(".,;:")
     patterns = (
         r"(?:send(?:\s+a)?\s+message\s+to)\s+(?:the\s+)?(.+?)\s+(?:saying|that|about|regarding)\b",
         r"(?:send(?:\s+a)?\s+message\s+to)\s+(?:the\s+)?(.+)$",

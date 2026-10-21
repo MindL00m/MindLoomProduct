@@ -23,7 +23,8 @@ from core.database import get_session_factory
 logger = logging.getLogger(__name__)
 
 Provider = Literal["openai", "local"]
-_DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-6-luna"
+_DEFAULT_OPENAI_MODEL = DEFAULT_OPENAI_MODEL  # backwards-compatible alias
 
 
 class LLMProviderError(RuntimeError):
@@ -39,6 +40,15 @@ class LLMConfiguration:
     supports_tools: bool = True
 
 
+def default_openai_model() -> str:
+    """OpenAI model used when an org has not picked one (env: OPENAI_DEFAULT_MODEL)."""
+    try:
+        configured = get_settings().openai_default_model
+    except Exception:  # noqa: BLE001 - incomplete env (tests, scripts) keeps the built-in default
+        configured = ""
+    return (configured or "").strip() or DEFAULT_OPENAI_MODEL
+
+
 async def get_llm_configuration(org_id: str) -> LLMConfiguration:
     factory = get_session_factory()
     async with factory() as session:
@@ -47,10 +57,10 @@ async def get_llm_configuration(org_id: str) -> LLMConfiguration:
             FROM organization_llm_settings WHERE org_id=:org_id
         """), {"org_id": org_id})).mappings().one_or_none()
     if row is None:
-        return LLMConfiguration()
+        return LLMConfiguration(model=default_openai_model())
     return LLMConfiguration(
         provider=row["provider"], base_url=row["base_url"],
-        model=row["model"] or _DEFAULT_OPENAI_MODEL,
+        model=row["model"] or default_openai_model(),
         context_window=int(row["context_window"]),
         supports_tools=bool(row["supports_tools"]),
     )
@@ -102,7 +112,7 @@ def limit_messages(messages: list[dict[str, Any]], context_window: int) -> list[
 
 # Optional request fields that some models reject (gpt-4o-mini has no
 # reasoning_effort; reasoning models refuse temperature=0 and max_tokens; some
-# local servers lack tool_choice). A rejected field is dropped, or renamed for
+# local servers lack tool_choice or response_format). A rejected field is dropped, or renamed for
 # max_tokens, and remembered per model so later calls skip it.
 _REJECTABLE_PARAMS = (
     "reasoning_effort",
@@ -111,6 +121,7 @@ _REJECTABLE_PARAMS = (
     "max_tokens",
     "parallel_tool_calls",
     "tool_choice",
+    "response_format",
 )
 _REJECTED_PARAMS: dict[tuple[str | None, str], set[str]] = {}
 
@@ -196,6 +207,21 @@ async def get_llm_client(org_id: str) -> LLMClientAdapter:
         timeout=(settings.local_llm_timeout_seconds if config.provider == "local" else settings.openai_request_timeout_seconds),
     )
     return LLMClientAdapter(client, config)
+
+
+def get_default_openai_client() -> LLMClientAdapter:
+    """OpenAI client on the default model for org-independent background calls.
+
+    Ingestion extraction, query condensation and CONTEXT.md synthesis use this
+    instead of a bare ``AsyncOpenAI`` so they share the adapter's handling of
+    parameters a model rejects (e.g. ``temperature=0`` on reasoning models).
+    """
+    settings = get_settings()
+    client = AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        timeout=settings.openai_request_timeout_seconds,
+    )
+    return LLMClientAdapter(client, LLMConfiguration(model=default_openai_model()))
 
 
 async def check_local_endpoint(base_url: str) -> None:

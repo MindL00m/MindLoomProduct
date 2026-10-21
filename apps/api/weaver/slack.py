@@ -544,6 +544,9 @@ async def _cache_set(key: str, value: str, ttl: int) -> None:
 
 
 async def cached_user(token: str, team_id: str, user_id: str) -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return {}
     key = f"slack:user:{team_id}:{user_id}"
     cached = await _cache_get(key)
     if cached:
@@ -800,7 +803,7 @@ async def _thread_messages(token: str, channel: str, thread_ts: str) -> list[dic
     messages: list[dict[str, Any]] = []
     cursor: str | None = None
     while len(messages) < _MAX_THREAD_MESSAGES:
-        args: dict[str, Any] = {"channel": channel, "ts": thread_ts, "limit": "200"}
+        args: dict[str, Any] = {"channel": channel, "ts": thread_ts, "limit": 200}
         if cursor:
             args["cursor"] = cursor
         payload = await slack_api(token, "conversations.replies", args)
@@ -819,7 +822,12 @@ async def _history(install: Mapping[str, Any], token: str, channel: str, thread_
     team_id = str(install.get("team_id") or "")
     turns: list[Any] = []
     names: dict[str, str] = {}
-    for message in await _thread_messages(token, channel, thread_ts):
+    try:
+        messages = await _thread_messages(token, channel, thread_ts)
+    except SlackApiError as exc:
+        logger.warning("Could not load Slack thread history (%s)", exc.error)
+        return []
+    for message in messages:
         if str(message.get("ts") or "") == current_ts:
             continue
         text_value = strip_bot_mention(str(message.get("text") or ""), bot_user)
@@ -843,7 +851,10 @@ async def _slack_user(install: Mapping[str, Any], slack_user_id: str) -> dict[st
     """Match a Slack user to a MindLoom user by email."""
 
     token = _token(install)
-    info = await cached_user(token, str(install.get("team_id") or ""), slack_user_id)
+    try:
+        info = await cached_user(token, str(install.get("team_id") or ""), slack_user_id)
+    except SlackApiError:
+        return None
     profile = info.get("profile") or {}
     email = str(profile.get("email") or "").strip().lower() if isinstance(profile, Mapping) else ""
     if not email:
@@ -961,7 +972,7 @@ async def _member_emails(token: str, team_id: str, channel: str) -> list[str]:
     member_ids: list[str] = []
     cursor: str | None = None
     while len(member_ids) < 500:
-        args: dict[str, Any] = {"channel": channel, "limit": "200"}
+        args: dict[str, Any] = {"channel": channel, "limit": 200}
         if cursor:
             args["cursor"] = cursor
         payload = await slack_api(token, "conversations.members", args)
@@ -1170,7 +1181,7 @@ async def backfill_install(install_id: str, days: int) -> int:
     for channel in _channels(install):
         cursor: str | None = None
         while count < _MAX_BACKFILL_THREADS:
-            args: dict[str, Any] = {"channel": channel, "oldest": oldest, "limit": "100"}
+            args: dict[str, Any] = {"channel": channel, "oldest": oldest, "limit": 100}
             if cursor:
                 args["cursor"] = cursor
             try:

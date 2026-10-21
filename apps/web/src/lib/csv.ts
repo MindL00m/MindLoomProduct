@@ -83,3 +83,23 @@ export function parseCsv(text: string): ParsedCsv {
 
   return { headers, rows, matrix };
 }
+
+/** Every record as raw cells (header first), untrimmed, blank lines dropped. */
+export function parseCsvMatrix(text: string): string[][] {
+  const records = splitRecords(text).filter(
+    (r) => !(r.length === 1 && r[0].trim() === ""),
+  );
+  const width = Math.max(0, ...records.map((r) => r.length));
+  return records.map((r) => [...r, ...Array<string>(width - r.length).fill("")]);
+}
+
+function escapeCell(value: string): string {
+  // Minimal quoting, matching the API's Python csv writer.
+  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
+
+/** Serialize a matrix (header first) back to CSV text with \n line endings. */
+export function toCsv(matrix: string[][]): string {
+  if (matrix.length === 0) return "";
+  return matrix.map((row) => row.map(escapeCell).join(",")).join("\n") + "\n";
+}

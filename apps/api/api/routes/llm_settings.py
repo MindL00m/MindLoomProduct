@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from keeper.auth import require_admin_context, require_user_context
 from core.database import get_session_factory
-from core.llm_provider import LLMProviderError, check_local_endpoint, get_llm_configuration
+from core.llm_provider import DEFAULT_OPENAI_MODEL, LLMProviderError, check_local_endpoint, get_llm_configuration
 
 router = APIRouter(prefix="/llm-settings", tags=["llm-settings"])
 
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/llm-settings", tags=["llm-settings"])
 class LLMSettingsPayload(BaseModel):
     provider: Literal["openai", "local"]
     base_url: str | None = None
-    model: str = "gpt-4o-mini"
+    model: str = DEFAULT_OPENAI_MODEL
     context_window: int = Field(default=16384, ge=1024, le=1_000_000)
     supports_tools: bool = True
 

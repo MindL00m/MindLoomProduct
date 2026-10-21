@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   Database,
+  FileSpreadsheet,
   FileText,
   Hash,
   GitPullRequest,
@@ -12,6 +13,7 @@ import {
   Paperclip,
   Sparkles,
   Trash2,
+  Undo2,
   Users,
   UserRound,
   X,
@@ -22,6 +24,7 @@ import {
   extractFileForChat,
   type ChatMessage,
   type EphemeralDocument,
+  type FileChange,
   type ProposedEmail,
   type ProposedExpertMessage,
   type ProposedPullRequest,
@@ -32,6 +35,8 @@ import {
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
+import { getFile, undoFile } from "@/services/files";
+import { Markdown, type CitationRenderer } from "@/components/Markdown";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
@@ -46,31 +51,21 @@ const EXAMPLES = [
 
 const CITE_RE = /\[(?:SOURCE|EPHEMERAL):\s*([^\]]+?)\]/gi;
 
-/** Render an answer, converting citation markers into numbered refs. */
-function renderAnswer(answer: string, sources: Source[]): ReactNode[] {
+/** Turn citation markers into numbered refs; unknown ids render nothing. */
+function citationRenderer(sources: Source[]): CitationRenderer {
   const index = new Map(sources.map((s, i) => [s.chunk_id, i + 1]));
-  const nodes: ReactNode[] = [];
-  let last = 0;
-  let key = 0;
-  let match: RegExpExecArray | null;
-  CITE_RE.lastIndex = 0;
-  while ((match = CITE_RE.exec(answer)) !== null) {
-    if (match.index > last) nodes.push(answer.slice(last, match.index));
-    const n = index.get(match[1].trim());
-    if (n) {
-      nodes.push(
-        <sup
-          key={`ref-${key++}`}
-          className="mx-0.5 inline-flex size-4 items-center justify-center rounded bg-brand-100 text-[10px] font-semibold text-brand-700 align-super"
-        >
-          {n}
-        </sup>,
-      );
-    }
-    last = CITE_RE.lastIndex;
-  }
-  if (last < answer.length) nodes.push(answer.slice(last));
-  return nodes;
+  return (id, key) => {
+    const n = index.get(id);
+    if (!n) return null;
+    return (
+      <sup
+        key={key}
+        className="mx-0.5 inline-flex size-4 items-center justify-center rounded bg-brand-100 text-[10px] font-semibold text-brand-700 align-super"
+      >
+        {n}
+      </sup>
+    );
+  };
 }
 
 function ephemeralFrom(conversation: Conversation | undefined): EphemeralDocument[] {
@@ -543,6 +538,7 @@ function TurnView({
               workspaceProposalState={turn.workspaceProposalState}
               workspaceProposalId={turn.workspaceProposalId}
               workspaceProposalError={turn.workspaceProposalError}
+              fileChangeState={turn.fileChangeState}
               onProposalPatch={onProposalPatch}
             />
           )}
@@ -820,6 +816,7 @@ function AnswerView({
   workspaceProposalState,
   workspaceProposalId,
   workspaceProposalError,
+  fileChangeState,
   onProposalPatch,
 }: {
   response: QueryResponse;
@@ -839,6 +836,7 @@ function AnswerView({
   workspaceProposalState?: Turn["workspaceProposalState"];
   workspaceProposalId?: string;
   workspaceProposalError?: string;
+  fileChangeState?: Turn["fileChangeState"];
   onProposalPatch: (patch: Partial<Turn>) => void;
 }) {
   const cited = new Set<string>();
@@ -859,9 +857,18 @@ function AnswerView({
         <ConfidencePill confidence={response.confidence} />
       </div>
 
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-        {renderAnswer(response.answer, response.sources)}
-      </p>
+      <Markdown
+        text={response.answer}
+        renderCitation={citationRenderer(response.sources)}
+      />
+
+      {(response.file_changes?.length ?? 0) > 0 && (
+        <FileChangesCard
+          changes={response.file_changes!}
+          state={fileChangeState}
+          onPatch={onProposalPatch}
+        />
+      )}
 
       {(proposal || emailProposal) && (
         <ProposedComposeCard
@@ -934,6 +941,95 @@ function AnswerView({
           </ol>
         </div>
       )}
+    </div>
+  );
+}
+
+function FileChangesCard({
+  changes,
+  state,
+  onPatch,
+}: {
+  changes: FileChange[];
+  state?: Turn["fileChangeState"];
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const current = state ?? {};
+
+  function setState(fileId: string, value: { status: "undoing" | "undone"; error?: string }) {
+    onPatch({ fileChangeState: { ...current, [fileId]: value } });
+  }
+
+  async function undo(change: FileChange) {
+    setState(change.file_id, { status: "undoing" });
+    try {
+      // Only roll back if LoomBot's edit is still the latest one; otherwise
+      // undo would discard whatever the user changed afterwards.
+      const latest = await getFile(change.file_id);
+      if (latest.last_edited_by !== "loombot" || !latest.can_undo) {
+        throw new Error(
+          "This file changed after LoomBot edited it. Open it in Files to review.",
+        );
+      }
+      await undoFile(change.file_id);
+      setState(change.file_id, { status: "undone" });
+    } catch (err) {
+      setState(change.file_id, {
+        status: "undoing",
+        error: err instanceof Error ? err.message : "Could not undo.",
+      });
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card text-sm" data-testid="file-changes-card">
+      <p className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Files changed
+      </p>
+      <ul className="divide-y divide-border">
+        {changes.map((change) => {
+          const entry = current[change.file_id];
+          const undone = entry?.status === "undone";
+          const undoing = entry?.status === "undoing" && !entry.error;
+          const verb = change.action === "created" ? "Created" : "Updated";
+          return (
+            <li key={change.file_id} className="flex flex-wrap items-start gap-3 px-3 py-2.5">
+              <FileSpreadsheet className="mt-0.5 size-4 shrink-0 text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className={cn("font-medium", undone && "text-muted-foreground line-through")}>
+                  {verb} {change.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {undone
+                    ? "Change undone. The file is back to its previous version."
+                    : change.summary ||
+                      `${change.row_count.toLocaleString()} rows · ${change.column_count} columns`}
+                </p>
+                {entry?.error && <p className="mt-1 text-xs text-destructive">{entry.error}</p>}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <a
+                  href={`/dashboard?tab=files&file=${encodeURIComponent(change.file_id)}`}
+                  className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+                >
+                  Open in Files
+                </a>
+                {!undone && change.action === "updated" && (
+                  <button
+                    type="button"
+                    disabled={undoing}
+                    onClick={() => void undo(change)}
+                    className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60 disabled:opacity-50"
+                  >
+                    {undoing ? <Loader2 className="size-3.5 animate-spin" /> : <Undo2 className="size-3.5" />}
+                    Undo
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

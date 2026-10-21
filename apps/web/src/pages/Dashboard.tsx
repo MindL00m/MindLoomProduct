@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Bot,
+  FileSpreadsheet,
   Home,
   Menu,
   MessageSquareText,
@@ -17,6 +18,7 @@ import { Logo } from "@/components/Logo";
 import AskView from "@/pages/AskView";
 import HomePage from "@/pages/HomePage";
 import ExpertMessages from "@/pages/ExpertMessages";
+import FilesView from "@/pages/FilesView";
 import ImportView from "@/pages/ImportView";
 import LoomCaptureView from "@/pages/LoomCaptureView";
 import WorkflowsView from "@/pages/WorkflowsView";
@@ -52,6 +54,7 @@ const NAV: NavSection[] = [
     items: [
       { id: "ask", label: "Ask", icon: MessageSquareText },
       { id: "workspaces", label: "Workspaces", icon: Users },
+      { id: "files", label: "Files", icon: FileSpreadsheet },
       { id: "messages", label: "Expert Messages", icon: MessagesSquare },
     ],
   },
@@ -297,6 +300,12 @@ export default function Dashboard() {
         {view === "workspaces" && (
           <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
             <WorkspacesView />
+          </main>
+        )}
+
+        {view === "files" && (
+          <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
+            <FilesView />
           </main>
         )}
 

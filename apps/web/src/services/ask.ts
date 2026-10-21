@@ -104,6 +104,16 @@ export interface ProposedWorkspace {
   unmatched_people?: ProposedWorkspaceUnmatched[];
 }
 
+/** A LoomBot Files CSV that Ask created or changed during a turn. */
+export interface FileChange {
+  file_id: string;
+  name: string;
+  action: "created" | "updated";
+  summary?: string;
+  row_count: number;
+  column_count: number;
+}
+
 export interface QueryResponse {
   answer: string;
   sources: Source[];
@@ -116,6 +126,7 @@ export interface QueryResponse {
   proposed_email?: ProposedEmail | null;
   proposed_pull_request?: ProposedPullRequest | null;
   proposed_workspace?: ProposedWorkspace | null;
+  file_changes?: FileChange[];
 }
 
 export interface ChatMessage {

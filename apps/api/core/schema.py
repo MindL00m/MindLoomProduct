@@ -354,6 +354,29 @@ _DURABLE_INTEGRATIONS_SQL = [
 ]
 
 
+# Per-user CSV files for the LoomBot Files tab (see loombot/files.py).
+_LOOMBOT_FILES_SQL = [
+    """CREATE TABLE IF NOT EXISTS loombot_files (
+    file_id          TEXT PRIMARY KEY,
+    org_id           TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    owner_user_id    TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    content          TEXT NOT NULL DEFAULT '',
+    previous_content TEXT,
+    row_count        INTEGER NOT NULL DEFAULT 0,
+    column_count     INTEGER NOT NULL DEFAULT 0,
+    last_edited_by   TEXT NOT NULL DEFAULT 'user'
+        CHECK (last_edited_by IN ('user', 'loombot')),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_loombot_files_owner_name
+  ON loombot_files (org_id, owner_user_id, lower(name))""",
+    """CREATE INDEX IF NOT EXISTS idx_loombot_files_owner_updated
+  ON loombot_files (org_id, owner_user_id, updated_at DESC)""",
+]
+
+
 async def ensure_schema() -> None:
     """Create the base schema on an empty database, then apply additive upgrades."""
 
@@ -375,5 +398,7 @@ async def ensure_schema() -> None:
             await session.execute(text(_LLM_SETTINGS_TABLE_SQL))
             await session.execute(text(_CHUNKS_VISIBILITY_SQL))
             for statement in _DURABLE_INTEGRATIONS_SQL:
+                await session.execute(text(statement))
+            for statement in _LOOMBOT_FILES_SQL:
                 await session.execute(text(statement))
     logger.info("Schema check complete (base tables, connections, captures, policies)")

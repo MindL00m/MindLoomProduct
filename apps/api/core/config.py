@@ -129,6 +129,14 @@ class Settings(BaseSettings):
             "New captures use Postgres + blob storage."
         ),
     )
+    openai_default_model: str = Field(
+        "gpt-6-luna",
+        description=(
+            "Default OpenAI chat model for Ask, ingestion metadata extraction, "
+            "retrieval query rewriting and workspace CONTEXT.md synthesis. An "
+            "organization's saved LLM settings override it for Ask."
+        ),
+    )
     capture_vision_model: str = Field(
         "gpt-4o-mini",
         description="Vision-capable model used to summarize approved captures.",

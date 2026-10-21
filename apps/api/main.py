@@ -85,6 +85,7 @@ from core.models import (
 )
 from api.routes.captures import router as captures_router
 from api.routes.connection_setup import router as connection_setup_router
+from api.routes.files import router as files_router
 from api.routes.github import router as github_router
 from api.routes.llm_settings import router as llm_settings_router
 from api.routes.reviews import router as reviews_router
@@ -155,6 +156,7 @@ app.add_middleware(
 )
 app.include_router(captures_router)
 app.include_router(connection_setup_router)
+app.include_router(files_router)
 app.include_router(github_router)
 app.include_router(llm_settings_router)
 app.include_router(reviews_router)

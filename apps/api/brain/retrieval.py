@@ -28,12 +28,12 @@ from sqlalchemy import text
 
 from core.config import get_settings
 from core.database import get_neo4j_driver, get_session_factory
+from core.llm_provider import get_default_openai_client
 from core.models import ChatMessage, ChunkResult, ExpertResult, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
 _EMBEDDING_MODEL = "text-embedding-3-small"
-_EXTRACTION_MODEL = "gpt-4o-mini"
 
 _CONDENSE_PROMPT = """\
 Given the conversation so far and a follow-up question, rewrite the follow-up as
@@ -321,7 +321,7 @@ _HEURISTIC_TITLE = re.compile(
 
 
 def _client() -> AsyncOpenAI:
-    """Build an OpenAI async client with the configured timeout."""
+    """Build an OpenAI async client with the configured timeout (embeddings)."""
 
     settings = get_settings()
     return AsyncOpenAI(
@@ -470,8 +470,8 @@ async def _condense_query(question: str, history: list[ChatMessage]) -> str:
         for turn in recent
     )
     try:
-        response = await _client().chat.completions.create(
-            model=_EXTRACTION_MODEL,
+        response = await get_default_openai_client().chat.completions.create(
+            model="",  # the adapter pins the configured default model
             messages=[
                 {
                     "role": "user",
@@ -492,15 +492,15 @@ async def _condense_query(question: str, history: list[ChatMessage]) -> str:
 
 
 async def _extract_entities(question: str) -> list[str]:
-    """Task 2 — extract named entities from the question via gpt-4o-mini.
+    """Task 2 — extract named entities from the question via the default chat model.
 
     Never raises: on any failure it logs and returns heuristic entities only.
     """
 
     heuristic = _heuristic_entities(question)
     try:
-        response = await _client().chat.completions.create(
-            model=_EXTRACTION_MODEL,
+        response = await get_default_openai_client().chat.completions.create(
+            model="",  # the adapter pins the configured default model
             messages=[{"role": "user", "content": _ENTITY_PROMPT.format(question=question)}],
             temperature=0,
         )

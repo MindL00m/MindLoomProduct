@@ -1,6 +1,6 @@
 """LLM-based metadata extraction for chunks.
 
-Makes a single ``gpt-4o-mini`` call per chunk that returns strict JSON matching
+Makes a single chat-completion call (default model ``gpt-6-luna``) per chunk that returns strict JSON matching
 :class:`ChunkMetadata`. On a parse failure it retries once with the validation
 error fed back into the prompt; a second failure downgrades the chunk to
 ``knowledge_type="noise"``.
@@ -10,15 +10,15 @@ from __future__ import annotations
 
 import logging
 
-from openai import AsyncOpenAI
+from typing import Any
+
 from pydantic import ValidationError
 
-from core.config import get_settings
+from core.llm_provider import get_default_openai_client
 from core.models import Chunk, ChunkMetadata
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gpt-4o-mini"
 
 _SCHEMA_INSTRUCTIONS = """\
 You are an information-extraction engine for an organisational knowledge graph.
@@ -130,11 +130,11 @@ def _noise_fallback(reason: str) -> ChunkMetadata:
     )
 
 
-async def _call_model(client: AsyncOpenAI, chunk: Chunk, prior_error: str | None) -> str:
+async def _call_model(client: Any, chunk: Chunk, prior_error: str | None) -> str:
     """Make one chat-completion call and return the raw response content."""
 
     response = await client.chat.completions.create(
-        model=_MODEL,
+        model="",  # the adapter pins the configured default model
         messages=_build_messages(chunk, prior_error),  # type: ignore[arg-type]
         temperature=0,
         response_format={"type": "json_object"},
@@ -153,11 +153,7 @@ async def extract_chunk_metadata(chunk: Chunk) -> ChunkMetadata:
         the model cannot produce valid JSON after one retry.
     """
 
-    settings = get_settings()
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
-    )
+    client = get_default_openai_client()
 
     prior_error: str | None = None
     for attempt in range(2):

@@ -3,8 +3,11 @@ import { Bot, Save } from "lucide-react";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { getLLMSettings, saveLLMSettings, type LLMSettings } from "@/services/llmSettings";
 
+/** Keep in sync with DEFAULT_OPENAI_MODEL in apps/api/core/llm_provider.py. */
+export const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
+
 const defaults: LLMSettings = {
-  provider: "openai", base_url: null, model: "gpt-4o-mini",
+  provider: "openai", base_url: null, model: DEFAULT_OPENAI_MODEL,
   context_window: 128000, supports_tools: true,
 };
 
@@ -36,7 +39,7 @@ export function LLMSettingsPanel() {
           <select className="mt-1 w-full rounded-md border border-border bg-background p-2" value={settings.provider}
             onChange={(e) => {
               const provider = e.target.value as LLMSettings["provider"];
-              setSettings({ ...settings, provider, model: provider === "openai" ? "gpt-4o-mini" : settings.model });
+              setSettings({ ...settings, provider, model: provider === "openai" ? DEFAULT_OPENAI_MODEL : settings.model });
             }}>
             <option value="openai">OpenAI</option><option value="local">Local / self-hosted</option>
           </select>

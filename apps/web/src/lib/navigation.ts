@@ -2,6 +2,7 @@ export type ViewId =
   | "home"
   | "ask"
   | "workspaces"
+  | "files"
   | "messages"
   | "import"
   | "capture"
@@ -11,6 +12,7 @@ const VIEW_IDS: readonly ViewId[] = [
   "home",
   "ask",
   "workspaces",
+  "files",
   "messages",
   "import",
   "capture",

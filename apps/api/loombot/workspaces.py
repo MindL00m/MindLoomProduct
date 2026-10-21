@@ -380,7 +380,7 @@ async def _loombot_reply_from_context(
 
     client = await get_llm_client(org_id)
     response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=client.configuration.model,
         temperature=0,
         messages=[
             {

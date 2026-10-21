@@ -190,3 +190,30 @@ def test_context_limit_keeps_system_and_latest_message() -> None:
     ]
     limited = llm_provider.limit_messages(messages, 1024)
     assert [message["content"] for message in limited] == ["rules", "latest"]
+
+
+def test_default_openai_model_is_gpt_6_luna() -> None:
+    assert llm_provider.DEFAULT_OPENAI_MODEL == "gpt-6-luna"
+    assert llm_provider.LLMConfiguration().model == "gpt-6-luna"
+
+
+@pytest.mark.asyncio
+async def test_org_without_settings_uses_default_model(monkeypatch) -> None:
+    monkeypatch.setattr(llm_provider, "get_session_factory", lambda: _factory_for(None))
+    config = await llm_provider.get_llm_configuration("org")
+    assert (config.provider, config.model) == ("openai", "gpt-6-luna")
+
+
+@pytest.mark.asyncio
+async def test_adapter_drops_rejected_response_format() -> None:
+    create = AsyncMock(side_effect=[
+        _bad_request("Invalid parameter: 'response_format' is not supported.", param="response_format"),
+        "ok",
+    ])
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client = llm_provider.LLMClientAdapter(sdk, llm_provider.LLMConfiguration())
+    result = await client.chat.completions.create(
+        model="ignored", messages=[], response_format={"type": "json_object"}
+    )
+    assert result == "ok"
+    assert "response_format" not in create.await_args.kwargs

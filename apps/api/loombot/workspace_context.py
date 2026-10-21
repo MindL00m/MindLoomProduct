@@ -5,17 +5,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI
 from sqlalchemy import text
 
-from core.config import get_settings
 from core.database import get_session_factory
+from core.llm_provider import get_default_openai_client
 from core.models import ExpertResult
 from keeper.review_workflows import lookup_messageable_people
 
 logger = logging.getLogger(__name__)
 
-_CONTEXT_MODEL = "gpt-4o-mini"
 _MAX_CONTEXT_CHARS = 8000
 _MAX_CHUNKS = 8
 
@@ -229,14 +227,10 @@ async def generate_workspace_context(
         f"{chr(10).join(chunk_blocks) or '(no snippets)'}\n"
     )
 
-    settings = get_settings()
-    client = AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
-    )
+    client = get_default_openai_client()
     try:
         response = await client.chat.completions.create(
-            model=_CONTEXT_MODEL,
+            model="",  # the adapter pins the configured default model
             temperature=0.2,
             messages=[
                 {"role": "system", "content": _SYNTH_SYSTEM},

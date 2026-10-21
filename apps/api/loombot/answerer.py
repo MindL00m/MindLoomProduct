@@ -1,4 +1,4 @@
-"""Answer generation over retrieved context via OpenAI ``gpt-4o-mini``.
+"""Answer generation over retrieved context via the org's chat model (default ``gpt-6-luna``).
 
 Builds a cited context string from the retrieved chunks, asks the model to
 answer strictly from that context, and derives a confidence/routing decision
@@ -12,13 +12,13 @@ import logging
 import re
 
 
-from core.llm_provider import get_llm_client
+from core.llm_provider import DEFAULT_OPENAI_MODEL, get_llm_client
 from brain.documents import CitationNotFoundError, DocumentRepository, get_citation
 from core.models import ChatMessage, ChunkResult, Citation, EphemeralDocument, QueryResponse, RetrievalResult
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gpt-4o-mini"
+_MODEL = DEFAULT_OPENAI_MODEL  # informational; the adapter uses the org setting
 
 _SYSTEM_PROMPT = """\
 You are MindLoom, an AI that answers questions strictly from 

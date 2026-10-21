@@ -938,6 +938,17 @@ class ProposedWorkspace(BaseModel):
     unmatched_people: list[ProposedWorkspaceUnmatched] = Field(default_factory=list)
 
 
+class FileChange(BaseModel):
+    """A LoomBot Files CSV that Ask created or changed during this turn."""
+
+    file_id: str
+    name: str
+    action: Literal["created", "updated"]
+    summary: str = ""
+    row_count: int = 0
+    column_count: int = 0
+
+
 class QueryResponse(BaseModel):
     """An answer generated from retrieved context, with routing metadata."""
 
@@ -970,6 +981,10 @@ class QueryResponse(BaseModel):
     proposed_workspace: Optional[ProposedWorkspace] = Field(
         default=None,
         description="Draft project workspace awaiting explicit user approval in Ask.",
+    )
+    file_changes: list[FileChange] = Field(
+        default_factory=list,
+        description="LoomBot Files CSVs Ask created or edited this turn (undoable).",
     )
 
 

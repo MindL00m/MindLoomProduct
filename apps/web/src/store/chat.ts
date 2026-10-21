@@ -31,6 +31,8 @@ export interface Turn {
   workspaceProposalState?: "pending" | "sending" | "sent" | "cancelled";
   workspaceProposalId?: string;
   workspaceProposalError?: string;
+  /** Local UI state for undoing LoomBot Files changes, keyed by file_id. */
+  fileChangeState?: Record<string, { status: "undoing" | "undone"; error?: string }>;
 }
 
 export type AttachmentScope = "chat" | "graph";

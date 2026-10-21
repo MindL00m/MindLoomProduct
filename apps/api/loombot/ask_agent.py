@@ -5,18 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
 
 from loombot import data_tools
+from loombot import files as files_service
 from loombot.answerer import generate_answer
 from core.config import get_settings
-from core.llm_provider import get_llm_client
+from core.llm_provider import DEFAULT_OPENAI_MODEL, get_llm_client
 from core.models import (
     ChatMessage,
     EphemeralDocument,
+    FileChange,
     MessageablePerson,
     ProposedEmail,
     ProposedExpertMessage,
@@ -31,15 +34,16 @@ from keeper.review_workflows import lookup_messageable_people
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gpt-4o-mini"
+_MODEL = DEFAULT_OPENAI_MODEL  # informational; the adapter uses the org setting
 _MAX_TOOL_ROUNDS = 5
 
 _AGENT_SYSTEM = """\
 You are MindLoom, a company knowledge assistant that can draft Expert Messages,
 draft emails, work with GitHub repositories when a token is configured,
 propose project workspaces with a CONTEXT.md file for Loombot, count mail in the
-user's connected mailboxes, and report project status from the Status board and
-knowledge graph.
+user's connected mailboxes, report project status from the Status board and
+knowledge graph, and create, read, and edit the user's CSV files in the LoomBot
+Files tab.
 
 Today is {today} (UTC). Resolve relative dates such as "today", "this week", or
 "last month" against this date.
@@ -117,8 +121,22 @@ Data rules:
   knowledge_inventory and say the number covers what MindLoom has indexed.
 - If a tool returns an error, explain it plainly. Never invent numbers.
 
+Files rules (CSV files in the user's LoomBot Files tab, not GitHub):
+- The user's files: {files_status}
+- To view or change a file, call read_csv_file first, then write_csv_file with
+  the COMPLETE new CSV (header row first). Keep every row and column the user
+  did not ask to change exactly as it was.
+- To create a file, call write_csv_file with a new name. Use a short name ending
+  in .csv and a header row.
+- write_csv_file saves immediately; the user can undo it from the chat or the
+  Files tab. Say what changed in one or two sentences. Do not paste the whole
+  CSV back unless the user asks to see it; show a small markdown table for
+  short previews instead.
+- You cannot delete files. Tell the user to delete them in the Files tab.
+- "File" questions about a repository, PR, or code are GitHub requests, not Files.
+
 - For ordinary knowledge questions that are not messaging, GitHub, workspace
-  creation, or data lookups, answer from context without tools.
+  creation, files, or data lookups, answer from context without tools.
 
 Context:
 {context_string}
@@ -484,7 +502,255 @@ _TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+_FILE_TOOLS_SPEC: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_csv_files",
+            "description": (
+                "List the user's CSV files in the LoomBot Files tab with their "
+                "row and column counts."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_csv_file",
+            "description": "Read the full contents of one of the user's CSV files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "File name, e.g. 'budget.csv'.",
+                    }
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_csv_file",
+            "description": (
+                "Create a CSV file, or replace an existing file's contents. Saves "
+                "immediately and can be undone by the user. Read an existing file "
+                "with read_csv_file before replacing it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "File name ending in .csv.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The COMPLETE CSV text, header row first.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "One short sentence describing the change.",
+                    },
+                },
+                "required": ["name", "content"],
+            },
+        },
+    },
+]
+_TOOLS.extend(_FILE_TOOLS_SPEC)
+
 _DATA_TOOLS = {"count_emails", "knowledge_inventory", "project_status"}
+_FILE_TOOLS = {"list_csv_files", "read_csv_file", "write_csv_file"}
+
+
+@dataclass
+class _FileToolState:
+    """Per-turn bookkeeping so Ask only overwrites files it has read."""
+
+    changes: list[FileChange] = field(default_factory=list)
+    read_ids: set[str] = field(default_factory=set)
+
+
+_FILE_TERMS = re.compile(
+    r"\b(?:csvs?|spreadsheets?|files tab|my files?|loombot files)\b"
+)
+_FILE_PARTS = re.compile(
+    r"\b(?:file|sheet|table|rows?|columns?|cells?|headers?)\b"
+)
+_FILE_EDIT_VERBS = re.compile(
+    r"\b(?:add|append|insert|remove|delete|drop|rename|change|update|edit|modify|"
+    r"set|fill|sort|replace|fix|put|create|make|open|show|read)\b"
+)
+
+
+def _mentions_file(text_lower: str, file_names: list[str]) -> bool:
+    """True when the text names one of the user's files (with or without .csv)."""
+
+    for name in file_names:
+        lowered = name.lower()
+        if lowered in text_lower:
+            return True
+        stem = lowered[:-4] if lowered.endswith(".csv") else lowered
+        if len(stem) >= 3 and re.search(rf"\b{re.escape(stem)}\b", text_lower) and (
+            _FILE_PARTS.search(text_lower) or _FILE_EDIT_VERBS.search(text_lower)
+        ):
+            return True
+    return False
+
+
+def _wants_files(
+    question: str,
+    file_names: list[str] | None = None,
+    history: list[ChatMessage] | None = None,
+) -> bool:
+    """CSV/Files-tab requests, including follow-ups about a file just discussed."""
+
+    lowered = " ".join(question.lower().split())
+    names = file_names or []
+    if _FILE_TERMS.search(lowered) or re.search(r"\.csv\b", lowered):
+        return True
+    if _mentions_file(lowered, names):
+        return True
+    if history and _FILE_EDIT_VERBS.search(lowered):
+        last_answer = next(
+            (turn.content.lower() for turn in reversed(history) if turn.role == "assistant"),
+            "",
+        )
+        if any(name.lower() in last_answer for name in names):
+            return True
+    return False
+
+
+async def _user_files(org_id: str, user_id: str) -> list[dict[str, Any]]:
+    try:
+        return await files_service.list_files(org_id, user_id)
+    except Exception:  # noqa: BLE001 - Ask must still answer if Files is unavailable
+        logger.warning("Could not list LoomBot files for Ask", exc_info=True)
+        return []
+
+
+def _files_status(files: list[dict[str, Any]]) -> str:
+    if not files:
+        return "none yet."
+    shown = files[:25]
+    listing = "; ".join(
+        f"{f['name']} ({f['row_count']} rows x {f['column_count']} columns)" for f in shown
+    )
+    if len(files) > len(shown):
+        listing += f"; and {len(files) - len(shown)} more (call list_csv_files)"
+    return listing + "."
+
+
+async def _run_file_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    org_id: str,
+    user_id: str,
+    state: _FileToolState,
+) -> dict[str, Any]:
+    if name == "list_csv_files":
+        files = await files_service.list_files(org_id, user_id)
+        return {
+            "files": [
+                {
+                    "name": f["name"],
+                    "rows": f["row_count"],
+                    "columns": f["column_count"],
+                    "updated_at": f["updated_at"],
+                }
+                for f in files
+            ]
+        }
+
+    file_name = str(arguments.get("name") or "").strip()
+    if not file_name:
+        return {"error": "name is required."}
+
+    if name == "read_csv_file":
+        found = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if found is None:
+            return {"error": f"No file named {file_name}. Call list_csv_files to see names."}
+        content = found["content"]
+        if len(content) > files_service.ASK_MAX_FILE_CHARS:
+            return {
+                "name": found["name"],
+                "rows": found["row_count"],
+                "columns": found["column_count"],
+                "truncated": True,
+                "preview": content[:4000],
+                "note": (
+                    "This file is too large for Ask to edit safely. You may "
+                    "describe it from the preview; edits must be made in the Files tab."
+                ),
+            }
+        state.read_ids.add(found["file_id"])
+        return {
+            "name": found["name"],
+            "rows": found["row_count"],
+            "columns": found["column_count"],
+            "content": content,
+        }
+
+    if name == "write_csv_file":
+        content = arguments.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return {"error": "content must be the complete CSV text."}
+        summary = str(arguments.get("summary") or "").strip()[:300]
+        existing = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if existing is None:
+            saved = await files_service.create_file(
+                org_id, user_id, file_name, content, edited_by="loombot"
+            )
+            action = "created"
+        else:
+            if len(existing["content"]) > files_service.ASK_MAX_FILE_CHARS:
+                return {
+                    "error": (
+                        f"{existing['name']} is too large for Ask to rewrite. "
+                        "Ask the user to edit it in the Files tab."
+                    )
+                }
+            if existing["file_id"] not in state.read_ids:
+                return {
+                    "error": (
+                        f"Call read_csv_file for {existing['name']} before replacing "
+                        "it, so no existing rows are lost."
+                    )
+                }
+            saved = await files_service.update_file(
+                org_id, user_id, existing["file_id"], content=content, edited_by="loombot"
+            )
+            action = "updated"
+        state.read_ids.add(saved["file_id"])
+        change = FileChange(
+            file_id=saved["file_id"],
+            name=saved["name"],
+            action=action,
+            summary=summary,
+            row_count=saved["row_count"],
+            column_count=saved["column_count"],
+        )
+        # Several writes to one file in a turn collapse to one card; a file
+        # created this turn stays "created".
+        prior = next((c for c in state.changes if c.file_id == change.file_id), None)
+        if prior is not None:
+            change.action = prior.action
+            state.changes.remove(prior)
+        state.changes.append(change)
+        return {
+            "saved": True,
+            "action": action,
+            "name": saved["name"],
+            "rows": saved["row_count"],
+            "columns": saved["column_count"],
+        }
+
+    return {"error": f"Unknown tool: {name}"}
 
 
 def _history_messages(history: list[ChatMessage]) -> list[dict[str, str]]:
@@ -907,6 +1173,7 @@ async def _run_tool(
     user_id: str,
     people_cache: dict[str, dict],
     google_connected: bool = False,
+    file_state: _FileToolState | None = None,
 ) -> tuple[
     Any,
     ProposedExpertMessage | None,
@@ -914,6 +1181,15 @@ async def _run_tool(
     ProposedWorkspace | None,
     ProposedEmail | None,
 ]:
+    if name in _FILE_TOOLS:
+        return await _run_file_tool(
+            name,
+            arguments,
+            org_id=org_id,
+            user_id=user_id,
+            state=file_state if file_state is not None else _FileToolState(),
+        ), None, None, None, None
+
     if name == "lookup_person":
         query = str(arguments.get("query") or "").strip()
         people = await lookup_messageable_people(
@@ -1248,6 +1524,13 @@ async def _with_cited_sources(
     return [*sources, *extra]
 
 
+def _only_cited(answer: str, sources: list[Any]) -> list[Any]:
+    """Drop retrieved-but-uncited sources from answers about the user's files."""
+
+    cited = set(_CITED_CHUNK_RE.findall(answer or ""))
+    return [source for source in sources if source.chunk_id in cited]
+
+
 async def run_ask_agent(
     *,
     question: str,
@@ -1263,7 +1546,9 @@ async def run_ask_agent(
     wants_gh = _wants_github(question)
     wants_ws = _wants_workspace(question)
     wants_data = _wants_data(question)
-    if not wants_msg and not wants_gh and not wants_ws and not wants_data:
+    user_files = await _user_files(org_id, user_id)
+    wants_files = _wants_files(question, [f["name"] for f in user_files], history)
+    if not wants_msg and not wants_gh and not wants_ws and not wants_data and not wants_files:
         return await generate_answer(
             question, retrieval, history, org_id, ephemeral_documents
         )
@@ -1299,6 +1584,7 @@ async def run_ask_agent(
             "content": _AGENT_SYSTEM.format(
                 context_string=context_string,
                 gmail_status=gmail_status,
+                files_status=_files_status(user_files),
                 today=datetime.now(timezone.utc).strftime("%A, %d %B %Y"),
             ),
         },
@@ -1313,6 +1599,8 @@ async def run_ask_agent(
     ws_proposal: ProposedWorkspace | None = None
     used_github = False
     used_data = False
+    used_files = False
+    file_state = _FileToolState()
 
     def _messaging_answer() -> str:
         if email_proposal is not None:
@@ -1348,10 +1636,11 @@ async def run_ask_agent(
             )
         # Knowledge answers already use explicit retrieval then prompting. Actions
         # that require structured arguments fail safely instead of being guessed.
-        if wants_gh or wants_ws or wants_data:
+        if wants_gh or wants_ws or wants_data or wants_files:
             base.answer += (
                 "\n\nThe active local model is configured without structured tool "
-                "calling, so I could not use connectors or the Status board for this."
+                "calling, so I could not use connectors, Files, or the Status board "
+                "for this."
             )
         return base
 
@@ -1427,7 +1716,10 @@ async def run_ask_agent(
                 if proposal is None and email_proposal is None
                 else []
             )
+            if used_files and not (used_github or used_data):
+                sources = _only_cited(answer, sources)
             return QueryResponse(
+                file_changes=list(file_state.changes),
                 answer=answer,
                 sources=sources,
                 expert=None,
@@ -1435,7 +1727,7 @@ async def run_ask_agent(
                 confidence=(
                     "high"
                     if proposal or email_proposal or pr_proposal or ws_proposal
-                    or used_github or used_data
+                    or used_github or used_data or used_files
                     else base.confidence
                 ),
                 routed=False,
@@ -1474,6 +1766,8 @@ async def run_ask_agent(
                 used_github = True
             if call.function.name in _DATA_TOOLS:
                 used_data = True
+            if call.function.name in _FILE_TOOLS:
+                used_files = True
             result, maybe_proposal, maybe_pr, maybe_ws, maybe_email = await _safe_run_tool(
                 name=call.function.name,
                 arguments=args if isinstance(args, dict) else {},
@@ -1481,6 +1775,7 @@ async def run_ask_agent(
                 user_id=user_id,
                 people_cache=people_cache,
                 google_connected=google_connected,
+                file_state=file_state,
             )
             if maybe_proposal is not None:
                 proposal = maybe_proposal
@@ -1497,11 +1792,14 @@ async def run_ask_agent(
                     "content": json.dumps(data_tools.jsonable(result), default=str),
                 }
             )
-        if (proposal is not None or email_proposal is not None) and not wants_gh and not wants_ws:
+        if (
+            (proposal is not None or email_proposal is not None)
+            and not wants_gh and not wants_ws and not wants_files
+        ):
             break
-        if pr_proposal is not None and not wants_msg and not wants_ws:
+        if pr_proposal is not None and not wants_msg and not wants_ws and not wants_files:
             break
-        if ws_proposal is not None and not wants_msg and not wants_gh:
+        if ws_proposal is not None and not wants_msg and not wants_gh and not wants_files:
             break
 
     if wants_msg:
@@ -1517,6 +1815,7 @@ async def run_ask_agent(
     messaging_answer = _messaging_answer()
     if messaging_answer:
         return QueryResponse(
+            file_changes=list(file_state.changes),
             answer=messaging_answer,
             sources=[],
             expert=None,
@@ -1537,6 +1836,7 @@ async def run_ask_agent(
             "Review the diff and approve to open the PR."
         )
         return QueryResponse(
+            file_changes=list(file_state.changes),
             answer=answer,
             sources=base.sources,
             expert=None,
@@ -1551,6 +1851,7 @@ async def run_ask_agent(
 
     if ws_proposal is not None:
         return QueryResponse(
+            file_changes=list(file_state.changes),
             answer=_workspace_answer(ws_proposal),
             sources=base.sources,
             expert=None,
@@ -1583,11 +1884,12 @@ async def run_ask_agent(
     )
     answer = (final.choices[0].message.content or "").strip() or base.answer
     return QueryResponse(
+        file_changes=list(file_state.changes),
         answer=answer,
         sources=await _with_cited_sources(answer, base.sources, org_id, user_id),
         expert=None,
         expert_request_created=False,
-        confidence="high" if used_github or used_data else base.confidence,
+        confidence="high" if used_github or used_data or used_files else base.confidence,
         routed=False,
         routed_reason=None,
         proposed_message=None,

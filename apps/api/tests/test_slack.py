@@ -346,6 +346,69 @@ async def test_thread_ingest_keeps_channel_members_and_drops_the_bot(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_slack_pagination_sends_integer_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def api(_token: str, method: str, args: dict | None = None) -> dict:
+        calls.append((method, dict(args or {})))
+        return {"messages": [], "members": [], "response_metadata": {}}
+
+    monkeypatch.setattr(slack, "slack_api", api)
+    monkeypatch.setattr(slack, "_cache_get", lambda *_a, **_k: _none())
+    monkeypatch.setattr(slack, "_cache_set", lambda *_a, **_k: _none())
+
+    await slack._thread_messages("xoxb", "C1", "1.0")
+    await slack._member_emails("xoxb", "T1", "C1")
+
+    async def fetch(_install_id: str) -> dict:
+        return _install()
+
+    monkeypatch.setattr(slack, "fetch_install", fetch)
+    monkeypatch.setattr(slack, "_token", lambda _install: "xoxb")
+    await slack.backfill_install("inst-1", 7)
+
+    limits = {method: args["limit"] for method, args in calls if "limit" in args}
+    assert limits["conversations.replies"] == 200
+    assert limits["conversations.members"] == 200
+    assert limits["conversations.history"] == 100
+    assert all(isinstance(limit, int) for limit in limits.values())
+
+
+async def _none(*_args: object, **_kwargs: object):
+    return None
+
+
+@pytest.mark.asyncio
+async def test_history_survives_slack_argument_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def boom(*_args: object, **_kwargs: object) -> list:
+        raise slack.SlackApiError("invalid_arguments")
+
+    monkeypatch.setattr(slack, "_thread_messages", boom)
+    history = await slack._history(_install(), "xoxb", "C1", "1.0", "1.1")
+    assert history == []
+
+
+@pytest.mark.asyncio
+async def test_cached_user_skips_blank_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def api(*_args: object, **_kwargs: object) -> dict:
+        raise AssertionError("users.info must not be called for a blank id")
+
+    monkeypatch.setattr(slack, "slack_api", api)
+    assert await slack.cached_user("xoxb", "T1", "") == {}
+    assert await slack.cached_user("xoxb", "T1", "   ") == {}
+
+
+@pytest.mark.asyncio
+async def test_unresolved_slack_user_does_not_abort_the_mention(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def missing(*_args: object, **_kwargs: object) -> dict:
+        raise slack.SlackApiError("user_not_found")
+
+    monkeypatch.setattr(slack, "cached_user", missing)
+    monkeypatch.setattr(slack, "_token", lambda _install: "xoxb")
+    assert await slack._slack_user(_install(), "U1") is None
+
+
+@pytest.mark.asyncio
 async def test_credentials_reject_a_workspace_linked_to_another_org(monkeypatch: pytest.MonkeyPatch) -> None:
     async def existing(_org_id: str) -> dict:
         return _install()

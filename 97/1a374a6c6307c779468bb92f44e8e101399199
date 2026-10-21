@@ -1,0 +1,68 @@
+apps/api/api/routes/files.py
+  s_218d62697339ad::t_0c6b2dca06f81e 69-96
+apps/api/api/routes/status.py
+  s_218d62697339ad::t_d67c6ecb2c90ff 1,3-4,8,42-103
+apps/api/brain/embedder.py
+  s_218d62697339ad::t_bef1f36648e1ab 46-57
+apps/api/brain/pipeline.py
+  s_218d62697339ad::t_5b3e674487962d 17,78-115,197-203,358-359,554-555
+apps/api/core/models.py
+  s_218d62697339ad::t_cfc02633008a14 946,950-962,1002-1005
+apps/api/core/schema.py
+  s_218d62697339ad::t_ffee305459230c 379-456,482-485
+apps/api/db/migrations/008_status_trackers.sql
+  s_218d62697339ad::t_2ff8b0ed0acc3a 1-43
+apps/api/db/migrations/009_file_monitoring.sql
+  s_218d62697339ad::t_b63795d2a778f0 1-28
+apps/api/lens/status_trackers.py
+  s_218d62697339ad::t_f04d9052392be4 1-553
+apps/api/loombot/ask_agent.py
+  s_218d62697339ad::t_e6a5704e1723d7 24,114-116,124,136-147,165-184,536-538,606-621,628-653,712-743,746,751-752,766-770,772,780,814-822,870-871,903-904,939-964,972-973,982,988-1026,1081-1085,1490,1757-1793,1807-1809,1974,2090,2094,2153,2194,2216,2232,2266
+apps/api/loombot/data_tools.py
+  s_218d62697339ad::t_bf5b4d7a43f9ac 551,553
+apps/api/loombot/file_monitor.py
+  s_218d62697339ad::t_fbafe396aa3814 1-251
+apps/api/loombot/files.py
+  s_218d62697339ad::t_10abe30ab1bb9a 6-10,17,39-41,107-109,289-377
+apps/api/tests/test_email_search.py
+  s_218d62697339ad::t_673f9356ac0c7d 125,129,256-284
+apps/api/tests/test_file_monitor.py
+  s_218d62697339ad::t_353bf7109b4f9f 1-136
+apps/api/tests/test_status_trackers.py
+  s_218d62697339ad::t_0ba8bd6acaefa8 1-115
+apps/web/src/pages/AskView.tsx
+  s_218d62697339ad::t_946796ccf9c3d6 3,15,31,41,43,869-870,954-979,991-1010,1014,1044-1053,1067-1103
+apps/web/src/pages/FilesView.tsx
+  s_218d62697339ad::t_135190f4a8d9fb 10,22,24,28,246-248,295-296,336-340,424-451,457,710-711,858-1038
+apps/web/src/pages/StatusView.tsx
+  s_218d62697339ad::t_b68c18732a0dc6 1-2,4-6,8-10,12,15-24,28,30-53,55-56,59-60,64-74,77-86,88-92,94-106,108-114,116-122,124-156,158-167,169-177,179-187,189-217,219,221-228,230-240,242-248,250-251,255-258,260-262,264-265,268-270,273-281,283-291,293-295,299-303,305-318,320,322,324,328-338,341-348,350,352-400,402-443,445
+apps/web/src/services/ask.ts
+  s_218d62697339ad::t_c8839fdd301b10 111,115-127,143
+apps/web/src/services/files.ts
+  s_218d62697339ad::t_630f4467afb0bc 14-29,89-108
+apps/web/src/services/status.ts
+  s_218d62697339ad::t_99c1113487d59b 1,5,7-11,13-17,20-29,32-33,36-46,49-50,53-54,57-61,64-83
+apps/web/src/store/chat.ts
+  s_218d62697339ad::t_537bfe433b7d44 35-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "971a374a6c6307c779468bb92f44e8e101399199",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_218d62697339ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69cc522b-4948-4666-baec-7d8d3dffdf3c",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

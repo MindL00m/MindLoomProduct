@@ -500,16 +500,37 @@ async def _redis():
         await client.aclose()
 
 
-async def slack_api(token: str, method: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Call a Slack Web API method. Honours HTTP 429 Retry-After."""
+def _form_args(args: Mapping[str, Any] | None) -> dict[str, str]:
+    """Encode Web API arguments the way Slack's form endpoint expects them."""
 
-    body = {key: value for key, value in (args or {}).items() if value is not None}
+    encoded: dict[str, str] = {}
+    for key, value in (args or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            encoded[key] = "true" if value else "false"
+        elif isinstance(value, (dict, list)):
+            encoded[key] = json.dumps(value)
+        else:
+            encoded[key] = str(value)
+    return encoded
+
+
+async def slack_api(token: str, method: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Call a Slack Web API method. Honours HTTP 429 Retry-After.
+
+    Arguments are sent form-encoded. Slack only reads JSON bodies on write
+    methods such as chat.postMessage; read methods such as users.info and
+    conversations.replies ignore JSON arguments and fail (e.g. user_not_found).
+    """
+
+    body = _form_args(args)
     async with httpx.AsyncClient(timeout=20) as client:
         for _attempt in range(3):
             response = await client.post(
                 f"https://slack.com/api/{method}",
                 headers={"Authorization": f"Bearer {token}"},
-                json=body,
+                data=body,
             )
             if response.status_code == 429:
                 await asyncio.sleep(float(response.headers.get("Retry-After") or "1"))

@@ -449,3 +449,30 @@ def test_settings_route_rejects_non_admins(monkeypatch: pytest.MonkeyPatch) -> N
         "unlinked_user_policy": "ignore",
     })
     assert response.status_code == 403
+
+
+async def test_slack_api_sends_form_encoded_arguments(monkeypatch) -> None:
+    """Read methods like users.info ignore JSON bodies, so every call is form-encoded."""
+
+    import httpx
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True, "user": {"id": "U1"}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        slack.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    await slack.slack_api("xoxb-test", "users.info", {"user": "U1", "include_locale": True, "skip": None})
+
+    request = seen[0]
+    assert request.url.path == "/api/users.info"
+    assert request.headers["content-type"].startswith("application/x-www-form-urlencoded")
+    assert request.content.decode() == "user=U1&include_locale=true"
+    assert request.headers["authorization"] == "Bearer xoxb-test"

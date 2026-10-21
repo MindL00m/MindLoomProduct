@@ -548,9 +548,9 @@ async def search_emails(
     folder: str = "all_received",
     unread_only: bool = False,
     max_results: int | None = None,
-    include_body: bool = False,
+    include_body: bool = True,
 ) -> dict[str, Any]:
-    """Search the caller's Gmail live, newest first, optionally with body text."""
+    """Search the caller's Gmail live, newest first, with body text by default."""
 
     start, end = _parse_day(start_date), _parse_day(end_date)
     if start and end and end < start:

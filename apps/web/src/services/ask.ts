@@ -108,10 +108,23 @@ export interface ProposedWorkspace {
 export interface FileChange {
   file_id: string;
   name: string;
-  action: "created" | "updated";
+  action: "created" | "updated" | "monitoring";
   summary?: string;
   row_count: number;
   column_count: number;
+  /** "suggested" means LoomBot is asking whether to keep the file updated. */
+  monitoring?: "on" | "off" | "suggested";
+  monitor_instructions?: string | null;
+}
+
+/** A self-updating status tracker Ask started (or found) for a request. */
+export interface StatusTrackerCard {
+  tracker_id: string;
+  title: string;
+  status: "on_track" | "at_risk" | "blocked" | "done" | "unknown";
+  summary: string;
+  created: boolean;
+  update_count: number;
 }
 
 export interface QueryResponse {
@@ -127,6 +140,7 @@ export interface QueryResponse {
   proposed_pull_request?: ProposedPullRequest | null;
   proposed_workspace?: ProposedWorkspace | null;
   file_changes?: FileChange[];
+  status_tracker?: StatusTrackerCard | null;
 }
 
 export interface ChatMessage {

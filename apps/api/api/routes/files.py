@@ -66,3 +66,31 @@ async def delete_file(
 ) -> Response:
     await files_service.delete_file(*ctx, file_id)
     return Response(status_code=204)
+
+
+class MonitoringInput(BaseModel):
+    enabled: bool
+    instructions: str | None = Field(default=None, max_length=1000)
+
+
+@router.put("/{file_id}/monitoring")
+async def set_monitoring(
+    file_id: str,
+    body: MonitoringInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Turn automatic updates from new knowledge on or off for a file."""
+
+    return await files_service.set_monitoring(
+        *ctx, file_id, enabled=body.enabled, instructions=body.instructions
+    )
+
+
+@router.get("/{file_id}/events")
+async def file_events(
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    """Automatic changes monitoring made to this file, newest first."""
+
+    return await files_service.list_events(*ctx, file_id)

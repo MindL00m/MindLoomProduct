@@ -122,11 +122,11 @@ async def test_search_emails_builds_query_and_reads_bodies_newest_first(monkeypa
     assert all(r.url.params.get("format") == "full" for r in requests[1:])
 
 
-async def test_search_emails_metadata_only_by_default(monkeypatch) -> None:
+async def test_search_emails_can_skip_bodies(monkeypatch) -> None:
     _connect_gmail(monkeypatch)
     requests = _mock_http(monkeypatch, _gmail_handler)
 
-    result = await data_tools.search_emails("org-1", "u-1", max_results=1)
+    result = await data_tools.search_emails("org-1", "u-1", max_results=1, include_body=False)
 
     assert requests[0].url.params["maxResults"] == "1"
     assert "body" not in result["messages"][0]
@@ -253,3 +253,32 @@ async def test_ask_turns_squarespace_codes_into_a_file(monkeypatch) -> None:
     assert saved["edited_by"] == "loombot"
     assert [(c.name, c.action) for c in response.file_changes] == [("squarespace-codes.csv", "created")]
     assert response.answer == "Saved **2 codes** to squarespace-codes.csv."
+
+
+async def test_search_emails_returns_bodies_by_default(monkeypatch) -> None:
+    _connect_gmail(monkeypatch)
+    requests = _mock_http(monkeypatch, _gmail_handler)
+
+    result = await data_tools.search_emails("org-1", "u-1", sender="slack", max_results=1)
+
+    assert requests[1].url.params["format"] == "full"
+    assert result["messages"][0]["body"]
+
+
+async def test_ask_reads_bodies_when_the_model_omits_include_body(monkeypatch) -> None:
+    seen: list[dict] = []
+
+    async def fake_search(org_id, user_id, **kwargs):
+        seen.append(kwargs)
+        return {"messages": []}
+
+    monkeypatch.setattr(data_tools, "search_emails", fake_search)
+    await ask_agent._safe_run_tool(
+        name="search_emails", arguments={"sender": "slack", "max_results": 1},
+        org_id="o", user_id="u", people_cache={},
+    )
+    await ask_agent._safe_run_tool(
+        name="search_emails", arguments={"sender": "slack", "include_body": False},
+        org_id="o", user_id="u", people_cache={},
+    )
+    assert [call["include_body"] for call in seen] == [True, False]

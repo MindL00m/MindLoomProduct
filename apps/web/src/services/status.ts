@@ -1,84 +1,83 @@
-/** Status board API: open projects, reports, and action items. */
+/** Status trackers: Ask-requested status reports that update themselves. */
 
 import { apiFetch } from "@/lib/api";
 
-export type StatusItemKind = "project" | "issue" | "action_item";
+export type TrackerStatus = "on_track" | "at_risk" | "blocked" | "done" | "unknown";
 
-export interface StatusEvidence {
-  chunk_id: string;
-  summary: string;
-  source: string;
-  source_label: string;
-  knowledge_type?: string;
-  end_time?: string | null;
-  excerpt?: string;
-}
-
-export interface StatusProject {
-  entity_id: string;
-  name: string;
-  work_status: "open" | "closed";
-  current_status?: string;
-  last_signal_at?: string | null;
-  closed_at?: string | null;
-  recent_updates?: StatusEvidence[];
-  evidence: StatusEvidence[];
-}
-
-export interface StatusIssue {
-  issue_id: string;
+export interface StatusTrackerSummary {
+  tracker_id: string;
   title: string;
-  kind: "problem_report" | "status_update";
-  status: "open" | "closed";
-  project?: string | null;
-  created_at?: string | null;
-  last_seen_at?: string | null;
-  closed_at?: string | null;
-  evidence: StatusEvidence[];
+  topic: string;
+  status: TrackerStatus;
+  summary: string;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  last_update_at?: string | null;
+  update_count: number;
 }
 
-export interface StatusActionItem {
-  action_item_id: string;
-  text: string;
-  status: "open" | "done" | "cancelled";
-  assignee?: string | null;
-  project?: string | null;
-  created_at?: string | null;
-  last_signal_at?: string | null;
-  closed_at?: string | null;
-  evidence: StatusEvidence[];
+export interface StatusTrackerUpdate {
+  update_id: string;
+  kind: "created" | "history" | "update";
+  summary: string;
+  status?: TrackerStatus | null;
+  occurred_at: string;
+  created_at: string;
+  source_chunk_ids: string[];
+  source_label?: string | null;
+  source_url?: string | null;
 }
 
-export interface OpenStatus {
-  projects: StatusProject[];
-  issues: StatusIssue[];
-  action_items: StatusActionItem[];
+export interface StatusTracker extends StatusTrackerSummary {
+  updates: StatusTrackerUpdate[];
 }
 
-export async function getOpenStatus(): Promise<OpenStatus> {
-  const res = await apiFetch("/status/open");
-  if (!res.ok) {
-    throw new Error(`Could not load status board (${res.status})`);
+async function request<T>(path: string, init: RequestInit, fallback: string): Promise<T> {
+  const response = await apiFetch(`/status/trackers${path}`, {
+    ...init,
+    headers: init.body ? { "Content-Type": "application/json" } : undefined,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(typeof body.detail === "string" ? body.detail : fallback);
   }
-  return res.json();
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
 }
 
-export async function finishStatusItem(
-  kind: StatusItemKind,
-  itemId: string,
-): Promise<void> {
-  const res = await apiFetch(
-    `/status/${kind}/${encodeURIComponent(itemId)}/finish`,
-    { method: "POST" },
+export function listTrackers(): Promise<StatusTrackerSummary[]> {
+  return request("", { method: "GET" }, "Could not load status trackers.");
+}
+
+export function getTracker(trackerId: string): Promise<StatusTracker> {
+  return request(`/${encodeURIComponent(trackerId)}`, { method: "GET" }, "Could not load tracker.");
+}
+
+export function createTracker(subject: string): Promise<StatusTracker & { created: boolean }> {
+  return request(
+    "",
+    { method: "POST", body: JSON.stringify({ subject }) },
+    "Could not start tracking.",
   );
-  if (!res.ok) {
-    let detail = `Could not mark item finished (${res.status})`;
-    try {
-      const body = (await res.json()) as { detail?: unknown };
-      if (typeof body.detail === "string" && body.detail) detail = body.detail;
-    } catch {
-      /* ignore non-JSON */
-    }
-    throw new Error(detail);
-  }
 }
+
+export function setTrackerArchived(trackerId: string, archived: boolean): Promise<StatusTracker> {
+  return request(
+    `/${encodeURIComponent(trackerId)}`,
+    { method: "PATCH", body: JSON.stringify({ archived }) },
+    "Could not update tracker.",
+  );
+}
+
+export function deleteTracker(trackerId: string): Promise<void> {
+  return request(`/${encodeURIComponent(trackerId)}`, { method: "DELETE" }, "Could not stop tracking.");
+}
+
+export const STATUS_LABELS: Record<TrackerStatus, string> = {
+  on_track: "On track",
+  at_risk: "At risk",
+  blocked: "Blocked",
+  done: "Done",
+  unknown: "No status yet",
+};

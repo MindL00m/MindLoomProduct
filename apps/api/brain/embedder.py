@@ -43,3 +43,15 @@ async def embed_chunk(chunk: Chunk, metadata: ChunkMetadata) -> list[float]:
     vector = response.data[0].embedding
     logger.debug("Embedded chunk %s (%d dims)", chunk.chunk_id, len(vector))
     return list(vector)
+
+
+async def embed_text(text: str) -> list[float]:
+    """Embed free text (e.g. a status tracker's subject) with the chunk model."""
+
+    settings = get_settings()
+    client = AsyncOpenAI(
+        api_key=settings.openai_api_key,
+        timeout=settings.openai_request_timeout_seconds,
+    )
+    response = await client.embeddings.create(model=_MODEL, input=text[:8000])
+    return list(response.data[0].embedding)

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Activity,
   ArrowUp,
   Database,
   FileSpreadsheet,
@@ -11,6 +12,7 @@ import {
   MessageSquarePlus,
   MessageSquareText,
   Paperclip,
+  Radar,
   Sparkles,
   Trash2,
   Undo2,
@@ -26,6 +28,7 @@ import {
   type EphemeralDocument,
   type FileChange,
   type ProposedEmail,
+  type StatusTrackerCard,
   type ProposedExpertMessage,
   type ProposedPullRequest,
   type ProposedWorkspace,
@@ -35,8 +38,9 @@ import {
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
-import { getFile, undoFile } from "@/services/files";
+import { getFile, setFileMonitoring, undoFile } from "@/services/files";
 import { Markdown, type CitationRenderer } from "@/components/Markdown";
+import { StatusPill } from "@/pages/StatusView";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
@@ -862,6 +866,8 @@ function AnswerView({
         renderCitation={citationRenderer(response.sources)}
       />
 
+      {response.status_tracker && <TrackerCard tracker={response.status_tracker} />}
+
       {(response.file_changes?.length ?? 0) > 0 && (
         <FileChangesCard
           changes={response.file_changes!}
@@ -945,6 +951,32 @@ function AnswerView({
   );
 }
 
+function TrackerCard({ tracker }: { tracker: StatusTrackerCard }) {
+  return (
+    <div
+      data-testid="status-tracker-card"
+      className="flex flex-wrap items-start gap-3 rounded-lg border border-border bg-card px-3 py-2.5 text-sm"
+    >
+      <Activity className="mt-0.5 size-4 shrink-0 text-primary" />
+      <div className="min-w-0 flex-1">
+        <p className="flex flex-wrap items-center gap-2 font-medium">
+          {tracker.created ? "Now tracking" : "Already tracking"}: {tracker.title}
+          <StatusPill status={tracker.status} />
+        </p>
+        <p className="text-xs text-muted-foreground">
+          The tracker on Home updates itself whenever new information arrives.
+        </p>
+      </div>
+      <a
+        href={`/dashboard?tab=home&tracker=${encodeURIComponent(tracker.tracker_id)}`}
+        className="shrink-0 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+      >
+        View tracker
+      </a>
+    </div>
+  );
+}
+
 function FileChangesCard({
   changes,
   state,
@@ -956,12 +988,30 @@ function FileChangesCard({
 }) {
   const current = state ?? {};
 
-  function setState(fileId: string, value: { status: "undoing" | "undone"; error?: string }) {
-    onPatch({ fileChangeState: { ...current, [fileId]: value } });
+  type Entry = NonNullable<Turn["fileChangeState"]>[string];
+  function setState(fileId: string, value: Entry) {
+    onPatch({ fileChangeState: { ...current, [fileId]: { ...current[fileId], ...value } } });
+  }
+
+  async function answerMonitoring(change: FileChange, keep: boolean) {
+    if (!keep) {
+      setState(change.file_id, { monitor: "declined", error: undefined });
+      return;
+    }
+    setState(change.file_id, { monitor: "saving", error: undefined });
+    try {
+      await setFileMonitoring(change.file_id, true, change.monitor_instructions ?? undefined);
+      setState(change.file_id, { monitor: "on" });
+    } catch (err) {
+      setState(change.file_id, {
+        monitor: undefined,
+        error: err instanceof Error ? err.message : "Could not turn on automatic updates.",
+      });
+    }
   }
 
   async function undo(change: FileChange) {
-    setState(change.file_id, { status: "undoing" });
+    setState(change.file_id, { status: "undoing", error: undefined });
     try {
       // Only roll back if LoomBot's edit is still the latest one; otherwise
       // undo would discard whatever the user changed afterwards.
@@ -991,7 +1041,16 @@ function FileChangesCard({
           const entry = current[change.file_id];
           const undone = entry?.status === "undone";
           const undoing = entry?.status === "undoing" && !entry.error;
-          const verb = change.action === "created" ? "Created" : "Updated";
+          const verb =
+            change.action === "created"
+              ? "Created"
+              : change.action === "monitoring"
+                ? change.monitoring === "on"
+                  ? "Keeping updated:"
+                  : "Stopped updating:"
+                : "Updated";
+          const monitoring = entry?.monitor === "on" ? "on" : change.monitoring;
+          const asking = change.monitoring === "suggested" && !entry?.monitor;
           return (
             <li key={change.file_id} className="flex flex-wrap items-start gap-3 px-3 py-2.5">
               <FileSpreadsheet className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -1005,6 +1064,43 @@ function FileChangesCard({
                     : change.summary ||
                       `${change.row_count.toLocaleString()} rows · ${change.column_count} columns`}
                 </p>
+                {monitoring === "on" && (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-primary">
+                    <Radar className="size-3" /> Updates automatically
+                    {change.monitor_instructions ? `: ${change.monitor_instructions}` : ""}
+                  </p>
+                )}
+                {entry?.monitor === "declined" && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Not updated automatically. You can turn this on later in Files.
+                  </p>
+                )}
+                {(asking || entry?.monitor === "saving") && (
+                  <div className="mt-2 rounded-md border border-primary/30 bg-brand-50 px-2.5 py-2 text-xs">
+                    <p className="text-foreground">
+                      Keep this file updated as new information arrives?
+                      {change.monitor_instructions ? ` ${change.monitor_instructions}` : ""}
+                    </p>
+                    <div className="mt-1.5 flex gap-1.5">
+                      <button
+                        type="button"
+                        disabled={entry?.monitor === "saving"}
+                        onClick={() => void answerMonitoring(change, true)}
+                        className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-50"
+                      >
+                        {entry?.monitor === "saving" ? "Turning on…" : "Keep it updated"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={entry?.monitor === "saving"}
+                        onClick={() => void answerMonitoring(change, false)}
+                        className="rounded-md border border-border bg-card px-2.5 py-1 font-medium disabled:opacity-50"
+                      >
+                        No thanks
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {entry?.error && <p className="mt-1 text-xs text-destructive">{entry.error}</p>}
               </div>
               <div className="flex shrink-0 items-center gap-2">

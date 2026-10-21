@@ -32,7 +32,15 @@ export interface Turn {
   workspaceProposalId?: string;
   workspaceProposalError?: string;
   /** Local UI state for undoing LoomBot Files changes, keyed by file_id. */
-  fileChangeState?: Record<string, { status: "undoing" | "undone"; error?: string }>;
+  fileChangeState?: Record<
+    string,
+    {
+      status?: "undoing" | "undone";
+      /** Answer to "keep this file updated?" given on the card. */
+      monitor?: "saving" | "on" | "declined";
+      error?: string;
+    }
+  >;
 }
 
 export type AttachmentScope = "chat" | "graph";

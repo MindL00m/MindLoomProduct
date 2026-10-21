@@ -7,6 +7,7 @@ import {
   FileSpreadsheet,
   Loader2,
   Plus,
+  Radar,
   Save,
   Trash2,
   Undo2,
@@ -18,10 +19,13 @@ import {
   createFile,
   deleteFile,
   getFile,
+  listFileEvents,
   listFiles,
+  setFileMonitoring,
   undoFile,
   updateFile,
   type LoomFile,
+  type LoomFileEvent,
   type LoomFileMeta,
 } from "@/services/files";
 import { cn } from "@/lib/utils";
@@ -239,6 +243,9 @@ function FileList({
                 {f.last_edited_by === "loombot" && (
                   <Bot className="size-3 shrink-0" aria-label="Last edited by LoomBot" />
                 )}
+                {f.monitor_enabled && (
+                  <Radar className="size-3 shrink-0 text-primary" aria-label="Updates automatically" />
+                )}
               </span>
             </span>
           </button>
@@ -285,6 +292,8 @@ function NewFileForm({
   const [imported, setImported] = useState<{ filename: string; content: string } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [monitor, setMonitor] = useState(false);
+  const [instructions, setInstructions] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
   const finalName = (() => {
@@ -324,7 +333,11 @@ function NewFileForm({
         : columns.length
           ? toCsv([columns])
           : "";
-      onCreated(await createFile(finalName, content));
+      let created = await createFile(finalName, content);
+      if (monitor && instructions.trim()) {
+        created = await setFileMonitoring(created.file_id, true, instructions.trim());
+      }
+      onCreated(created);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create file.");
     } finally {
@@ -408,12 +421,40 @@ function NewFileForm({
         }}
       />
 
+      <div className="space-y-2 rounded-md border border-border p-3">
+        <label className="flex items-start gap-2 text-sm font-medium">
+          <input
+            type="checkbox"
+            checked={monitor}
+            onChange={(e) => setMonitor(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Keep this file updated automatically
+            <span className="block text-xs font-normal text-muted-foreground">
+              LoomBot adds rows when new information that matches arrives. It never deletes.
+            </span>
+          </span>
+        </label>
+        {monitor && (
+          <textarea
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            rows={2}
+            maxLength={1000}
+            placeholder="What should be added? e.g. Add a row for each new invoice email from Stripe with date, amount, and invoice number."
+            aria-label="What should be added automatically"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+          />
+        )}
+      </div>
+
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex flex-wrap gap-2">
         <button
           type="submit"
-          disabled={busy || !finalName || duplicate}
+          disabled={busy || !finalName || duplicate || (monitor && !instructions.trim())}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <FilePlus2 className="size-4" />}
@@ -666,6 +707,8 @@ function FileEditor({
         </p>
       )}
 
+      <MonitoringPanel file={file} dirty={dirty} onSaved={onSaved} />
+
       {mode === "raw" ? (
         <textarea
           aria-label="Raw CSV"
@@ -808,6 +851,187 @@ function FileEditor({
             Save
           </button>
         </footer>
+      )}
+    </div>
+  );
+}
+
+
+function MonitoringPanel({
+  file,
+  dirty,
+  onSaved,
+}: {
+  file: LoomFile;
+  dirty: boolean;
+  onSaved: (file: LoomFile) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [instructions, setInstructions] = useState(file.monitor_instructions ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [events, setEvents] = useState<LoomFileEvent[] | null>(null);
+  const [showEvents, setShowEvents] = useState(false);
+  const suggested = !file.monitor_enabled && Boolean(file.monitor_instructions);
+
+  useEffect(() => {
+    if (!file.monitor_enabled && !showEvents) return;
+    void listFileEvents(file.file_id)
+      .then(setEvents)
+      .catch(() => setEvents([]));
+  }, [file.file_id, file.monitor_enabled, file.updated_at, showEvents]);
+
+  async function apply(enabled: boolean, text?: string) {
+    setBusy(true);
+    setError("");
+    try {
+      onSaved(await setFileMonitoring(file.file_id, enabled, text));
+      setEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not change automatic updates.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const blocked = dirty || busy;
+
+  return (
+    <div className="mx-4 mt-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Radar className={cn("size-3.5", file.monitor_enabled ? "text-primary" : "text-muted-foreground")} />
+        {file.monitor_enabled ? (
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-foreground">Updates automatically.</span>{" "}
+            <span className="text-muted-foreground">{file.monitor_instructions}</span>
+          </span>
+        ) : suggested ? (
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-foreground">LoomBot suggests keeping this file updated:</span>{" "}
+            <span className="text-muted-foreground">{file.monitor_instructions}</span>
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 text-muted-foreground">
+            Not updated automatically.
+          </span>
+        )}
+        <span className="flex flex-wrap gap-1.5">
+          {suggested && !editing && (
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => void apply(true)}
+              className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              Turn on
+            </button>
+          )}
+          {!editing && (
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => {
+                setInstructions(file.monitor_instructions ?? "");
+                setEditing(true);
+              }}
+              className="rounded-md border border-border bg-card px-2.5 py-1 font-medium disabled:opacity-50"
+            >
+              {file.monitor_enabled ? "Edit" : suggested ? "Change" : "Keep updated…"}
+            </button>
+          )}
+          {file.monitor_enabled && !editing && (
+            <button
+              type="button"
+              disabled={blocked}
+              onClick={() => void apply(false)}
+              className="rounded-md border border-border bg-card px-2.5 py-1 font-medium disabled:opacity-50"
+            >
+              Turn off
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowEvents((v) => !v)}
+            className="rounded-md px-2 py-1 font-medium text-primary hover:underline"
+          >
+            {showEvents ? "Hide changes" : "Automatic changes"}
+          </button>
+        </span>
+      </div>
+      {dirty && (
+        <p className="mt-1 text-muted-foreground">Save or discard your edits to change automatic updates.</p>
+      )}
+      {editing && (
+        <div className="mt-2 space-y-2">
+          <textarea
+            autoFocus
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            rows={2}
+            maxLength={1000}
+            placeholder="What should be added? e.g. Add a row for each new lead email with name, company, and email."
+            aria-label="What should be added automatically"
+            className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm"
+          />
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              disabled={blocked || !instructions.trim()}
+              onClick={() => void apply(true, instructions.trim())}
+              className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              {busy ? "Saving…" : "Save and keep updated"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-md border border-border bg-card px-2.5 py-1 font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-muted-foreground">
+            Only information that arrives from now on is applied. Rows are added or filled in,
+            never deleted, and every change can be undone.
+          </p>
+        </div>
+      )}
+      {error && <p className="mt-1 text-destructive">{error}</p>}
+      {showEvents && (
+        <ul className="mt-2 space-y-1.5 border-t border-border pt-2">
+          {events === null ? (
+            <li className="text-muted-foreground">Loading…</li>
+          ) : events.length === 0 ? (
+            <li className="text-muted-foreground">No automatic changes yet.</li>
+          ) : (
+            events.map((event) => (
+              <li key={event.event_id}>
+                <span className="font-medium text-foreground">{timeAgo(event.created_at)}</span>
+                {" · "}
+                {event.summary}
+                {event.source_label && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    (from{" "}
+                    {event.source_url ? (
+                      <a
+                        href={event.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        {event.source_label}
+                      </a>
+                    ) : (
+                      event.source_label
+                    )}
+                    )
+                  </span>
+                )}
+              </li>
+            ))
+          )}
+        </ul>
       )}
     </div>
   );

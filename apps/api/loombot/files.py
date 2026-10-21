@@ -3,12 +3,18 @@
 Files are private to their owner within an org. Every write keeps the prior
 content in ``previous_content`` so the last change (including one made by Ask)
 can be undone; undoing twice re-applies the change.
+
+A file can also be *monitored*: newly ingested knowledge that matches its
+instructions adds rows or fills cells automatically (see ``file_monitor``).
+Monitoring instructions may be stored while monitoring is off; that is how Ask
+records a suggestion it still needs the user to confirm.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from typing import Any, Literal
 from uuid import uuid4
@@ -30,7 +36,9 @@ ASK_MAX_FILE_CHARS = 40_000
 _NAME_FORBIDDEN = re.compile(r"[\\/\x00-\x1f]")
 
 _META_COLUMNS = """file_id, name, row_count, column_count, last_edited_by,
-    previous_content IS NOT NULL AS can_undo, created_at, updated_at"""
+    previous_content IS NOT NULL AS can_undo, created_at, updated_at,
+    monitor_enabled, monitor_instructions, monitor_started_at"""
+MAX_MONITOR_INSTRUCTIONS = 1000
 
 
 def normalize_name(name: str) -> str:
@@ -96,6 +104,9 @@ def _meta(row: Any) -> dict[str, Any]:
         "can_undo": bool(row["can_undo"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "monitor_enabled": bool(row["monitor_enabled"]),
+        "monitor_instructions": row["monitor_instructions"],
+        "monitor_started_at": row["monitor_started_at"],
     }
 
 
@@ -275,3 +286,92 @@ async def delete_file(org_id: str, user_id: str, file_id: str) -> None:
         """), {"org": org_id, "user": user_id, "id": file_id})).scalar_one_or_none()
     if deleted is None:
         raise HTTPException(status_code=404, detail="File not found.")
+
+
+def _headers(content: str) -> list[str]:
+    try:
+        return next(csv.reader(io.StringIO(content or "")), [])
+    except csv.Error:
+        return []
+
+
+async def set_monitoring(
+    org_id: str,
+    user_id: str,
+    file_id: str,
+    *,
+    enabled: bool,
+    instructions: str | None = None,
+) -> dict[str, Any]:
+    """Turn monitoring on or off, or store suggested instructions while off.
+
+    Enabling needs instructions (given here or stored earlier). Only knowledge
+    that arrives after monitoring starts is applied.
+    """
+
+    current = await get_file(org_id, user_id, file_id)
+    cleaned = " ".join((instructions or "").split())[:MAX_MONITOR_INSTRUCTIONS] or None
+    final = cleaned or current.get("monitor_instructions")
+    if enabled and not final:
+        raise HTTPException(
+            status_code=422,
+            detail="Describe what should be added to this file before turning on monitoring.",
+        )
+    params: dict[str, Any] = {
+        "org": org_id, "user": user_id, "id": file_id,
+        "enabled": enabled, "instructions": final,
+        "keywords": "[]", "embedding": None,
+    }
+    if enabled:
+        from lens.status_trackers import extract_keywords
+
+        headers = " ".join(_headers(current["content"]))
+        stem = current["name"][:-4] if current["name"].lower().endswith(".csv") else current["name"]
+        params["keywords"] = json.dumps(extract_keywords(final, stem.replace("-", " ").replace("_", " ")))
+        try:
+            from brain.embedder import embed_text
+
+            params["embedding"] = json.dumps(
+                await embed_text(f"{current['name']}\n{headers}\n{final}")
+            )
+        except Exception:  # noqa: BLE001 - keyword matching still works without it
+            params["embedding"] = None
+    factory = get_session_factory()
+    async with factory() as session, session.begin():
+        row = (await session.execute(text(f"""
+            UPDATE loombot_files
+            SET monitor_enabled=:enabled,
+                monitor_instructions=:instructions,
+                monitor_keywords=:keywords,
+                monitor_embedding=:embedding,
+                monitor_started_at=CASE
+                    WHEN :enabled AND NOT monitor_enabled THEN now()
+                    WHEN :enabled THEN monitor_started_at
+                    ELSE NULL END,
+                updated_at=now()
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+            RETURNING {_META_COLUMNS}, content
+        """), params)).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    return _with_content(row)
+
+
+async def list_events(org_id: str, user_id: str, file_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Automatic changes monitoring made to a file, newest first."""
+
+    await get_file(org_id, user_id, file_id)  # ownership check
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (await session.execute(text("""
+            SELECT event_id, summary, rows_added, cells_updated, source_chunk_ids,
+                   source_label, source_url, created_at
+            FROM loombot_file_events
+            WHERE org_id=:org AND file_id=:id
+            ORDER BY created_at DESC
+            LIMIT :limit
+        """), {"org": org_id, "id": file_id, "limit": limit})).mappings().all()
+    return [
+        {**dict(row), "source_chunk_ids": json.loads(row["source_chunk_ids"] or "[]")}
+        for row in rows
+    ]

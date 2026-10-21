@@ -943,10 +943,23 @@ class FileChange(BaseModel):
 
     file_id: str
     name: str
-    action: Literal["created", "updated"]
+    action: Literal["created", "updated", "monitoring"]
     summary: str = ""
     row_count: int = 0
     column_count: int = 0
+    monitoring: Literal["on", "off", "suggested"] = "off"
+    monitor_instructions: str | None = None
+
+
+class StatusTrackerCard(BaseModel):
+    """A status tracker Ask started (or found) for the user this turn."""
+
+    tracker_id: str
+    title: str
+    status: Literal["on_track", "at_risk", "blocked", "done", "unknown"] = "unknown"
+    summary: str = ""
+    created: bool = True
+    update_count: int = 0
 
 
 class QueryResponse(BaseModel):
@@ -985,6 +998,10 @@ class QueryResponse(BaseModel):
     file_changes: list[FileChange] = Field(
         default_factory=list,
         description="LoomBot Files CSVs Ask created or edited this turn (undoable).",
+    )
+    status_tracker: Optional[StatusTrackerCard] = Field(
+        default=None,
+        description="Status tracker Ask started or found for this request.",
     )
 
 

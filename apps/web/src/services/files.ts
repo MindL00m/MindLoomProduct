@@ -11,6 +11,22 @@ export interface LoomFileMeta {
   can_undo: boolean;
   created_at: string;
   updated_at: string;
+  /** When on, newly arriving information matching the instructions updates the file. */
+  monitor_enabled: boolean;
+  /** Stored even while off when LoomBot suggested monitoring and is waiting for a yes. */
+  monitor_instructions?: string | null;
+  monitor_started_at?: string | null;
+}
+
+export interface LoomFileEvent {
+  event_id: string;
+  summary: string;
+  rows_added: number;
+  cells_updated: number;
+  source_chunk_ids: string[];
+  source_label?: string | null;
+  source_url?: string | null;
+  created_at: string;
 }
 
 export interface LoomFile extends LoomFileMeta {
@@ -69,4 +85,24 @@ export function undoFile(fileId: string): Promise<LoomFile> {
 
 export function deleteFile(fileId: string): Promise<void> {
   return request(`/${encodeURIComponent(fileId)}`, { method: "DELETE" }, "Could not delete file.");
+}
+
+export function setFileMonitoring(
+  fileId: string,
+  enabled: boolean,
+  instructions?: string,
+): Promise<LoomFile> {
+  return request(
+    `/${encodeURIComponent(fileId)}/monitoring`,
+    { method: "PUT", body: JSON.stringify({ enabled, instructions: instructions || null }) },
+    "Could not change automatic updates.",
+  );
+}
+
+export function listFileEvents(fileId: string): Promise<LoomFileEvent[]> {
+  return request(
+    `/${encodeURIComponent(fileId)}/events`,
+    { method: "GET" },
+    "Could not load automatic changes.",
+  );
 }

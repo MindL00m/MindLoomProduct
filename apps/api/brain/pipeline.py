@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from core.blob_storage import BlobStorage, get_blob_storage
@@ -74,6 +75,44 @@ class _ChunkOutcome:
 
     knowledge_type: str | None
     failed: bool
+    chunk: Chunk | None = None
+    summary: str = ""
+    embedding: list[float] | None = None
+
+
+async def _react_to_new_knowledge(
+    org_id: str, doc: Any, outcomes: list[_ChunkOutcome]
+) -> None:
+    """Let status trackers and monitored files react to new chunks. Never raises."""
+
+    try:
+        from lens.status_trackers import NewChunk, process_new_knowledge
+        from loombot.file_monitor import process_new_knowledge as update_monitored_files
+
+        fresh = [
+            NewChunk(
+                chunk_id=o.chunk.chunk_id,
+                text=o.chunk.raw_text,
+                summary=o.summary,
+                embedding=o.embedding,
+                occurred_at=o.chunk.end_time,
+                visible_to=list(getattr(doc, "visible_to", None) or []),
+            )
+            for o in outcomes
+            if not o.failed and o.chunk is not None
+        ]
+        if not fresh:
+            return
+        document = {
+            "document_id": getattr(doc, "document_id", None),
+            "title": getattr(doc, "title", None),
+            "source_label": getattr(doc, "source_label", None),
+            "source_url": getattr(doc, "source_url", None),
+        }
+        await process_new_knowledge(org_id, document, fresh)
+        await update_monitored_files(org_id, document, fresh)
+    except Exception:  # noqa: BLE001 - trackers and files must never fail ingestion
+        logger.exception("Knowledge follow-up (trackers, files) failed for org %s", org_id)
 
 
 def _document_from_conversation(
@@ -155,7 +194,13 @@ async def _process_chunk(
         except Exception:  # review automation must never discard ingested knowledge
             logger.exception("Could not enqueue knowledge reviews for chunk %s", chunk.chunk_id)
         logger.info("Processed chunk %s (type=%s)", chunk.chunk_id, metadata.knowledge_type)
-        return _ChunkOutcome(knowledge_type=metadata.knowledge_type, failed=False)
+        return _ChunkOutcome(
+            knowledge_type=metadata.knowledge_type,
+            failed=False,
+            chunk=chunk,
+            summary=metadata.summary,
+            embedding=embedding,
+        )
     except Exception:  # noqa: BLE001 - we record the failure and continue with others
         logger.exception("Failed to process chunk %s", chunk.chunk_id)
         return _ChunkOutcome(knowledge_type=None, failed=True)
@@ -309,6 +354,8 @@ async def run_ingestion(
                 for chunk, locator in zip(chunks, locators)
             )
         )
+
+    await _react_to_new_knowledge(org_id, doc, outcomes)
 
     chunks_by_type: Counter[str] = Counter(
         outcome.knowledge_type
@@ -503,6 +550,8 @@ async def run_pdf_ingestion(
                 for chunk, locator in zip(chunks, locators)
             )
         )
+
+    await _react_to_new_knowledge(org_id, doc, outcomes)
 
     chunks_by_type: Counter[str] = Counter(
         outcome.knowledge_type

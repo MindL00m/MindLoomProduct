@@ -15,9 +15,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Warm the tiktoken encoding cache into the image.
-RUN mkdir -p "$TIKTOKEN_CACHE_DIR" \
-    && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+# Vendored cl100k_base ranks. The filename is the SHA1 of the public blob URL,
+# which is the cache key tiktoken uses. Railway builds cannot reliably reach
+# openaipublic.blob.core.windows.net, so the encoding is copied in instead.
+COPY vendor/tiktoken/ "$TIKTOKEN_CACHE_DIR"/
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 COPY . .
 

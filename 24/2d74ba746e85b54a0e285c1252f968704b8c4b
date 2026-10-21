@@ -1,0 +1,98 @@
+apps/api/weaver/slack.py
+  s_fbaec34187ecab::t_5630f23186b528 825-830
+  s_fbaec34187ecab::t_1ba8b0ecb22603 1184
+  s_fbaec34187ecab::t_3f5d79b0243563 547-549
+  s_fbaec34187ecab::t_1514ea81d20b0d 806
+  s_fbaec34187ecab::t_2898eb198036d9 854-857
+  s_fbaec34187ecab::t_14036c903e21dc 975
+apps/api/tests/test_slack.py
+  s_fbaec34187ecab::t_eda3b1fa72c429 349-391,402-410
+  s_fbaec34187ecab::t_1b3cca69432c29 348,392-401
+apps/api/.env.example
+  s_218d62697339ad::t_07f172bf3da684 49-52
+apps/api/api/routes/files.py
+  s_218d62697339ad::t_455143c6bb21dd 1-68
+apps/api/api/routes/llm_settings.py
+  s_218d62697339ad::t_2d6634d4adfdac 11,19
+apps/api/brain/extractor.py
+  s_218d62697339ad::t_ab7cf4b96f67dc 3,13-14,17,133,137,156
+apps/api/brain/retrieval.py
+  s_218d62697339ad::t_72d337977e0122 31,324,473-474,495,502-503
+apps/api/core/config.py
+  s_218d62697339ad::t_6a5ff882013e27 132-139
+apps/api/core/llm_provider.py
+  s_218d62697339ad::t_b1e2dec46bb032 26-27,43-51,60,63,115,124,212-226
+apps/api/core/models.py
+  s_218d62697339ad::t_ff4ae4b7833235 941-951,985-988
+apps/api/core/schema.py
+  s_218d62697339ad::t_b8d959dea98557 357-379,402-403
+apps/api/db/migrations/007_loombot_files.sql
+  s_218d62697339ad::t_dc8908e65493c4 1-19
+apps/api/loombot/answerer.py
+  s_218d62697339ad::t_1c79101a75b8da 1,15,21
+apps/api/loombot/ask_agent.py
+  s_218d62697339ad::t_0026bb947bd867 8,15,18,22,37,44-46,124-137,139,505-565,567-753,1176,1184-1192,1527-1533,1549-1551,1587,1602-1603,1639,1642-1643,1719-1720,1722,1730,1769-1770,1778,1795-1798,1800,1802,1818,1839,1854,1887,1892
+apps/api/loombot/files.py
+  s_218d62697339ad::t_f527ad865e53e4 1-277
+apps/api/loombot/workspace_context.py
+  s_218d62697339ad::t_dec5f19bdcc353 11,230,233
+apps/api/loombot/workspaces.py
+  s_218d62697339ad::t_fc5883f89f88dc 383
+apps/api/main.py
+  s_218d62697339ad::t_9458bbab88811c 88,159
+apps/api/tests/test_extractor_retry.py
+  s_218d62697339ad::t_229424ef6b61ea 1-100
+apps/api/tests/test_llm_provider.py
+  s_218d62697339ad::t_467188749f9e53 193-219
+apps/api/tests/test_loombot_files.py
+  s_218d62697339ad::t_a1c31743024e4c 1-215
+apps/web/src/components/LLMSettingsPanel.tsx
+  s_218d62697339ad::t_e43a279ca95baf 6-8,10,42
+apps/web/src/components/Markdown.tsx
+  s_218d62697339ad::t_bcfac2222daa4e 1-563
+apps/web/src/lib/csv.ts
+  s_218d62697339ad::t_2a3784319a428f 86-105
+apps/web/src/lib/navigation.ts
+  s_218d62697339ad::t_f933163004ea3d 5,15
+apps/web/src/pages/AskView.tsx
+  s_218d62697339ad::t_bff4f95a24d047 1,5,16,27,38-39,54-55,57-68,541,819,839,860-871,948-1036
+apps/web/src/pages/Dashboard.tsx
+  s_218d62697339ad::t_8c76068b5aeb20 5,21,57,306-311
+apps/web/src/pages/FilesView.tsx
+  s_218d62697339ad::t_3b772386b5ee5b 1-814
+apps/web/src/services/ask.ts
+  s_218d62697339ad::t_ee50e55fd46bbe 107-116,129
+apps/web/src/services/files.ts
+  s_218d62697339ad::t_e72f24da4ec4cb 1-72
+apps/web/src/store/chat.ts
+  s_218d62697339ad::t_cbadd3192e8786 34-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "242d74ba746e85b54a0e285c1252f968704b8c4b",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_218d62697339ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69cc522b-4948-4666-baec-7d8d3dffdf3c",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    },
+    "s_fbaec34187ecab": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "2ef5bd1d-263a-47bf-8fc4-2844763a2f75",
+        "model": "grok-4.6"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

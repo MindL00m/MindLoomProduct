@@ -1,0 +1,26 @@
+apps/api/Dockerfile
+  s_bc587fc2ebbe68::t_ffb5e81c2d90ea 18-22
+apps/api/vendor/tiktoken/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
+  s_bc587fc2ebbe68::t_241c49cda2987c 1-100256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "36115f0c3214f8b21bfb805b6971f1e2a8a3136e",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_bc587fc2ebbe68": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "5fef2b84-efc8-491d-96ae-dabd00055562",
+        "model": "grok-4.7"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

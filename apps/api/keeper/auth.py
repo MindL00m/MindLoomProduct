@@ -9,7 +9,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy import DateTime, String, Text, select
+from sqlalchemy import DateTime, String, Text, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -140,6 +140,23 @@ async def get_user_access_tokens(org_id: str, user_id: str) -> list[str]:
                 tokens.append(f"department:{str(department).lower()}")
     except Exception:  # noqa: BLE001 - identity still works without graph enrichment
         logger.warning("Could not resolve department access token for user %s", user_id)
+    # Mail synced from the user's own connected accounts is visible to that
+    # account's address, which may differ from their MindLoom login email.
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            rows = await session.execute(
+                text(
+                    "SELECT DISTINCT lower(account_email) FROM app_connections "
+                    "WHERE org_id=:org AND user_id=:user AND account_email IS NOT NULL"
+                ),
+                {"org": org_id, "user": user_id},
+            )
+            for (account_email,) in rows:
+                if account_email and "@" in account_email and account_email not in tokens:
+                    tokens.append(account_email)
+    except Exception:  # noqa: BLE001 - identity still works without connection lookup
+        logger.warning("Could not resolve connected account tokens for user %s", user_id)
     return tokens
 
 

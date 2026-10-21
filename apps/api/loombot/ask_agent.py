@@ -187,9 +187,17 @@ File monitoring rules (a monitored file keeps itself updated from new informatio
   - "unclear" when you cannot tell. The tool then tells you to ask; end your reply
     with one short question asking whether MindLoom should keep the file updated as
     new information arrives, naming what it would add.
+- When you update an existing file that is not monitored using information that
+  keeps arriving from the same place (emails from one sender, a supplier's price
+  updates, a recurring report or channel), set monitor "yes" on that
+  write_csv_file so future updates apply themselves, unless the user said it is a
+  one-off. Name the source in monitor_instructions, e.g. "Update item prices from
+  new emails sent by amey05agarwal@gmail.com; add items that are not listed yet."
+  Use "unclear" only when the source will plausibly not send more.
 - For "yes" or "unclear" always pass monitor_instructions: one sentence saying what
-  belongs in the file and how, e.g. "Add a row for each new Squarespace
-  verification code email with date, sender, subject, and code."
+  belongs in the file, where it comes from, and how it changes the file, e.g.
+  "Add a row for each new Squarespace verification code email with date, sender,
+  subject, and code."
 - When the user answers that question, or asks to start or stop keeping a file
   updated, call set_file_monitoring. A yes needs no new instructions if a
   suggestion was stored.
@@ -621,8 +629,9 @@ _FILE_TOOLS_SPEC: list[dict[str, Any]] = [
                         "enum": ["yes", "no", "unclear"],
                         "description": (
                             "Required when creating a file: should MindLoom keep it "
-                            "updated as new information arrives? Omit when editing to "
-                            "leave monitoring as it is."
+                            "updated as new information arrives? When editing an "
+                            "unmonitored file from a recurring source (e.g. a sender's "
+                            "emails), pass yes; otherwise omit it when editing."
                         ),
                     },
                     "monitor_instructions": {

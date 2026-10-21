@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Mapped, mapped_column
 
 from keeper.auth import Base
+from core.config import get_settings
 from core.database import get_session_factory
 from weaver.google_workspace import (
     SyncCursorRow,
@@ -717,6 +718,27 @@ async def initialize_connection(
         logger.exception("Connection initialization failed: %s", row.provider)
 
 
+GMAIL_POLL_SECONDS = 300
+
+
+def should_poll_gmail(
+    *,
+    provider: str,
+    sync_frequency: str,
+    push_configured: bool,
+    now: datetime,
+    last_poll: datetime,
+) -> bool:
+    """Poll Gmail between reconciliations when push notifications are not set up."""
+
+    return (
+        provider == "google_workspace"
+        and sync_frequency == "realtime"
+        and not push_configured
+        and (now - last_poll).total_seconds() >= GMAIL_POLL_SECONDS
+    )
+
+
 async def run_periodic_connection_checks() -> None:
     """Run safety syncs for active policies.
 
@@ -726,6 +748,7 @@ async def run_periodic_connection_checks() -> None:
     """
 
     intervals = {"realtime": 6 * 3600, "hourly": 3600, "daily": 24 * 3600}
+    last_gmail_poll: dict[tuple[str, str], datetime] = {}
     while True:
         await asyncio.sleep(300)
         try:
@@ -810,9 +833,29 @@ async def run_periodic_connection_checks() -> None:
                         "Could not renew SharePoint watch %s", subscription.resource
                     )
 
+            push_configured = bool(get_settings().google_pubsub_topic.strip())
             for row in rows:
                 last = row.last_synced_at or row.created_at
                 if (now - last).total_seconds() < intervals.get(row.sync_frequency, 3600):
+                    # Without Gmail push notifications, "realtime" mail would otherwise
+                    # wait for the 6-hour reconciliation. Poll Gmail's incremental
+                    # history instead so new mail (and the trackers and monitored
+                    # files that depend on it) arrives within minutes.
+                    key = (row.org_id, row.user_id)
+                    if should_poll_gmail(
+                        provider=row.provider,
+                        sync_frequency=row.sync_frequency,
+                        push_configured=push_configured,
+                        now=now,
+                        last_poll=last_gmail_poll.get(key, last),
+                    ):
+                        last_gmail_poll[key] = now
+                        try:
+                            from weaver.google_workspace import sync_gmail
+
+                            await sync_gmail(row.org_id, row.user_id, max_results=50)
+                        except Exception:  # noqa: BLE001
+                            logger.exception("Gmail poll failed for %s/%s", row.org_id, row.user_id)
                     continue
                 try:
                     if row.provider == "google_workspace":

@@ -43,3 +43,18 @@ def test_visibility_supports_org_and_selected_audiences():
         org_id="org-1",
         source_account="admin@example.com",
     ) == ["user:u1", "department:engineering"]
+
+
+def test_gmail_is_polled_every_few_minutes_only_without_push() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from weaver.connection_setup import should_poll_gmail
+
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+    stale, fresh = now - timedelta(minutes=6), now - timedelta(minutes=2)
+    base = {"provider": "google_workspace", "sync_frequency": "realtime", "push_configured": False, "now": now}
+    assert should_poll_gmail(**base, last_poll=stale)
+    assert not should_poll_gmail(**base, last_poll=fresh)
+    assert not should_poll_gmail(**{**base, "push_configured": True}, last_poll=stale)
+    assert not should_poll_gmail(**{**base, "sync_frequency": "daily"}, last_poll=stale)
+    assert not should_poll_gmail(**{**base, "provider": "microsoft_teams"}, last_poll=stale)

@@ -37,7 +37,11 @@ MAX_TOPIC_LENGTH = 500
 _STOPWORDS = frozenset(
     "a an and are as at be by for from has have in into is it its of on or our "
     "the their this to was were will with status update updates report progress "
-    "track tracking project projects about latest current".split()
+    "track tracking project projects about latest current add adds added update "
+    "updates updated new each every row rows file files column columns csv list "
+    "email emails mail sent send sender message messages them they any all when "
+    "whenever item items value values that not yet listed are but can should "
+    "would there these those than then also only just new".split()
 )
 
 _UNTRUSTED = (

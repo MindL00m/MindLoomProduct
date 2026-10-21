@@ -134,3 +134,57 @@ async def test_unclear_stores_a_suggestion_and_asks_the_user(fake_files) -> None
     assert toggled["monitoring"] == "on"
     assert toggled["instructions"] == "Add new vendors that appear in contracts."
     assert state.changes[0].monitoring == "on" and len(state.changes) == 1
+
+
+async def test_updating_from_a_recurring_source_turns_monitoring_on(fake_files, monkeypatch) -> None:
+    fake_files.rows["f1"] = {
+        "file_id": "f1", "name": "supplier prices.csv", "content": "item,price\nflour,4.00\n",
+        "row_count": 1, "column_count": 2, "monitor_enabled": False, "monitor_instructions": None,
+    }
+
+    async def update(org_id, user_id, file_id, *, content=None, name=None, edited_by="user"):
+        body, rows, columns = files_service.normalize_csv(content)
+        fake_files.rows[file_id].update(content=body, row_count=rows, column_count=columns)
+        return dict(fake_files.rows[file_id])
+
+    monkeypatch.setattr(files_service, "update_file", update)
+    state = ask_agent._FileToolState(read_ids={"f1"})
+    result = await _write({
+        "name": "supplier prices.csv", "content": "item,price\nflour,4.50\n",
+        "monitor": "yes",
+        "monitor_instructions": "Update item prices from new emails sent by amey05agarwal@gmail.com.",
+    }, state)
+    assert result["action"] == "updated" and result["monitoring"] == "on"
+    assert fake_files.monitoring_calls[-1]["enabled"] is True
+
+
+async def test_access_tokens_include_connected_account_addresses(monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from keeper import auth
+
+    async def fake_user(org_id, user_id):
+        return SimpleNamespace(user_id=user_id, email="Soham@MindLoomAI.org")
+
+    def no_graph():
+        raise RuntimeError("graph offline")
+
+    class _Session:
+        async def execute(self, statement, params):
+            assert params == {"org": "o1", "user": "u1"}
+            return [("soham.personal@gmail.com",), ("soham@mindloomai.org",)]
+
+    @asynccontextmanager
+    async def session():
+        yield _Session()
+
+    monkeypatch.setattr(auth, "get_user_by_id", fake_user)
+    monkeypatch.setattr(auth, "get_neo4j_driver", no_graph)
+    monkeypatch.setattr(auth, "get_session_factory", lambda: session)
+
+    tokens = await auth.get_user_access_tokens("o1", "u1")
+    assert tokens == [
+        "org:o1", "user:u1", "soham@mindloomai.org", "domain:mindloomai.org",
+        "soham.personal@gmail.com",
+    ]

@@ -24,6 +24,7 @@ import {
 import { Link } from "react-router-dom";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
+import { RecurringWorkflows } from "@/components/RecurringWorkflows";
 import { dashboardHref } from "@/lib/navigation";
 
 function statusStyles(status: SkillFile["status"]): string {
@@ -224,7 +225,7 @@ export default function WorkflowsView() {
         <div>
           <h2 className="text-lg font-semibold text-foreground">Automated workflows</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Name and review Skill Files drafted from MindLoom Capture sessions on a Mac or in Chrome.
+            Recurring emails you set up in Ask, plus Skill Files drafted from MindLoom Capture sessions on a Mac or in Chrome.
             Approving a workflow publishes it to the knowledge graph so Ask can answer questions about it.
             {proposedCount > 0
               ? ` ${proposedCount} awaiting approval.`
@@ -243,6 +244,12 @@ export default function WorkflowsView() {
           Refresh
         </button>
       </div>
+
+      <RecurringWorkflows />
+
+      <h3 className="border-t border-border pt-5 text-base font-semibold text-foreground">
+        Captured workflows
+      </h3>
 
       <p className="text-sm text-muted-foreground">
         Need a new workflow?{" "}

@@ -853,6 +853,14 @@ class QueryRequest(BaseModel):
         default_factory=list,
         description="Chat-only attachments available for this conversation only.",
     )
+    attached_file_names: list[str] = Field(
+        default_factory=list,
+        description="LoomBot Files the user attached in this conversation, by name.",
+    )
+    timezone: Optional[str] = Field(
+        default=None,
+        description="The user's IANA timezone (e.g. America/New_York) for dates and schedules.",
+    )
 
 
 class MessageablePerson(BaseModel):
@@ -938,17 +946,52 @@ class ProposedWorkspace(BaseModel):
     unmatched_people: list[ProposedWorkspaceUnmatched] = Field(default_factory=list)
 
 
+class DocumentChange(BaseModel):
+    """One passage Ask changed when generating an updated document."""
+
+    before: str = ""
+    after: str
+    reason: str = ""
+    sources: list[str] = Field(default_factory=list)
+
+
 class FileChange(BaseModel):
-    """A LoomBot Files CSV that Ask created or changed during this turn."""
+    """A LoomBot Files file that Ask created or changed during this turn."""
 
     file_id: str
     name: str
     action: Literal["created", "updated", "monitoring"]
+    kind: str = "csv"
     summary: str = ""
     row_count: int = 0
     column_count: int = 0
     monitoring: Literal["on", "off", "suggested"] = "off"
     monitor_instructions: str | None = None
+    based_on: str | None = Field(
+        default=None, description="Original file name when this is an updated version."
+    )
+    changes: list[DocumentChange] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProposedRecurringEmail(BaseModel):
+    """A repeating email Ask drafted; nothing is scheduled until the user approves."""
+
+    recipient_email: str = ""
+    recipient_name: str | None = None
+    subject: str
+    body: str
+    interval_value: int
+    interval_unit: Literal["minutes", "hours", "days", "weeks"]
+    start_at: Optional[datetime] = Field(
+        default=None, description="First send time (UTC). Defaults to one interval from approval."
+    )
+    refresh_instructions: str | None = Field(
+        default=None,
+        description="When set, the body is rewritten before every send from MindLoom's knowledge.",
+    )
+    google_connected: bool = False
+    candidates: list[MessageablePerson] = Field(default_factory=list)
 
 
 class StatusTrackerCard(BaseModel):
@@ -1002,6 +1045,10 @@ class QueryResponse(BaseModel):
     status_tracker: Optional[StatusTrackerCard] = Field(
         default=None,
         description="Status tracker Ask started or found for this request.",
+    )
+    proposed_recurring_email: Optional[ProposedRecurringEmail] = Field(
+        default=None,
+        description="Repeating email awaiting the user's approval in Ask.",
     )
 
 

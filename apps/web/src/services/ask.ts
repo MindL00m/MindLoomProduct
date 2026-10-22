@@ -109,12 +109,31 @@ export interface FileChange {
   file_id: string;
   name: string;
   action: "created" | "updated" | "monitoring";
+  kind?: "csv" | "txt" | "docx" | "xlsx" | "pdf";
   summary?: string;
   row_count: number;
   column_count: number;
   /** "suggested" means LoomBot is asking whether to keep the file updated. */
   monitoring?: "on" | "off" | "suggested";
   monitor_instructions?: string | null;
+  /** Original file name when this file is an updated version of it. */
+  based_on?: string | null;
+  changes?: { before: string; after: string; reason?: string; sources: string[] }[];
+  warnings?: string[];
+}
+
+/** A repeating email Ask drafted; scheduled only after the user approves it. */
+export interface ProposedRecurringEmail {
+  recipient_email: string;
+  recipient_name?: string | null;
+  subject: string;
+  body: string;
+  interval_value: number;
+  interval_unit: "minutes" | "hours" | "days" | "weeks";
+  start_at?: string | null;
+  refresh_instructions?: string | null;
+  google_connected: boolean;
+  candidates: { user_id?: string; name: string; email: string }[];
 }
 
 /** A self-updating status tracker Ask started (or found) for a request. */
@@ -141,6 +160,7 @@ export interface QueryResponse {
   proposed_workspace?: ProposedWorkspace | null;
   file_changes?: FileChange[];
   status_tracker?: StatusTrackerCard | null;
+  proposed_recurring_email?: ProposedRecurringEmail | null;
 }
 
 export interface ChatMessage {
@@ -180,11 +200,18 @@ export async function askQuestion(
   question: string,
   history: ChatMessage[] = [],
   ephemeralDocuments: EphemeralDocument[] = [],
+  options: { attachedFileNames?: string[]; timezone?: string } = {},
 ): Promise<QueryResponse> {
   const res = await apiFetch("/query", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, history, ephemeral_documents: ephemeralDocuments }),
+    body: JSON.stringify({
+      question,
+      history,
+      ephemeral_documents: ephemeralDocuments,
+      attached_file_names: options.attachedFileNames ?? [],
+      timezone: options.timezone ?? null,
+    }),
   });
   if (!res.ok) {
     let detail = `Query failed (${res.status})`;

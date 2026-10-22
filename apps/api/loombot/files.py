@@ -1,10 +1,12 @@
-"""Per-user CSV files for the LoomBot Files tab, editable from Files and Ask.
+"""Per-user files for the LoomBot Files tab, editable from Files and Ask.
 
-Files are private to their owner within an org. Every write keeps the prior
-content in ``previous_content`` so the last change (including one made by Ask)
-can be undone; undoing twice re-applies the change.
+Supported kinds: CSV and TXT (text, stored in ``content`` and editable in the
+app) plus DOCX, XLSX and PDF (binary, stored in blob storage). Files are private
+to their owner within an org. Every change keeps the prior version
+(``previous_content`` or ``previous_blob_key``) so the last change, including
+one made by Ask, can be undone; undoing twice re-applies the change.
 
-A file can also be *monitored*: newly ingested knowledge that matches its
+A CSV file can also be *monitored*: newly ingested knowledge that matches its
 instructions adds rows or fills cells automatically (see ``file_monitor``).
 Monitoring instructions may be stored while monitoring is off; that is how Ask
 records a suggestion it still needs the user to confirm.
@@ -15,7 +17,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
+import zipfile
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -24,39 +29,76 @@ from sqlalchemy import text
 
 from core.database import get_session_factory
 
-EditedBy = Literal["user", "loombot"]
+logger = logging.getLogger(__name__)
 
-MAX_FILE_BYTES = 1_000_000
+EditedBy = Literal["user", "loombot"]
+FileKind = Literal["csv", "txt", "docx", "xlsx", "pdf"]
+
+MAX_FILE_BYTES = 1_000_000          # text kinds (CSV, TXT)
+MAX_UPLOAD_BYTES = 15_000_000       # binary kinds (DOCX, XLSX, PDF)
 MAX_ROWS = 10_000
 MAX_COLUMNS = 200
 MAX_NAME_LENGTH = 120
 # Ask rewrites whole files, so it only edits files it can read in full.
 ASK_MAX_FILE_CHARS = 40_000
+MAX_MONITOR_INSTRUCTIONS = 1000
+LINK_TTL = timedelta(minutes=10)
+_LINK_AUDIENCE = "loombot-file-link"
+
+KINDS: dict[str, str] = {
+    "csv": "text/csv",
+    "txt": "text/plain",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+}
+TEXT_KINDS = frozenset({"csv", "txt"})
+BINARY_KINDS = frozenset({"docx", "xlsx", "pdf"})
 
 _NAME_FORBIDDEN = re.compile(r"[\\/\x00-\x1f]")
 
-_META_COLUMNS = """file_id, name, row_count, column_count, last_edited_by,
-    previous_content IS NOT NULL AS can_undo, created_at, updated_at,
+_META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column_count,
+    last_edited_by,
+    (previous_content IS NOT NULL OR previous_blob_key IS NOT NULL) AS can_undo,
+    created_at, updated_at, based_on_file_id,
     monitor_enabled, monitor_instructions, monitor_started_at"""
-MAX_MONITOR_INSTRUCTIONS = 1000
 
 
-def normalize_name(name: str) -> str:
-    """Trim a file name, require a .csv extension, and reject path characters."""
+# --- Names and kinds ----------------------------------------------------------
+
+
+def kind_from_name(name: str) -> str | None:
+    lowered = (name or "").strip().lower()
+    for kind in KINDS:
+        if lowered.endswith(f".{kind}"):
+            return kind
+    return None
+
+
+def normalize_name(name: str, kind: str = "csv") -> str:
+    """Trim a file name, require the kind's extension, and reject path characters."""
 
     cleaned = " ".join((name or "").split())
     if not cleaned:
         raise HTTPException(status_code=422, detail="File name is required.")
     if _NAME_FORBIDDEN.search(cleaned):
         raise HTTPException(status_code=422, detail="File names cannot contain slashes.")
-    if not cleaned.lower().endswith(".csv"):
-        cleaned += ".csv"
+    if not cleaned.lower().endswith(f".{kind}"):
+        cleaned += f".{kind}"
     if len(cleaned) > MAX_NAME_LENGTH:
         raise HTTPException(
             status_code=422,
             detail=f"File names must be {MAX_NAME_LENGTH} characters or fewer.",
         )
     return cleaned
+
+
+def stem(name: str) -> str:
+    kind = kind_from_name(name)
+    return name[: -(len(kind) + 1)] if kind else name
+
+
+# --- Text content ---------------------------------------------------------------
 
 
 def normalize_csv(content: str) -> tuple[str, int, int]:
@@ -94,16 +136,120 @@ def normalize_csv(content: str) -> tuple[str, int, int]:
     return buffer.getvalue(), len(records) - 1, columns
 
 
+def normalize_txt(content: str) -> tuple[str, int, int]:
+    """Normalise line endings and return (text, lines, 0)."""
+
+    raw = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if len(raw.encode("utf-8")) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="Text files are limited to 1 MB.")
+    return raw, (raw.count("\n") + (0 if raw.endswith("\n") or not raw else 1)), 0
+
+
+def normalize_text(kind: str, content: str) -> tuple[str, int, int]:
+    return normalize_csv(content) if kind == "csv" else normalize_txt(content)
+
+
+def _decode_text(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1")
+
+
+# --- Binary content -------------------------------------------------------------
+
+
+def validate_binary(kind: str, data: bytes) -> None:
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Files are limited to 15 MB.")
+    if kind == "pdf":
+        if not data.startswith(b"%PDF"):
+            raise HTTPException(status_code=422, detail="That file is not a valid PDF.")
+        return
+    required = {"docx": "word/document.xml", "xlsx": "xl/workbook.xml"}[kind]
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            if required not in archive.namelist():
+                raise HTTPException(status_code=422, detail=f"That file is not a valid .{kind} file.")
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=422, detail=f"That file is not a valid .{kind} file.") from exc
+
+
+def binary_stats(kind: str, data: bytes) -> tuple[int, int]:
+    """(row_count, column_count) shown in the file list.
+
+    PDF: pages. DOCX: non-empty paragraphs, tables. XLSX: non-empty rows, sheets.
+    """
+
+    try:
+        if kind == "pdf":
+            import fitz
+
+            with fitz.open(stream=data, filetype="pdf") as doc:
+                return doc.page_count, 0
+        if kind == "docx":
+            import docx
+
+            document = docx.Document(io.BytesIO(data))
+            return sum(1 for p in document.paragraphs if p.text.strip()), len(document.tables)
+        if kind == "xlsx":
+            import openpyxl
+
+            workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            try:
+                rows = sum(
+                    1
+                    for sheet in workbook.worksheets
+                    for row in sheet.iter_rows(values_only=True)
+                    if any(value not in (None, "") for value in row)
+                )
+                return rows, len(workbook.worksheets)
+            finally:
+                workbook.close()
+    except Exception:  # noqa: BLE001 - stats are cosmetic
+        logger.warning("Could not read %s stats", kind, exc_info=True)
+    return 0, 0
+
+
+async def _put_blob(org_id: str, file_id: str, kind: str, data: bytes) -> str:
+    from core.blob_storage import get_blob_storage
+
+    return await get_blob_storage().put(
+        f"loombot-files/{org_id}/{file_id}/{uuid4().hex}.{kind}", data
+    )
+
+
+async def _delete_blobs(*paths: str | None) -> None:
+    from core.blob_storage import get_blob_storage
+
+    storage = get_blob_storage()
+    for path in paths:
+        if path:
+            try:
+                await storage.delete(path)
+            except Exception:  # noqa: BLE001 - orphaned blobs are harmless
+                logger.warning("Could not delete blob %s", path, exc_info=True)
+
+
+# --- Rows -------------------------------------------------------------------------
+
+
 def _meta(row: Any) -> dict[str, Any]:
     return {
         "file_id": row["file_id"],
         "name": row["name"],
+        "kind": row["kind"] or "csv",
+        "mime_type": row["mime_type"] or KINDS.get(row["kind"] or "csv"),
+        "size_bytes": int(row["size_bytes"] or 0),
         "row_count": int(row["row_count"]),
         "column_count": int(row["column_count"]),
         "last_edited_by": row["last_edited_by"],
         "can_undo": bool(row["can_undo"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "based_on_file_id": row["based_on_file_id"],
         "monitor_enabled": bool(row["monitor_enabled"]),
         "monitor_instructions": row["monitor_instructions"],
         "monitor_started_at": row["monitor_started_at"],
@@ -120,6 +266,9 @@ def _conflict(name: str) -> HTTPException:
 
 def _is_unique_violation(exc: Exception) -> bool:
     return "idx_loombot_files_owner_name" in str(exc) or "unique" in str(exc).lower()
+
+
+# --- Reading ------------------------------------------------------------------------
 
 
 async def list_files(org_id: str, user_id: str) -> list[dict[str, Any]]:
@@ -146,20 +295,68 @@ async def get_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
 
 
 async def find_file_by_name(org_id: str, user_id: str, name: str) -> dict[str, Any] | None:
-    """Look up a file by name, case-insensitively, with or without ``.csv``."""
+    """Look up a file by name, case-insensitively, with or without its extension."""
 
     cleaned = " ".join((name or "").split()).lower()
     if not cleaned:
         return None
-    candidates = {cleaned, cleaned if cleaned.endswith(".csv") else f"{cleaned}.csv"}
+    candidates = {cleaned}
+    if kind_from_name(cleaned) is None:
+        candidates |= {f"{cleaned}.{kind}" for kind in KINDS}
     factory = get_session_factory()
     async with factory() as session:
         row = (await session.execute(text(f"""
             SELECT {_META_COLUMNS}, content FROM loombot_files
             WHERE org_id=:org AND owner_user_id=:user AND lower(name) = ANY(:names)
-            ORDER BY updated_at DESC LIMIT 1
+            ORDER BY (kind = 'csv') DESC, updated_at DESC LIMIT 1
         """), {"org": org_id, "user": user_id, "names": sorted(candidates)})).mappings().one_or_none()
     return _with_content(row) if row is not None else None
+
+
+async def get_file_bytes(org_id: str, user_id: str, file_id: str) -> tuple[bytes, dict[str, Any]]:
+    """The file's current bytes and metadata (text kinds are UTF-8 encoded)."""
+
+    factory = get_session_factory()
+    async with factory() as session:
+        row = (await session.execute(text(f"""
+            SELECT {_META_COLUMNS}, content, blob_key FROM loombot_files
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+        """), {"org": org_id, "user": user_id, "id": file_id})).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    meta = _meta(row)
+    if meta["kind"] in TEXT_KINDS:
+        return (row["content"] or "").encode("utf-8"), meta
+    if not row["blob_key"]:
+        raise HTTPException(status_code=404, detail="File content is missing.")
+    from core.blob_storage import get_blob_storage
+
+    return await get_blob_storage().get(row["blob_key"]), meta
+
+
+# --- Writing ------------------------------------------------------------------------
+
+
+async def _insert(params: dict[str, Any], clean_name: str) -> dict[str, Any]:
+    factory = get_session_factory()
+    try:
+        async with factory() as session, session.begin():
+            row = (await session.execute(text(f"""
+                INSERT INTO loombot_files
+                  (file_id, org_id, owner_user_id, name, kind, mime_type, size_bytes,
+                   content, blob_key, row_count, column_count, last_edited_by,
+                   based_on_file_id, created_at, updated_at)
+                VALUES (:id, :org, :user, :name, :kind, :mime, :size, :content, :blob,
+                        :rows, :columns, :edited_by, :based_on, now(), now())
+                RETURNING {_META_COLUMNS}, content
+            """), params)).mappings().one()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            raise _conflict(clean_name) from exc
+        raise
+    return _with_content(row)
 
 
 async def create_file(
@@ -169,31 +366,71 @@ async def create_file(
     content: str = "",
     *,
     edited_by: EditedBy = "user",
+    kind: str = "csv",
+    based_on: str | None = None,
 ) -> dict[str, Any]:
-    clean_name = normalize_name(name)
-    body, rows, columns = normalize_csv(content)
+    """Create a CSV (default) or TXT file from text."""
+
+    if kind not in TEXT_KINDS:
+        raise HTTPException(status_code=422, detail="Only CSV and TXT files can be created from text.")
+    clean_name = normalize_name(name, kind)
+    body, rows, columns = normalize_text(kind, content)
+    return await _insert({
+        "id": str(uuid4()), "org": org_id, "user": user_id, "name": clean_name,
+        "kind": kind, "mime": KINDS[kind], "size": len(body.encode("utf-8")),
+        "content": body, "blob": None, "rows": rows, "columns": columns,
+        "edited_by": edited_by, "based_on": based_on,
+    }, clean_name)
+
+
+async def create_binary_file(
+    org_id: str,
+    user_id: str,
+    name: str,
+    kind: str,
+    data: bytes,
+    *,
+    edited_by: EditedBy = "user",
+    based_on: str | None = None,
+) -> dict[str, Any]:
+    """Create a DOCX, XLSX, or PDF file from bytes."""
+
+    if kind not in BINARY_KINDS:
+        raise HTTPException(status_code=422, detail=f"Unsupported file type: {kind}.")
+    validate_binary(kind, data)
+    clean_name = normalize_name(name, kind)
     file_id = str(uuid4())
-    factory = get_session_factory()
+    blob = await _put_blob(org_id, file_id, kind, data)
+    rows, columns = binary_stats(kind, data)
     try:
-        async with factory() as session, session.begin():
-            row = (await session.execute(text(f"""
-                INSERT INTO loombot_files
-                  (file_id, org_id, owner_user_id, name, content, row_count,
-                   column_count, last_edited_by, created_at, updated_at)
-                VALUES (:id, :org, :user, :name, :content, :rows, :columns,
-                        :edited_by, now(), now())
-                RETURNING {_META_COLUMNS}, content
-            """), {
-                "id": file_id, "org": org_id, "user": user_id, "name": clean_name,
-                "content": body, "rows": rows, "columns": columns, "edited_by": edited_by,
-            })).mappings().one()
-    except HTTPException:
+        return await _insert({
+            "id": file_id, "org": org_id, "user": user_id, "name": clean_name,
+            "kind": kind, "mime": KINDS[kind], "size": len(data), "content": "",
+            "blob": blob, "rows": rows, "columns": columns, "edited_by": edited_by,
+            "based_on": based_on,
+        }, clean_name)
+    except Exception:
+        await _delete_blobs(blob)
         raise
-    except Exception as exc:
-        if _is_unique_violation(exc):
-            raise _conflict(clean_name) from exc
-        raise
-    return _with_content(row)
+
+
+async def upload_file(
+    org_id: str, user_id: str, filename: str, data: bytes, name: str | None = None
+) -> dict[str, Any]:
+    """Create a file from an upload; the type comes from the file extension."""
+
+    kind = kind_from_name(filename)
+    if kind is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Supported files: .csv, .txt, .docx, .xlsx, and .pdf.",
+        )
+    final_name = name or filename
+    if kind in TEXT_KINDS:
+        if len(data) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="CSV and text files are limited to 1 MB.")
+        return await create_file(org_id, user_id, final_name, _decode_text(data), kind=kind)
+    return await create_binary_file(org_id, user_id, final_name, kind, data)
 
 
 async def update_file(
@@ -205,17 +442,24 @@ async def update_file(
     name: str | None = None,
     edited_by: EditedBy = "user",
 ) -> dict[str, Any]:
-    """Replace content and/or rename. A content change becomes undoable."""
+    """Replace text content and/or rename. A content change becomes undoable."""
 
     if content is None and name is None:
         return await get_file(org_id, user_id, file_id)
+    current = await get_file(org_id, user_id, file_id)
+    kind = current["kind"]
     params: dict[str, Any] = {
         "org": org_id, "user": user_id, "id": file_id, "edited_by": edited_by,
     }
     sets = ["updated_at=now()", "last_edited_by=:edited_by"]
     if content is not None:
-        body, rows, columns = normalize_csv(content)
-        params.update(content=body, rows=rows, columns=columns)
+        if kind not in TEXT_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{current['name']} is a .{kind} file; upload a new version instead.",
+            )
+        body, rows, columns = normalize_text(kind, content)
+        params.update(content=body, rows=rows, columns=columns, size=len(body.encode("utf-8")))
         # Only remember the old content when it actually changes, so a no-op
         # save does not wipe out the undo point of a real edit.
         sets += [
@@ -224,9 +468,10 @@ async def update_file(
             "content=:content",
             "row_count=:rows",
             "column_count=:columns",
+            "size_bytes=:size",
         ]
     if name is not None:
-        params["name"] = normalize_name(name)
+        params["name"] = normalize_name(name, kind)
         sets.append("name=:name")
     factory = get_session_factory()
     try:
@@ -247,32 +492,84 @@ async def update_file(
     return _with_content(row)
 
 
-async def undo_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
-    """Swap current and previous content; calling it again redoes the change."""
+async def replace_upload(
+    org_id: str, user_id: str, file_id: str, filename: str, data: bytes
+) -> dict[str, Any]:
+    """Replace a file with a newly uploaded version of the same type (undoable)."""
 
+    current = await get_file(org_id, user_id, file_id)
+    kind = current["kind"]
+    if kind_from_name(filename) != kind:
+        raise HTTPException(
+            status_code=422, detail=f"Upload a .{kind} file to replace {current['name']}."
+        )
+    if kind in TEXT_KINDS:
+        if len(data) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="CSV and text files are limited to 1 MB.")
+        return await update_file(org_id, user_id, file_id, content=_decode_text(data))
+    validate_binary(kind, data)
+    blob = await _put_blob(org_id, file_id, kind, data)
+    rows, columns = binary_stats(kind, data)
     factory = get_session_factory()
     async with factory() as session, session.begin():
-        found = (await session.execute(text("""
-            SELECT previous_content FROM loombot_files
-            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
-            FOR UPDATE
-        """), {"org": org_id, "user": user_id, "id": file_id})).mappings().one_or_none()
-        if found is None:
-            raise HTTPException(status_code=404, detail="File not found.")
-        if found["previous_content"] is None:
-            raise HTTPException(status_code=409, detail="There is no change to undo.")
-        _, rows, columns = normalize_csv(found["previous_content"])
+        old = (await session.execute(text("""
+            SELECT previous_blob_key FROM loombot_files
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id FOR UPDATE
+        """), {"org": org_id, "user": user_id, "id": file_id})).scalar_one_or_none()
         row = (await session.execute(text(f"""
             UPDATE loombot_files
-            SET content=previous_content, previous_content=content,
+            SET previous_blob_key=blob_key, blob_key=:blob, size_bytes=:size,
                 row_count=:rows, column_count=:columns,
                 last_edited_by='user', updated_at=now()
             WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
             RETURNING {_META_COLUMNS}, content
         """), {
-            "org": org_id, "user": user_id, "id": file_id,
-            "rows": rows, "columns": columns,
-        })).mappings().one()
+            "org": org_id, "user": user_id, "id": file_id, "blob": blob,
+            "size": len(data), "rows": rows, "columns": columns,
+        })).mappings().one_or_none()
+    if row is None:
+        await _delete_blobs(blob)
+        raise HTTPException(status_code=404, detail="File not found.")
+    await _delete_blobs(old)
+    return _with_content(row)
+
+
+async def undo_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
+    """Swap current and previous versions; calling it again redoes the change."""
+
+    factory = get_session_factory()
+    async with factory() as session, session.begin():
+        found = (await session.execute(text("""
+            SELECT kind, previous_content, previous_blob_key FROM loombot_files
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+            FOR UPDATE
+        """), {"org": org_id, "user": user_id, "id": file_id})).mappings().one_or_none()
+        if found is None:
+            raise HTTPException(status_code=404, detail="File not found.")
+        kind = found["kind"] or "csv"
+        params = {"org": org_id, "user": user_id, "id": file_id}
+        if kind in TEXT_KINDS:
+            if found["previous_content"] is None:
+                raise HTTPException(status_code=409, detail="There is no change to undo.")
+            body, rows, columns = normalize_text(kind, found["previous_content"])
+            swap = "content=previous_content, previous_content=content, size_bytes=:size"
+            params["size"] = len(body.encode("utf-8"))
+        else:
+            if found["previous_blob_key"] is None:
+                raise HTTPException(status_code=409, detail="There is no change to undo.")
+            from core.blob_storage import get_blob_storage
+
+            data = await get_blob_storage().get(found["previous_blob_key"])
+            rows, columns = binary_stats(kind, data)
+            swap = "blob_key=previous_blob_key, previous_blob_key=blob_key, size_bytes=:size"
+            params["size"] = len(data)
+        row = (await session.execute(text(f"""
+            UPDATE loombot_files
+            SET {swap}, row_count=:rows, column_count=:columns,
+                last_edited_by='user', updated_at=now()
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+            RETURNING {_META_COLUMNS}, content
+        """), {**params, "rows": rows, "columns": columns})).mappings().one()
     return _with_content(row)
 
 
@@ -282,10 +579,29 @@ async def delete_file(org_id: str, user_id: str, file_id: str) -> None:
         deleted = (await session.execute(text("""
             DELETE FROM loombot_files
             WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
-            RETURNING file_id
-        """), {"org": org_id, "user": user_id, "id": file_id})).scalar_one_or_none()
+            RETURNING blob_key, previous_blob_key
+        """), {"org": org_id, "user": user_id, "id": file_id})).mappings().one_or_none()
     if deleted is None:
         raise HTTPException(status_code=404, detail="File not found.")
+    await _delete_blobs(deleted["blob_key"], deleted["previous_blob_key"])
+
+
+def unique_name(existing: set[str], wanted: str) -> str:
+    """``wanted``, or ``wanted (2).ext`` etc. when the name is taken (case-insensitive)."""
+
+    taken = {name.lower() for name in existing}
+    if wanted.lower() not in taken:
+        return wanted
+    kind = kind_from_name(wanted)
+    base = stem(wanted)
+    for n in range(2, 100):
+        candidate = f"{base} ({n}).{kind}" if kind else f"{base} ({n})"
+        if candidate.lower() not in taken:
+            return candidate
+    return f"{base} {uuid4().hex[:6]}.{kind}" if kind else f"{base} {uuid4().hex[:6]}"
+
+
+# --- Monitoring ---------------------------------------------------------------------
 
 
 def _headers(content: str) -> list[str]:
@@ -306,10 +622,14 @@ async def set_monitoring(
     """Turn monitoring on or off, or store suggested instructions while off.
 
     Enabling needs instructions (given here or stored earlier). Only knowledge
-    that arrives after monitoring starts is applied.
+    that arrives after monitoring starts is applied. CSV files only.
     """
 
     current = await get_file(org_id, user_id, file_id)
+    if current["kind"] != "csv" and (enabled or instructions):
+        raise HTTPException(
+            status_code=422, detail="Automatic updates are available for CSV files only."
+        )
     cleaned = " ".join((instructions or "").split())[:MAX_MONITOR_INSTRUCTIONS] or None
     final = cleaned or current.get("monitor_instructions")
     if enabled and not final:
@@ -326,8 +646,8 @@ async def set_monitoring(
         from lens.status_trackers import extract_keywords
 
         headers = " ".join(_headers(current["content"]))
-        stem = current["name"][:-4] if current["name"].lower().endswith(".csv") else current["name"]
-        params["keywords"] = json.dumps(extract_keywords(final, stem.replace("-", " ").replace("_", " ")))
+        base = stem(current["name"])
+        params["keywords"] = json.dumps(extract_keywords(final, base.replace("-", " ").replace("_", " ")))
         try:
             from brain.embedder import embed_text
 
@@ -375,3 +695,176 @@ async def list_events(org_id: str, user_id: str, file_id: str, limit: int = 50) 
         {**dict(row), "source_chunk_ids": json.loads(row["source_chunk_ids"] or "[]")}
         for row in rows
     ]
+
+
+# --- Reading content for Ask and previews ---------------------------------------------
+
+
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat() if value.time() == datetime.min.time() else value.isoformat()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def docx_blocks(data: bytes) -> list[dict[str, Any]]:
+    """Headings, paragraphs, and tables of a Word document, in order."""
+
+    import docx
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    document = docx.Document(io.BytesIO(data))
+    blocks: list[dict[str, Any]] = []
+    for element in document.element.body.iterchildren():
+        tag = element.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            paragraph = Paragraph(element, document)
+            value = paragraph.text.strip()
+            if not value:
+                continue
+            style = (paragraph.style.name if paragraph.style is not None else "") or ""
+            match = re.match(r"heading\s*(\d)", style.strip().lower())
+            if match or style.lower() == "title":
+                blocks.append({"type": "heading", "level": int(match.group(1)) if match else 1, "text": value})
+            elif style.lower().startswith("list"):
+                blocks.append({"type": "list_item", "text": value})
+            else:
+                blocks.append({"type": "paragraph", "text": value})
+        elif tag == "tbl":
+            table = Table(element, document)
+            blocks.append({
+                "type": "table",
+                "rows": [[cell.text.strip() for cell in row.cells] for row in table.rows],
+            })
+    return blocks
+
+
+def xlsx_sheets(data: bytes, *, max_rows: int = 500, max_cols: int = 50) -> list[dict[str, Any]]:
+    """Each sheet's cell values (computed values where Excel saved them)."""
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    try:
+        sheets = []
+        for sheet in workbook.worksheets:
+            rows: list[list[str]] = []
+            truncated = False
+            for index, row in enumerate(sheet.iter_rows(values_only=True)):
+                if index >= max_rows:
+                    truncated = True
+                    break
+                values = [_cell_text(v) for v in row[:max_cols]]
+                if len(row) > max_cols:
+                    truncated = True
+                rows.append(values)
+            while rows and not any(rows[-1]):
+                rows.pop()
+            width = max((len(r) for r in rows), default=0)
+            while width and not any(r[width - 1] if len(r) >= width else "" for r in rows):
+                width -= 1
+            sheets.append({
+                "name": sheet.title,
+                "rows": [r[:width] + [""] * (width - len(r[:width])) for r in rows],
+                "truncated": truncated,
+            })
+        return sheets
+    finally:
+        workbook.close()
+
+
+def pdf_text(data: bytes) -> str:
+    import fitz
+
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return "\n\n".join(
+            f"[Page {i + 1}]\n{page.get_text('text').strip()}" for i, page in enumerate(doc)
+        )
+
+
+async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> str:
+    """Readable text of any file kind, for Ask to answer from."""
+
+    kind = file["kind"]
+    if kind in TEXT_KINDS:
+        return file.get("content") or ""
+    data, _ = await get_file_bytes(org_id, user_id, file["file_id"])
+    if kind == "pdf":
+        return pdf_text(data)
+    if kind == "docx":
+        lines: list[str] = []
+        for block in docx_blocks(data):
+            if block["type"] == "heading":
+                lines.append(f"{'#' * min(block['level'], 6)} {block['text']}")
+            elif block["type"] == "list_item":
+                lines.append(f"- {block['text']}")
+            elif block["type"] == "table":
+                lines += ["| " + " | ".join(row) + " |" for row in block["rows"]]
+            else:
+                lines.append(block["text"])
+        return "\n\n".join(lines)
+    out: list[str] = []
+    for sheet in xlsx_sheets(data, max_rows=2000):
+        out.append(f"[Sheet: {sheet['name']}]")
+        buffer = io.StringIO()
+        csv.writer(buffer, lineterminator="\n").writerows(sheet["rows"])
+        out.append(buffer.getvalue().rstrip())
+    return "\n\n".join(out)
+
+
+async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
+    """Structured preview for the Files tab (DOCX blocks or XLSX sheets)."""
+
+    data, meta = await get_file_bytes(org_id, user_id, file_id)
+    if meta["kind"] == "docx":
+        return {"kind": "docx", "blocks": docx_blocks(data)}
+    if meta["kind"] == "xlsx":
+        return {"kind": "xlsx", "sheets": xlsx_sheets(data)}
+    if meta["kind"] == "pdf":
+        rows, _ = binary_stats("pdf", data)
+        return {"kind": "pdf", "pages": rows}
+    return {"kind": meta["kind"], "content": data.decode("utf-8")}
+
+
+# --- Signed links (for opening a file in Excel) -------------------------------------
+
+
+def issue_file_link(org_id: str, user_id: str, file_id: str) -> tuple[str, datetime]:
+    """A short-lived token that lets a desktop app fetch one file without a session."""
+
+    import jwt
+
+    from core.config import get_settings
+
+    expires = datetime.now(timezone.utc) + LINK_TTL
+    token = jwt.encode(
+        {"sub": user_id, "org": org_id, "fid": file_id, "aud": _LINK_AUDIENCE, "exp": expires},
+        get_settings().resolved_session_secret,
+        algorithm="HS256",
+    )
+    return token, expires
+
+
+def verify_file_link(token: str, file_id: str) -> tuple[str, str]:
+    """Return (org_id, user_id) for a valid link token for ``file_id``."""
+
+    import jwt
+
+    from core.config import get_settings
+
+    try:
+        payload = jwt.decode(
+            token, get_settings().resolved_session_secret,
+            algorithms=["HS256"], audience=_LINK_AUDIENCE,
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="This link has expired. Open the file again.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail="Invalid file link.") from exc
+    if payload.get("fid") != file_id or not payload.get("org") or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="Invalid file link.")
+    return str(payload["org"]), str(payload["sub"])

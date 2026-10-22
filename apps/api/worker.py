@@ -21,10 +21,12 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     await ensure_schema()
     redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
+    from shuttle.recurring_emails import run_recurring_email_scheduler
     from weaver.slack import run_periodic_slack_flush
 
     scheduler = asyncio.create_task(run_periodic_connection_checks())
     slack_flush = asyncio.create_task(run_periodic_slack_flush())
+    recurring = asyncio.create_task(run_recurring_email_scheduler())
     try:
         # Recover work reserved by this single worker before a process crash.
         while True:
@@ -42,6 +44,7 @@ async def main() -> None:
     finally:
         scheduler.cancel()
         slack_flush.cancel()
+        recurring.cancel()
         await redis.aclose()
         await close_pools()
 

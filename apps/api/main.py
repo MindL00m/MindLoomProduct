@@ -92,6 +92,7 @@ from api.routes.reviews import router as reviews_router
 from api.routes.slack import router as slack_router
 from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
+from api.routes.workflows import router as workflows_router
 from api.routes.workspaces import router as workspaces_router
 from api.routes.zoom import router as zoom_router
 from brain.file_extract import extract_file_text
@@ -163,6 +164,7 @@ app.include_router(reviews_router)
 app.include_router(slack_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)
+app.include_router(workflows_router)
 app.include_router(workspaces_router)
 app.include_router(zoom_router)
 
@@ -460,6 +462,8 @@ async def query(
             org_id=org_id,
             user_id=user_id,
             ephemeral_documents=body.ephemeral_documents,
+            attached_file_names=body.attached_file_names,
+            user_timezone=body.timezone,
         )
         if (
             response.proposed_message is None

@@ -22,3 +22,5 @@ slowapi==0.1.9
 redis==5.2.1
 boto3==1.35.93
 cryptography==44.0.0
+python-docx==1.1.2
+openpyxl==3.1.5

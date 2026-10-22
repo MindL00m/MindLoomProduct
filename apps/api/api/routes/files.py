@@ -1,6 +1,9 @@
-"""LoomBot Files tab: the signed-in user's private CSV files."""
+"""LoomBot Files tab: the signed-in user's private CSV, TXT, DOCX, XLSX, and PDF files."""
 
-from fastapi import APIRouter, Depends, Response
+from typing import Literal
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from keeper.auth import require_user_context
@@ -12,6 +15,29 @@ router = APIRouter(prefix="/loombot/files", tags=["loombot-files"])
 class CreateFileInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     content: str = ""
+    kind: Literal["csv", "txt"] = "csv"
+
+
+class UpdatedVersionInput(BaseModel):
+    instructions: str | None = Field(default=None, max_length=1000)
+
+
+def _download_response(data: bytes, meta: dict, *, inline: bool) -> Response:
+    name = meta["name"]
+    ascii_name = name.encode("ascii", "ignore").decode() or f"file.{meta['kind']}"
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=data,
+        media_type=meta["mime_type"],
+        headers={
+            "Content-Disposition": (
+                f'{disposition}; filename="{ascii_name.replace(chr(34), "")}"; '
+                f"filename*=UTF-8''{quote(name)}"
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 class UpdateFileInput(BaseModel):
@@ -29,7 +55,32 @@ async def create_file(
     body: CreateFileInput,
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict:
-    return await files_service.create_file(*ctx, body.name, body.content)
+    return await files_service.create_file(*ctx, body.name, body.content, kind=body.kind)
+
+
+@router.post("/upload", status_code=201)
+async def upload_file(
+    file: UploadFile = File(...),
+    name: str | None = Form(default=None),
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Add a CSV, TXT, DOCX, XLSX, or PDF file from the user's computer."""
+
+    data = await file.read(files_service.MAX_UPLOAD_BYTES + 1)
+    return await files_service.upload_file(*ctx, file.filename or "upload", data, name or None)
+
+
+@router.get("/public/{file_id}/{filename}")
+async def public_file(
+    file_id: str,
+    filename: str,
+    token: str = Query(min_length=10),
+) -> Response:
+    """Serve one file to a desktop app (e.g. Excel) via a short-lived signed link."""
+
+    org_id, user_id = files_service.verify_file_link(token, file_id)
+    data, meta = await files_service.get_file_bytes(org_id, user_id, file_id)
+    return _download_response(data, meta, inline=False)
 
 
 @router.get("/{file_id}")
@@ -94,3 +145,65 @@ async def file_events(
     """Automatic changes monitoring made to this file, newest first."""
 
     return await files_service.list_events(*ctx, file_id)
+
+
+@router.get("/{file_id}/download")
+async def download_file(
+    file_id: str,
+    inline: bool = False,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> Response:
+    data, meta = await files_service.get_file_bytes(*ctx, file_id)
+    return _download_response(data, meta, inline=inline)
+
+
+@router.get("/{file_id}/preview")
+async def preview_file(
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Structured preview: Word blocks or Excel sheets."""
+
+    return await files_service.preview_file(*ctx, file_id)
+
+
+@router.put("/{file_id}/upload")
+async def replace_file(
+    file_id: str,
+    file: UploadFile = File(...),
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Replace a file with a new version of the same type (undoable)."""
+
+    data = await file.read(files_service.MAX_UPLOAD_BYTES + 1)
+    return await files_service.replace_upload(*ctx, file_id, file.filename or "", data)
+
+
+@router.post("/{file_id}/open-link")
+async def open_link(
+    file_id: str,
+    request: Request,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """A 10-minute link a desktop app can fetch, used by "Open in Excel"."""
+
+    from core.config import get_settings
+
+    meta = await files_service.get_file(*ctx, file_id)
+    token, expires = files_service.issue_file_link(*ctx, file_id)
+    base = (get_settings().public_api_url or "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    url = f"{base}/loombot/files/public/{quote(file_id)}/{quote(meta['name'])}?token={quote(token)}"
+    return {"url": url, "expires_at": expires, "kind": meta["kind"]}
+
+
+@router.post("/{file_id}/updated-version", status_code=201)
+async def updated_version(
+    file_id: str,
+    body: UpdatedVersionInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Create an updated copy of this document from MindLoom's knowledge."""
+
+    from loombot.document_update import create_updated_version
+
+    return await create_updated_version(*ctx, file_id, body.instructions)

@@ -376,6 +376,17 @@ _LOOMBOT_FILES_SQL = [
   ON loombot_files (org_id, owner_user_id, updated_at DESC)""",
 ]
 
+# Files of other kinds (TXT, DOCX, XLSX, PDF) and generated versions (loombot/files.py).
+_LOOMBOT_FILE_KINDS_SQL = [
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'csv'",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS mime_type TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS size_bytes BIGINT NOT NULL DEFAULT 0",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS blob_key TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS previous_blob_key TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS based_on_file_id TEXT",
+]
+
+
 # Files that keep themselves current from newly ingested knowledge (loombot/file_monitor.py).
 _LOOMBOT_FILE_MONITOR_SQL = [
     "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS monitor_enabled BOOLEAN NOT NULL DEFAULT FALSE",
@@ -455,6 +466,50 @@ _STATUS_TRACKERS_SQL = [
 ]
 
 
+# Recurring email workflows (shuttle/recurring_emails.py).
+_RECURRING_EMAILS_SQL = [
+    """CREATE TABLE IF NOT EXISTS recurring_emails (
+    workflow_id           TEXT PRIMARY KEY,
+    org_id                TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    owner_user_id         TEXT NOT NULL,
+    name                  TEXT NOT NULL,
+    recipient_email       TEXT NOT NULL,
+    recipient_name        TEXT,
+    subject               TEXT NOT NULL,
+    body                  TEXT NOT NULL DEFAULT '',
+    refresh_instructions  TEXT,
+    interval_value        INTEGER NOT NULL,
+    interval_unit         TEXT NOT NULL CHECK (interval_unit IN ('minutes', 'hours', 'days', 'weeks')),
+    interval_seconds      INTEGER NOT NULL CHECK (interval_seconds >= 900),
+    timezone              TEXT,
+    status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'error')),
+    next_run_at           TIMESTAMPTZ NOT NULL,
+    last_run_at           TIMESTAMPTZ,
+    run_count             INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+    last_error            TEXT,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_recurring_emails_due
+  ON recurring_emails (next_run_at) WHERE status = 'active'""",
+    """CREATE INDEX IF NOT EXISTS idx_recurring_emails_owner
+  ON recurring_emails (org_id, owner_user_id)""",
+    """CREATE TABLE IF NOT EXISTS recurring_email_runs (
+    run_id        TEXT PRIMARY KEY,
+    workflow_id   TEXT NOT NULL REFERENCES recurring_emails (workflow_id) ON DELETE CASCADE,
+    org_id        TEXT NOT NULL,
+    ran_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    status        TEXT NOT NULL CHECK (status IN ('sent', 'failed')),
+    error         TEXT,
+    subject       TEXT NOT NULL DEFAULT '',
+    body_preview  TEXT NOT NULL DEFAULT ''
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_recurring_email_runs_workflow
+  ON recurring_email_runs (workflow_id, ran_at DESC)""",
+]
+
+
 async def ensure_schema() -> None:
     """Create the base schema on an empty database, then apply additive upgrades."""
 
@@ -479,8 +534,12 @@ async def ensure_schema() -> None:
                 await session.execute(text(statement))
             for statement in _LOOMBOT_FILES_SQL:
                 await session.execute(text(statement))
+            for statement in _LOOMBOT_FILE_KINDS_SQL:
+                await session.execute(text(statement))
             for statement in _LOOMBOT_FILE_MONITOR_SQL:
                 await session.execute(text(statement))
             for statement in _STATUS_TRACKERS_SQL:
+                await session.execute(text(statement))
+            for statement in _RECURRING_EMAILS_SQL:
                 await session.execute(text(statement))
     logger.info("Schema check complete (base tables, connections, captures, policies)")

@@ -121,7 +121,7 @@ async def test_write_requires_reading_an_existing_file_first(fake_files) -> None
     state = ask_agent._FileToolState()
 
     blocked = await _tool("write_csv_file", {"name": "budget", "content": "item\n"}, state)
-    assert "read_csv_file" in blocked["error"]
+    assert "read_file" in blocked["error"]
     assert fake_files.rows["f1"]["content"] == "item,amount\nrent,100\n"
 
     read = await _tool("read_csv_file", {"name": "budget.csv"}, state)

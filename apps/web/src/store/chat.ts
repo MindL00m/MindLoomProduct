@@ -32,6 +32,10 @@ export interface Turn {
   workspaceProposalId?: string;
   workspaceProposalError?: string;
   /** Local UI state for undoing LoomBot Files changes, keyed by file_id. */
+  /** Local UI state for an Ask-drafted recurring email. */
+  recurringState?: "pending" | "sending" | "scheduled" | "cancelled";
+  recurringId?: string;
+  recurringError?: string;
   fileChangeState?: Record<
     string,
     {
@@ -43,7 +47,7 @@ export interface Turn {
   >;
 }
 
-export type AttachmentScope = "chat" | "graph";
+export type AttachmentScope = "chat" | "graph" | "files";
 export type AttachmentStatus = "processing" | "ready" | "error";
 
 /** A file uploaded into a conversation — either chat-only or ingested to the graph. */
@@ -57,6 +61,8 @@ export interface ChatAttachment {
   error?: string;
   /** Chunk count after graph ingestion completes. */
   ingestedChunks?: number;
+  /** LoomBot Files id when the file was saved to Files from Ask. */
+  fileId?: string;
 }
 
 export interface Conversation {

@@ -3,7 +3,6 @@ import {
   Activity,
   ArrowUp,
   Database,
-  FileSpreadsheet,
   FileText,
   Hash,
   GitPullRequest,
@@ -11,7 +10,9 @@ import {
   MessageSquare,
   MessageSquarePlus,
   MessageSquareText,
+  FolderOpen,
   Paperclip,
+  Repeat,
   Radar,
   Sparkles,
   Trash2,
@@ -31,6 +32,7 @@ import {
   type StatusTrackerCard,
   type ProposedExpertMessage,
   type ProposedPullRequest,
+  type ProposedRecurringEmail,
   type ProposedWorkspace,
   type QueryResponse,
   type Source,
@@ -38,14 +40,25 @@ import {
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
-import { getFile, setFileMonitoring, undoFile } from "@/services/files";
+import { getFile, kindFromName, setFileMonitoring, undoFile, uploadFile } from "@/services/files";
+import {
+  createRecurringEmail,
+  formatInterval,
+  userTimezone,
+  type IntervalUnit,
+} from "@/services/workflows";
+import { FileKindIcon } from "@/components/FileKindIcon";
+import { ChangeList } from "@/pages/FileViewers";
 import { Markdown, type CitationRenderer } from "@/components/Markdown";
 import { StatusPill } from "@/pages/StatusView";
 import { ingestFileToGraph, isJson, isPdf } from "@/services/ingest";
 import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/store/chat";
 import { cn } from "@/lib/utils";
 
-const FILE_ACCEPT = ".pdf,.json,.txt,application/pdf,application/json,text/plain";
+const FILE_ACCEPT =
+  ".pdf,.json,.txt,.csv,.docx,.xlsx,application/pdf,application/json,text/plain,text/csv," +
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 const EXAMPLES = [
   "What did we decide about the pricing model?",
@@ -144,13 +157,19 @@ export default function AskView() {
     const conv = useChat.getState().conversations.find((c) => c.id === convId);
     const history = historyFrom(conv);
     const ephemeral = ephemeralFrom(conv);
+    const attachedFileNames = (conv?.attachments ?? [])
+      .filter((a) => a.scope === "files" && a.status === "ready")
+      .map((a) => a.filename);
 
     const turnId = crypto.randomUUID();
     setInput("");
     setBusy(true);
     addTurn(convId, { id: turnId, question: q, status: "pending" });
     try {
-      const response = await askQuestion(q, history, ephemeral);
+      const response = await askQuestion(q, history, ephemeral, {
+        attachedFileNames,
+        timezone: userTimezone(),
+      });
       updateTurn(convId, turnId, {
         status: "done",
         response,
@@ -164,6 +183,7 @@ export default function AskView() {
         workspaceProposalState: response.proposed_workspace
           ? "pending"
           : undefined,
+        recurringState: response.proposed_recurring_email ? "pending" : undefined,
       });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -178,11 +198,27 @@ export default function AskView() {
   function handleFilePick(files: FileList | null) {
     const file = files?.[0];
     if (!file) return;
-    if (!isPdf(file) && !isJson(file) && !file.name.toLowerCase().endsWith(".txt")) {
-      alert("Supported files: PDF, JSON conversation exports, or plain text.");
+    if (!isPdf(file) && !isJson(file) && !kindFromName(file.name)) {
+      alert("Supported files: PDF, Word, Excel, CSV, plain text, or JSON conversation exports.");
       return;
     }
     setPendingFile(file);
+  }
+
+  async function saveToFiles(file: File) {
+    const convId = ensureActive();
+    const attId = crypto.randomUUID();
+    setPendingFile(null);
+    addAttachment(convId, { id: attId, filename: file.name, scope: "files", status: "processing" });
+    try {
+      const saved = await uploadFile(file);
+      updateAttachment(convId, attId, { status: "ready", filename: saved.name, fileId: saved.file_id });
+    } catch (err) {
+      updateAttachment(convId, attId, {
+        status: "error",
+        error: err instanceof Error ? err.message : "Could not save to Files.",
+      });
+    }
   }
 
   async function saveToKnowledgeGraph(file: File) {
@@ -355,6 +391,8 @@ export default function AskView() {
             onClose={() => setPendingFile(null)}
             onGraph={() => void saveToKnowledgeGraph(pendingFile)}
             onChat={() => void useInChatOnly(pendingFile)}
+            onFiles={() => void saveToFiles(pendingFile)}
+            filesSupported={kindFromName(pendingFile.name) !== null}
             graphSupported={isPdf(pendingFile) || isJson(pendingFile)}
           />
         )}
@@ -543,6 +581,9 @@ function TurnView({
               workspaceProposalId={turn.workspaceProposalId}
               workspaceProposalError={turn.workspaceProposalError}
               fileChangeState={turn.fileChangeState}
+              recurringState={turn.recurringState}
+              recurringId={turn.recurringId}
+              recurringError={turn.recurringError}
               onProposalPatch={onProposalPatch}
             />
           )}
@@ -821,6 +862,9 @@ function AnswerView({
   workspaceProposalId,
   workspaceProposalError,
   fileChangeState,
+  recurringState,
+  recurringId,
+  recurringError,
   onProposalPatch,
 }: {
   response: QueryResponse;
@@ -841,6 +885,9 @@ function AnswerView({
   workspaceProposalId?: string;
   workspaceProposalError?: string;
   fileChangeState?: Turn["fileChangeState"];
+  recurringState?: Turn["recurringState"];
+  recurringId?: string;
+  recurringError?: string;
   onProposalPatch: (patch: Partial<Turn>) => void;
 }) {
   const cited = new Set<string>();
@@ -867,6 +914,16 @@ function AnswerView({
       />
 
       {response.status_tracker && <TrackerCard tracker={response.status_tracker} />}
+
+      {response.proposed_recurring_email && (
+        <RecurringEmailCard
+          proposal={response.proposed_recurring_email}
+          state={recurringState}
+          workflowId={recurringId}
+          error={recurringError}
+          onPatch={onProposalPatch}
+        />
+      )}
 
       {(response.file_changes?.length ?? 0) > 0 && (
         <FileChangesCard
@@ -977,6 +1034,223 @@ function TrackerCard({ tracker }: { tracker: StatusTrackerCard }) {
   );
 }
 
+function toLocalInput(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+const UNIT_MS: Record<IntervalUnit, number> = {
+  minutes: 60_000,
+  hours: 3_600_000,
+  days: 86_400_000,
+  weeks: 604_800_000,
+};
+
+function RecurringEmailCard({
+  proposal,
+  state,
+  workflowId,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedRecurringEmail;
+  state?: Turn["recurringState"];
+  workflowId?: string;
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [to, setTo] = useState(proposal.recipient_email);
+  const [subject, setSubject] = useState(proposal.subject);
+  const [body, setBody] = useState(proposal.body);
+  const [value, setValue] = useState(proposal.interval_value);
+  const [unit, setUnit] = useState<IntervalUnit>(proposal.interval_unit);
+  const [start, setStart] = useState(() =>
+    toLocalInput(
+      proposal.start_at
+        ? new Date(proposal.start_at)
+        : new Date(Date.now() + proposal.interval_value * UNIT_MS[proposal.interval_unit]),
+    ),
+  );
+  const [refresh, setRefresh] = useState(Boolean(proposal.refresh_instructions));
+  const [instructions, setInstructions] = useState(proposal.refresh_instructions ?? "");
+  const tooFrequent = value * UNIT_MS[unit] < 15 * 60_000;
+
+  async function schedule() {
+    onPatch({ recurringState: "sending", recurringError: undefined });
+    try {
+      const created = await createRecurringEmail({
+        recipient_email: to.trim(),
+        recipient_name: proposal.recipient_name ?? null,
+        subject: subject.trim(),
+        body,
+        interval_value: value,
+        interval_unit: unit,
+        start_at: start ? new Date(start).toISOString() : null,
+        refresh_instructions: refresh ? instructions.trim() || null : null,
+        timezone: userTimezone() ?? null,
+      });
+      onPatch({ recurringState: "scheduled", recurringId: created.workflow_id, recurringError: undefined });
+    } catch (err) {
+      onPatch({
+        recurringState: "pending",
+        recurringError: err instanceof Error ? err.message : "Could not schedule the email.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Recurring email discarded.
+      </div>
+    );
+  }
+
+  if (status === "scheduled") {
+    return (
+      <div className="flex flex-wrap items-start gap-3 rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <Repeat className="mt-0.5 size-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">
+            Scheduled: {subject} → {to}
+          </p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Repeats {formatInterval(value, unit)}, first on{" "}
+            {new Date(start).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}.
+          </p>
+        </div>
+        <a
+          href={`/dashboard?tab=shuttle${workflowId ? `&workflow=${encodeURIComponent(workflowId)}` : ""}`}
+          className="shrink-0 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+        >
+          View in Workflows
+        </a>
+      </div>
+    );
+  }
+
+  const sending = status === "sending";
+  const inputClass = "mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground";
+  return (
+    <div
+      data-testid="recurring-email-card"
+      className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+    >
+      <p className="flex items-center gap-2 font-semibold text-foreground">
+        <Repeat className="size-4 text-primary" /> Recurring email
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Review the schedule and message. Nothing is scheduled until you choose Schedule. Emails are
+        sent from your Gmail.
+      </p>
+
+      {proposal.candidates.length > 1 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {proposal.candidates.map((person) => (
+            <button
+              key={`${person.user_id || ""}:${person.email}`}
+              type="button"
+              onClick={() => setTo(person.email)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs",
+                to.trim().toLowerCase() === person.email.toLowerCase()
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-foreground",
+              )}
+            >
+              {person.name || person.email}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <label className="mt-3 block text-xs font-medium text-muted-foreground">
+        To
+        <input type="email" value={to} onChange={(e) => setTo(e.target.value)} placeholder="Enter an email address" className={inputClass} />
+      </label>
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Subject
+        <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} className={inputClass} />
+      </label>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[auto_auto_1fr]">
+        <label className="block text-xs font-medium text-muted-foreground">
+          Every
+          <input
+            type="number"
+            min={1}
+            value={value}
+            onChange={(e) => setValue(Math.max(1, Number(e.target.value) || 1))}
+            className={cn(inputClass, "w-24")}
+          />
+        </label>
+        <label className="block text-xs font-medium text-muted-foreground">
+          Unit
+          <select value={unit} onChange={(e) => setUnit(e.target.value as IntervalUnit)} className={inputClass}>
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+            <option value="weeks">weeks</option>
+          </select>
+        </label>
+        <label className="block text-xs font-medium text-muted-foreground">
+          First email
+          <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} className={inputClass} />
+        </label>
+      </div>
+      {tooFrequent && <p className="mt-1 text-xs text-destructive">Emails can repeat at most every 15 minutes.</p>}
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        {refresh ? "Message template" : "Message"}
+        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={5} className={inputClass} />
+      </label>
+      <label className="mt-2 flex items-start gap-2 text-xs font-medium text-foreground">
+        <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} className="mt-0.5" />
+        <span>
+          Rewrite each email with the latest information from MindLoom
+          <span className="block font-normal text-muted-foreground">
+            Before every send, LoomBot writes the message from current knowledge using your access.
+          </span>
+        </span>
+      </label>
+      {refresh && (
+        <input
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder="What each email should cover, e.g. this week's Tiramisu status"
+          className={inputClass}
+        />
+      )}
+
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+      {!proposal.google_connected && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Connect Google Workspace in Import to send email from your Gmail.
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={sending || tooFrequent || !to.trim() || !subject.trim() || (!body.trim() && !(refresh && instructions.trim()))}
+          onClick={() => void schedule()}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Repeat className="size-3.5" />}
+          {sending ? "Scheduling…" : `Schedule ${formatInterval(value, unit)}`}
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          onClick={() => onPatch({ recurringState: "cancelled" })}
+          className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FileChangesCard({
   changes,
   state,
@@ -1053,17 +1327,35 @@ function FileChangesCard({
           const asking = change.monitoring === "suggested" && !entry?.monitor;
           return (
             <li key={change.file_id} className="flex flex-wrap items-start gap-3 px-3 py-2.5">
-              <FileSpreadsheet className="mt-0.5 size-4 shrink-0 text-primary" />
+              <FileKindIcon kind={change.kind ?? "csv"} className="mt-0.5" />
               <div className="min-w-0 flex-1">
                 <p className={cn("font-medium", undone && "text-muted-foreground line-through")}>
-                  {verb} {change.name}
+                  {change.based_on ? "Created updated version" : verb} {change.name}
                 </p>
+                {change.based_on && (
+                  <p className="text-xs text-muted-foreground">
+                    From {change.based_on}. The original is unchanged.
+                  </p>
+                )}
                 <p className="text-xs text-muted-foreground">
                   {undone
                     ? "Change undone. The file is back to its previous version."
                     : change.summary ||
                       `${change.row_count.toLocaleString()} rows · ${change.column_count} columns`}
                 </p>
+                {(change.changes?.length ?? 0) > 0 && (
+                  <details className="mt-1.5 text-xs">
+                    <summary className="cursor-pointer font-medium text-primary">
+                      What changed ({change.changes!.length})
+                    </summary>
+                    <div className="mt-1.5">
+                      <ChangeList changes={change.changes!} />
+                    </div>
+                  </details>
+                )}
+                {change.warnings?.map((warning) => (
+                  <p key={warning} className="mt-1 text-xs text-amber-900">{warning}</p>
+                ))}
                 {monitoring === "on" && (
                   <p className="mt-1 flex items-center gap-1 text-xs text-primary">
                     <Radar className="size-3" /> Updates automatically
@@ -1670,6 +1962,8 @@ function AttachmentBar({
         >
           {a.scope === "graph" ? (
             <Database className="size-3 shrink-0" />
+          ) : a.scope === "files" ? (
+            <FolderOpen className="size-3 shrink-0" />
           ) : (
             <MessageSquare className="size-3 shrink-0" />
           )}
@@ -1682,6 +1976,9 @@ function AttachmentBar({
           )}
           {a.status === "ready" && a.scope === "chat" && (
             <span className="text-muted-foreground">· this chat</span>
+          )}
+          {a.status === "ready" && a.scope === "files" && (
+            <span className="text-muted-foreground">· in Files</span>
           )}
           {a.status === "error" && (
             <span className="truncate text-destructive" title={a.error}>
@@ -1707,12 +2004,16 @@ function UploadChoiceModal({
   onClose,
   onGraph,
   onChat,
+  onFiles,
+  filesSupported,
   graphSupported,
 }: {
   file: File;
   onClose: () => void;
   onGraph: () => void;
   onChat: () => void;
+  onFiles: () => void;
+  filesSupported: boolean;
   graphSupported: boolean;
 }) {
   return (
@@ -1726,10 +2027,25 @@ function UploadChoiceModal({
       >
         <h3 className="text-lg font-semibold">Add {file.name}</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Should this file be saved to your organization&apos;s knowledge graph, or kept
-          private to this chat?
+          Where should this file go?
         </p>
         <div className="mt-5 flex flex-col gap-2">
+          <button
+            type="button"
+            disabled={!filesSupported}
+            onClick={onFiles}
+            className="flex items-start gap-3 rounded-md border border-border p-3 text-left transition-colors hover:border-primary hover:bg-brand-50/50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <FolderOpen className="mt-0.5 size-5 shrink-0 text-brand-700" />
+            <span>
+              <span className="block text-sm font-medium">Save to my Files</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {filesSupported
+                  ? "Keep it in LoomBot Files (private to you). Ask can read it and make an updated version from MindLoom's memory."
+                  : "Files accepts CSV, TXT, Word, Excel, and PDF files."}
+              </span>
+            </span>
+          </button>
           <button
             type="button"
             disabled={!graphSupported}

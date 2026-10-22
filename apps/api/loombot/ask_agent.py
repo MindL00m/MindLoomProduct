@@ -19,12 +19,14 @@ from core.llm_provider import DEFAULT_OPENAI_MODEL, LLMClientAdapter, get_llm_cl
 from core.models import (
     ChatMessage,
     EphemeralDocument,
+    DocumentChange,
     FileChange,
     MessageablePerson,
     StatusTrackerCard,
     ProposedEmail,
     ProposedExpertMessage,
     ProposedPullRequest,
+    ProposedRecurringEmail,
     ProposedWorkspace,
     ProposedWorkspaceMember,
     ProposedWorkspaceUnmatched,
@@ -47,12 +49,13 @@ knowledge graph, and create, read, and edit the user's CSV files in the LoomBot
 Files tab.
 
 Today is {today} (UTC). Resolve relative dates such as "today", "this week", or
-"last month" against this date.
+"last month" against this date. The user's timezone: {user_timezone} (their local
+time now: {local_now}).
 
 How to work:
 - Work step by step. Before calling tools, decide what you need; call a tool,
   read its result, then decide the next step. Chain as many tools as the task
-  needs (for example read_csv_file, then search_emails, then write_csv_file) and
+  needs (for example read_file, then search_emails, then write_csv_file) and
   keep going until the request is done.
 - Never tell the user you cannot search their email, update their files, draft a
   message, or track a status when a tool does it. Use the tool.
@@ -81,6 +84,25 @@ Messaging rules:
   or email was sent.
 - Expert Messages require a signed-in MindLoom user. Email can go to any address.
 - Google Workspace email sending is {gmail_status}.
+
+Recurring email rules:
+- When the user wants an email sent repeatedly at a fixed interval ("every 2
+  hours", "daily", "every Monday", "weekly"), call lookup_person first if they
+  named a person or role, then call propose_recurring_email instead of
+  propose_email.
+- Convert the cadence to interval_value and interval_unit: hourly = 1 hours,
+  daily = 1 days, weekly or "every Monday" = 1 weeks, every two weeks = 2 weeks,
+  monthly = 4 weeks (intervals are fixed; mention that for monthly). The minimum
+  is 15 minutes.
+- If they give a first day or time ("every Monday at 9am", "starting tomorrow"),
+  pass start_at as an ISO 8601 datetime with the user's UTC offset. Otherwise omit
+  it; the first email goes out one interval after they approve.
+- Write the subject and body. If each email should carry current information (a
+  weekly status, latest numbers, this week's updates), also pass
+  refresh_instructions saying what each email should cover; the body is then
+  rewritten from MindLoom's knowledge before every send and your body is a template.
+- propose_recurring_email schedules nothing. The user reviews and approves it in
+  a card, and it then appears under Workflows. Never say it is scheduled or sent.
 
 GitHub rules:
 - GitHub tools use this user's Apps connector, not a server token. They may only
@@ -163,11 +185,20 @@ Status rules:
   knowledge_inventory and say the number covers what MindLoom has indexed.
 - If a tool returns an error, explain it plainly. Never invent numbers.
 
-Files rules (CSV files in the user's LoomBot Files tab, not GitHub):
+Files rules (the user's LoomBot Files tab: CSV, TXT, DOCX, XLSX, and PDF files; not GitHub):
 - The user's files: {files_status}
-- To view or change a file, call read_csv_file first, then write_csv_file with
-  the COMPLETE new CSV (header row first). Keep every row and column the user
-  did not ask to change exactly as it was.
+- Files the user attached in this conversation: {attached_files}
+- To answer questions about a file's contents, call read_file (any type).
+- To change a CSV file, call read_file first, then write_csv_file with the
+  COMPLETE new CSV (header row first). Keep every row and column the user did not
+  ask to change exactly as it was. write_csv_file only writes CSV files.
+- When the user gives or names a document (any type) and asks for an updated,
+  refreshed, current, or new version of it, call create_updated_document with the
+  file name and their specific request as instructions. It searches MindLoom's
+  memory, edits only what newer information supports, and saves a new file next
+  to the original (the original is not changed). Report the new file's name, the
+  main changes with their sources, and any warnings. If changed is false, say
+  nothing newer was found.
 - To create a file, call write_csv_file with a new name. Use a short name ending
   in .csv and a header row.
 - write_csv_file saves immediately; the user can undo it from the chat or the
@@ -175,6 +206,7 @@ Files rules (CSV files in the user's LoomBot Files tab, not GitHub):
   CSV back unless the user asks to see it; show a small markdown table for
   short previews instead.
 - You cannot delete files. Tell the user to delete them in the Files tab.
+- Automatic updates (monitoring) apply to CSV files only.
 
 File monitoring rules (a monitored file keeps itself updated from new information):
 - Every write_csv_file that creates a file must set monitor:
@@ -575,10 +607,10 @@ _FILE_TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "list_csv_files",
+            "name": "list_files",
             "description": (
-                "List the user's CSV files in the LoomBot Files tab with their "
-                "row and column counts."
+                "List the user's files in the LoomBot Files tab (CSV, TXT, DOCX, XLSX, "
+                "PDF) with their type and size."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -586,8 +618,11 @@ _FILE_TOOLS_SPEC: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "read_csv_file",
-            "description": "Read the full contents of one of the user's CSV files.",
+            "name": "read_file",
+            "description": (
+                "Read one of the user's files: CSV and TXT as text, DOCX with headings "
+                "and tables, XLSX sheet by sheet, PDF page by page."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -607,7 +642,7 @@ _FILE_TOOLS_SPEC: list[dict[str, Any]] = [
             "description": (
                 "Create a CSV file, or replace an existing file's contents. Saves "
                 "immediately and can be undone by the user. Read an existing file "
-                "with read_csv_file before replacing it."
+                "with read_file before replacing it."
             ),
             "parameters": {
                 "type": "object",
@@ -647,6 +682,32 @@ _FILE_TOOLS_SPEC: list[dict[str, Any]] = [
         },
     },
 ]
+_FILE_TOOLS_SPEC.append({
+    "type": "function",
+    "function": {
+        "name": "create_updated_document",
+        "description": (
+            "Make an updated copy of one of the user's files (DOCX, XLSX, PDF, TXT, or "
+            "CSV) using the newest information in MindLoom's memory. Keeps the original "
+            "format and styling, changes only what evidence supports, and saves it as a "
+            "new file; the original is untouched."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The file to update, e.g. 'Q3 report.docx'."},
+                "instructions": {
+                    "type": "string",
+                    "description": (
+                        "What to update, in the user's words (e.g. 'refresh the revenue "
+                        "figures and project statuses'). Optional."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
+})
 _FILE_TOOLS_SPEC.append({
     "type": "function",
     "function": {
@@ -770,8 +831,47 @@ _TOOLS.append({
     },
 })
 
+_TOOLS.append({
+    "type": "function",
+    "function": {
+        "name": "propose_recurring_email",
+        "description": (
+            "Draft an email that repeats at a fixed interval, sent from the user's Gmail. "
+            "Schedules nothing: the user approves it in a card."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "recipient_email": {"type": "string", "description": "To address. Empty if unknown."},
+                "recipient_name": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string", "description": "Email body (a template when refresh_instructions is set)."},
+                "interval_value": {"type": "integer", "description": "How many units between emails."},
+                "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days", "weeks"]},
+                "start_at": {
+                    "type": "string",
+                    "description": "Optional first send time, ISO 8601 with UTC offset.",
+                },
+                "refresh_instructions": {
+                    "type": "string",
+                    "description": (
+                        "Optional: what each email should cover, rewritten from MindLoom's "
+                        "knowledge before every send (e.g. 'this week's Tiramisu status')."
+                    ),
+                },
+            },
+            "required": ["subject", "body", "interval_value", "interval_unit"],
+        },
+    },
+})
+
 _DATA_TOOLS = {"count_emails", "knowledge_inventory", "project_status", "search_emails", "track_status"}
-_FILE_TOOLS = {"list_csv_files", "read_csv_file", "write_csv_file", "set_file_monitoring"}
+_FILE_TOOLS = {
+    "list_files", "read_file", "write_csv_file", "set_file_monitoring", "create_updated_document",
+}
+# Earlier tool names, still accepted so older conversations and tests keep working.
+_FILE_TOOL_ALIASES = {"list_csv_files": "list_files", "read_csv_file": "read_file"}
+_FILE_TOOL_NAMES = _FILE_TOOLS | set(_FILE_TOOL_ALIASES)
 
 
 @dataclass
@@ -818,15 +918,31 @@ def _mentions_file(text_lower: str, file_names: list[str]) -> bool:
     return False
 
 
+_DOC_VERSION = re.compile(
+    r"\b(?:updated|new|latest|fresh|current|revised|refreshed)\s+(?:version|copy|draft|edition)\b"
+    r"|\b(?:update|refresh|revise|regenerate|redo|bring)\b.{0,40}\b(?:document|doc|docx|report|"
+    r"deck|memo|proposal|brief|spreadsheet|workbook|sheet|pdf|xlsx|txt|file|attachment)\b"
+)
+_ATTACHED_ASK = re.compile(
+    r"\b(?:this|attached|uploaded|the)\s+(?:file|document|doc|report|pdf|sheet|spreadsheet|workbook)\b"
+    r"|\b(?:update|refresh|revise|summari[sz]e|read|what|review)\b"
+)
+
+
 def _wants_files(
     question: str,
     file_names: list[str] | None = None,
     history: list[ChatMessage] | None = None,
+    attached: list[str] | None = None,
 ) -> bool:
-    """CSV/Files-tab requests, including follow-ups about a file just discussed."""
+    """Files-tab requests, including follow-ups about a file just discussed."""
 
     lowered = " ".join(question.lower().split())
     names = file_names or []
+    if _DOC_VERSION.search(lowered):
+        return True
+    if attached and _ATTACHED_ASK.search(lowered):
+        return True
     if _FILE_TERMS.search(lowered) or re.search(r"\.csv\b", lowered):
         return True
     if _FILE_CREATE.search(lowered):
@@ -860,15 +976,27 @@ async def _user_files(org_id: str, user_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _file_detail(f: dict[str, Any]) -> str:
+    kind = f.get("kind") or "csv"
+    rows, columns = f.get("row_count", 0), f.get("column_count", 0)
+    if kind == "csv":
+        return f"{rows} rows x {columns} columns"
+    if kind == "txt":
+        return f"text, {rows} lines"
+    if kind == "pdf":
+        return f"PDF, {rows} pages"
+    if kind == "docx":
+        return f"Word document, {rows} paragraphs"
+    return f"Excel workbook, {columns} sheets"
+
+
 def _files_status(files: list[dict[str, Any]]) -> str:
     if not files:
         return "none yet."
     shown = files[:25]
-    listing = "; ".join(
-        f"{f['name']} ({f['row_count']} rows x {f['column_count']} columns)" for f in shown
-    )
+    listing = "; ".join(f"{f['name']} ({_file_detail(f)})" for f in shown)
     if len(files) > len(shown):
-        listing += f"; and {len(files) - len(shown)} more (call list_csv_files)"
+        listing += f"; and {len(files) - len(shown)} more (call list_files)"
     return listing + "."
 
 
@@ -880,12 +1008,15 @@ async def _run_file_tool(
     user_id: str,
     state: _FileToolState,
 ) -> dict[str, Any]:
-    if name == "list_csv_files":
+    name = _FILE_TOOL_ALIASES.get(name, name)
+    if name == "list_files":
         files = await files_service.list_files(org_id, user_id)
         return {
             "files": [
                 {
                     "name": f["name"],
+                    "type": f.get("kind") or "csv",
+                    "details": _file_detail(f),
                     "rows": f["row_count"],
                     "columns": f["column_count"],
                     "updated_at": f["updated_at"],
@@ -900,10 +1031,24 @@ async def _run_file_tool(
     if not file_name:
         return {"error": "name is required."}
 
-    if name == "read_csv_file":
+    if name == "read_file":
         found = await files_service.find_file_by_name(org_id, user_id, file_name)
         if found is None:
-            return {"error": f"No file named {file_name}. Call list_csv_files to see names."}
+            return {"error": f"No file named {file_name}. Call list_files to see names."}
+        if (found.get("kind") or "csv") != "csv":
+            full = await files_service.read_text_for_ask(org_id, user_id, found)
+            limit = files_service.ASK_MAX_FILE_CHARS
+            return {
+                "name": found["name"],
+                "type": found["kind"],
+                "details": _file_detail(found),
+                "content": full[:limit],
+                "truncated": len(full) > limit,
+                "note": (
+                    "To produce an updated version of this file, call "
+                    "create_updated_document; write_csv_file only writes CSV files."
+                ),
+            }
         content = found["content"]
         if len(content) > files_service.ASK_MAX_FILE_CHARS:
             return {
@@ -933,6 +1078,17 @@ async def _run_file_tool(
             return {"error": "content must be the complete CSV text."}
         summary = str(arguments.get("summary") or "").strip()[:300]
         existing = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if existing is not None and (existing.get("kind") or "csv") != "csv":
+            if files_service.kind_from_name(file_name) is None:
+                # "budget" matched budget.docx; write budget.csv instead.
+                existing = await files_service.find_file_by_name(org_id, user_id, f"{file_name}.csv")
+            else:
+                return {
+                    "error": (
+                        f"{existing['name']} is a .{existing['kind']} file. Use "
+                        "create_updated_document to make an updated copy of it."
+                    )
+                }
         if existing is None:
             saved = await files_service.create_file(
                 org_id, user_id, file_name, content, edited_by="loombot"
@@ -949,7 +1105,7 @@ async def _run_file_tool(
             if existing["file_id"] not in state.read_ids:
                 return {
                     "error": (
-                        f"Call read_csv_file for {existing['name']} before replacing "
+                        f"Call read_file for {existing['name']} before replacing "
                         "it, so no existing rows are lost."
                     )
                 }
@@ -1013,10 +1169,43 @@ async def _run_file_tool(
             result["ask_user"] = ask_user
         return result
 
+    if name == "create_updated_document":
+        from loombot.document_update import create_updated_version
+
+        found = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if found is None:
+            return {"error": f"No file named {file_name}. Call list_files to see names."}
+        result = await create_updated_version(
+            org_id, user_id, found["file_id"], str(arguments.get("instructions") or "") or None
+        )
+        changes = result["changes"][:15]
+        if result["changed"]:
+            saved = result["file"]
+            state.changes.append(FileChange(
+                file_id=saved["file_id"],
+                name=saved["name"],
+                action="created",
+                kind=saved.get("kind") or found.get("kind") or "csv",
+                summary=result["summary"],
+                row_count=saved.get("row_count", 0),
+                column_count=saved.get("column_count", 0),
+                based_on=result["based_on"],
+                changes=[DocumentChange(**change) for change in changes],
+                warnings=result["warnings"],
+            ))
+        return {
+            "changed": result["changed"],
+            "new_file": result["file"]["name"] if result["changed"] else None,
+            "based_on": result["based_on"],
+            "summary": result["summary"],
+            "changes": changes,
+            "warnings": result["warnings"],
+        }
+
     if name == "set_file_monitoring":
         found = await files_service.find_file_by_name(org_id, user_id, file_name)
         if found is None:
-            return {"error": f"No file named {file_name}. Call list_csv_files to see names."}
+            return {"error": f"No file named {file_name}. Call list_files to see names."}
         enabled = arguments.get("enabled") is not False
         saved = await files_service.set_monitoring(
             org_id, user_id, found["file_id"], enabled=enabled,
@@ -1090,6 +1279,23 @@ _SEND_TO = re.compile(r"\b(?:send|forward)\s+(?:it\s+|this\s+|that\s+|these\s+|t
 _ASKING_ABOUT_MAIL = re.compile(
     r"\b(?:did|has|have|had|was|were|when|who)\b.{0,60}\b(?:sen[dt]|e-?mailed|wrote|messaged)\b"
 )
+
+
+_RECURRING = re.compile(
+    r"\b(?:every\s+(?:\d+\s*|other\s+|single\s+)?(?:min(?:ute)?s?|hours?|hrs?|days?|weeks?|"
+    r"months?|mornings?|evenings?|nights?|weekdays?|mondays?|tuesdays?|wednesdays?|"
+    r"thursdays?|fridays?|saturdays?|sundays?)|daily|hourly|weekly|bi-?weekly|fortnightly|"
+    r"each\s+(?:day|week|hour|morning|evening)|on a (?:daily|weekly|regular) basis|recurring|"
+    r"repeatedly)\b"
+)
+_SEND_WORDS = re.compile(r"\b(?:e-?mail\w*|send\w*|mail|remind\w*)\b")
+
+
+def _wants_recurring(question: str) -> bool:
+    """An email to be sent repeatedly at a fixed interval."""
+
+    lowered = " ".join(question.lower().split())
+    return bool(_RECURRING.search(lowered) and _SEND_WORDS.search(lowered))
 
 
 def _wants_messaging(question: str) -> bool:
@@ -1532,6 +1738,8 @@ async def _run_tool(
     google_connected: bool = False,
     file_state: _FileToolState | None = None,
     tracker_out: list[StatusTrackerCard] | None = None,
+    recurring_out: list[ProposedRecurringEmail] | None = None,
+    user_timezone: str | None = None,
 ) -> tuple[
     Any,
     ProposedExpertMessage | None,
@@ -1539,7 +1747,7 @@ async def _run_tool(
     ProposedWorkspace | None,
     ProposedEmail | None,
 ]:
-    if name in _FILE_TOOLS:
+    if name in _FILE_TOOL_NAMES:
         return await _run_file_tool(
             name,
             arguments,
@@ -1798,6 +2006,45 @@ async def _run_tool(
             search=arguments.get("search"),
         ), None, None, None, None
 
+    if name == "propose_recurring_email":
+        from shuttle.recurring_emails import describe_interval, interval_of
+
+        unit = str(arguments.get("interval_unit") or "").strip().lower()
+        value = int(arguments.get("interval_value") or 0)
+        interval = interval_of(value, unit)  # raises with a clear message when invalid
+        subject = " ".join(str(arguments.get("subject") or "").split())
+        body = str(arguments.get("body") or "").strip()
+        if not subject or not body:
+            return {"error": "subject and body are required."}, None, None, None, None
+        start_at = _parse_start(arguments.get("start_at"), user_timezone)
+        recipient = str(arguments.get("recipient_email") or "").strip()
+        recipient_name = str(arguments.get("recipient_name") or "").strip() or None
+        candidates = _candidates_from_cache(people_cache)
+        if not recipient and len(candidates) == 1:
+            recipient, recipient_name = candidates[0].email, recipient_name or candidates[0].name
+        draft = ProposedRecurringEmail(
+            recipient_email=recipient,
+            recipient_name=recipient_name,
+            subject=subject[:300],
+            body=body[:20_000],
+            interval_value=value,
+            interval_unit=unit,
+            start_at=start_at,
+            refresh_instructions=str(arguments.get("refresh_instructions") or "").strip()[:1000] or None,
+            google_connected=google_connected,
+            candidates=candidates,
+        )
+        if recurring_out is not None:
+            recurring_out.append(draft)
+        first = start_at or (datetime.now(timezone.utc) + interval)
+        return {
+            "drafted": True,
+            "repeats": describe_interval(value, unit),
+            "first_send": first.isoformat(),
+            "recipient": recipient or "(the user will enter it)",
+            "note": "Nothing is scheduled until the user approves the card.",
+        }, None, None, None, None
+
     if name == "track_status":
         from lens.status_trackers import create_tracker
 
@@ -1948,8 +2195,11 @@ Decide whether the request needs tools, which act on live data or take actions:
 - knowledge_inventory: count indexed documents by source
 - track_status: status reports and tracking a subject over time
 - project_status: overview of all open work
-- list_csv_files, read_csv_file, write_csv_file, set_file_monitoring: the user's CSV
-  files in the Files tab (create, read, change, keep updated)
+- list_files, read_file, write_csv_file, set_file_monitoring: the user's files in
+  the Files tab (CSV, TXT, DOCX, XLSX, PDF): read any, create or change CSVs,
+  keep CSVs updated
+- create_updated_document: make an updated copy of a file from MindLoom's memory
+- propose_recurring_email: schedule an email that repeats at a fixed interval
 Questions about company knowledge, policies, people, or past discussions need no
 tools: retrieved context answers them. Use tools when the request involves the
 user's mailbox, files, messages, GitHub, workspaces, counts, or status tracking.
@@ -2009,6 +2259,30 @@ async def _plan_request(
     return {"use_tools": use_tools, "plan": plan if use_tools else []}
 
 
+def _parse_start(value: Any, user_timezone: str | None) -> datetime | None:
+    """ISO start time to aware UTC; a time without an offset is the user's local time."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_zone(user_timezone))
+    return parsed.astimezone(timezone.utc)
+
+
+def _zone(name: str | None) -> Any:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        return ZoneInfo(name) if name else timezone.utc
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
+
+
 def _only_cited(answer: str, sources: list[Any]) -> list[Any]:
     """Drop retrieved-but-uncited sources from answers about the user's files."""
 
@@ -2024,15 +2298,19 @@ async def run_ask_agent(
     org_id: str,
     user_id: str,
     ephemeral_documents: list[EphemeralDocument] | None = None,
+    attached_file_names: list[str] | None = None,
+    user_timezone: str | None = None,
 ) -> QueryResponse:
     """Answer via RAG, using tools for messaging, GitHub, workspaces, or data."""
 
-    wants_msg = _wants_messaging(question)
+    wants_recurring = _wants_recurring(question)
+    wants_msg = _wants_messaging(question) or wants_recurring
     wants_gh = _wants_github(question)
     wants_ws = _wants_workspace(question)
     wants_data = _wants_data(question)
     user_files = await _user_files(org_id, user_id)
-    wants_files = _wants_files(question, [f["name"] for f in user_files], history)
+    attached = [str(n) for n in (attached_file_names or []) if str(n).strip()][:10]
+    wants_files = _wants_files(question, [f["name"] for f in user_files], history, attached)
     plan: list[str] = []
     client: LLMClientAdapter | None = None
     if not wants_msg and not wants_gh and not wants_ws and not wants_data and not wants_files:
@@ -2085,6 +2363,9 @@ async def run_ask_agent(
                 context_string=context_string,
                 gmail_status=gmail_status,
                 files_status=_files_status(user_files),
+                attached_files=", ".join(attached) or "none",
+                user_timezone=user_timezone or "unknown (assume UTC)",
+                local_now=datetime.now(_zone(user_timezone)).strftime("%A, %d %B %Y %H:%M %Z"),
                 plan_hint=_plan_hint(plan),
                 today=datetime.now(timezone.utc).strftime("%A, %d %B %Y"),
             ),
@@ -2104,6 +2385,9 @@ async def run_ask_agent(
     used_email = False
     file_state = _FileToolState()
     tracker_out: list[StatusTrackerCard] = []
+    recurring_out: list[ProposedRecurringEmail] = []
+    # Repeat requests must not fall back to a one-off email draft.
+    one_off_messaging = wants_msg and not wants_recurring
 
     def _messaging_answer() -> str:
         if email_proposal is not None:
@@ -2125,7 +2409,7 @@ async def run_ask_agent(
         return ""
 
     if not client.configuration.supports_tools:
-        if wants_msg:
+        if one_off_messaging:
             proposal, email_proposal = await _ensure_proposals(
                 question=question, org_id=org_id, user_id=user_id,
                 people_cache=people_cache, proposal=None, email_proposal=None,
@@ -2139,7 +2423,7 @@ async def run_ask_agent(
             )
         # Knowledge answers already use explicit retrieval then prompting. Actions
         # that require structured arguments fail safely instead of being guessed.
-        if wants_gh or wants_ws or wants_data or wants_files:
+        if wants_gh or wants_ws or wants_data or wants_files or wants_recurring:
             base.answer += (
                 "\n\nThe active local model is configured without structured tool "
                 "calling, so I could not use connectors, Files, or the Status board "
@@ -2169,7 +2453,7 @@ async def run_ask_agent(
         ):
             create_kwargs["tool_choice"] = "required"
         elif (
-            wants_msg
+            one_off_messaging
             and email_proposal is None
             and proposal is None
             and len(unique_people) == 1
@@ -2193,7 +2477,7 @@ async def run_ask_agent(
         choice = response.choices[0].message
         tool_calls = choice.tool_calls or []
         if not tool_calls:
-            if wants_msg:
+            if one_off_messaging and not recurring_out:
                 proposal, email_proposal = await _ensure_proposals(
                     question=question,
                     org_id=org_id,
@@ -2219,11 +2503,12 @@ async def run_ask_agent(
                 if proposal is None and email_proposal is None
                 else []
             )
-            if (used_files or used_email or tracker_out) and not used_github:
+            if (used_files or used_email or tracker_out or recurring_out) and not used_github:
                 sources = _only_cited(answer, sources)
             return QueryResponse(
                 file_changes=list(file_state.changes),
                 status_tracker=tracker_out[-1] if tracker_out else None,
+                proposed_recurring_email=recurring_out[-1] if recurring_out else None,
                 answer=answer,
                 sources=sources,
                 expert=None,
@@ -2270,7 +2555,7 @@ async def run_ask_agent(
                 used_github = True
             if call.function.name in _DATA_TOOLS:
                 used_data = True
-            if call.function.name in _FILE_TOOLS:
+            if call.function.name in _FILE_TOOL_NAMES:
                 used_files = True
             if call.function.name == "search_emails":
                 used_email = True
@@ -2283,6 +2568,8 @@ async def run_ask_agent(
                 google_connected=google_connected,
                 file_state=file_state,
                 tracker_out=tracker_out,
+                recurring_out=recurring_out,
+                user_timezone=user_timezone,
             )
             if maybe_proposal is not None:
                 proposal = maybe_proposal
@@ -2309,7 +2596,7 @@ async def run_ask_agent(
         if ws_proposal is not None and not wants_msg and not wants_gh and not wants_files:
             break
 
-    if wants_msg:
+    if one_off_messaging and not recurring_out:
         proposal, email_proposal = await _ensure_proposals(
             question=question,
             org_id=org_id,
@@ -2324,6 +2611,7 @@ async def run_ask_agent(
         return QueryResponse(
             file_changes=list(file_state.changes),
             status_tracker=tracker_out[-1] if tracker_out else None,
+            proposed_recurring_email=recurring_out[-1] if recurring_out else None,
             answer=messaging_answer,
             sources=[],
             expert=None,
@@ -2346,6 +2634,7 @@ async def run_ask_agent(
         return QueryResponse(
             file_changes=list(file_state.changes),
             status_tracker=tracker_out[-1] if tracker_out else None,
+            proposed_recurring_email=recurring_out[-1] if recurring_out else None,
             answer=answer,
             sources=base.sources,
             expert=None,
@@ -2362,6 +2651,7 @@ async def run_ask_agent(
         return QueryResponse(
             file_changes=list(file_state.changes),
             status_tracker=tracker_out[-1] if tracker_out else None,
+            proposed_recurring_email=recurring_out[-1] if recurring_out else None,
             answer=_workspace_answer(ws_proposal),
             sources=base.sources,
             expert=None,
@@ -2396,6 +2686,7 @@ async def run_ask_agent(
     return QueryResponse(
         file_changes=list(file_state.changes),
         status_tracker=tracker_out[-1] if tracker_out else None,
+        proposed_recurring_email=recurring_out[-1] if recurring_out else None,
         answer=answer,
         sources=await _with_cited_sources(answer, base.sources, org_id, user_id),
         expert=None,

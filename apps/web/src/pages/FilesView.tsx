@@ -16,35 +16,29 @@ import {
 } from "lucide-react";
 import { parseCsvMatrix, toCsv } from "@/lib/csv";
 import {
+  FILE_UPLOAD_ACCEPT,
   createFile,
   deleteFile,
   getFile,
+  kindFromName,
   listFileEvents,
   listFiles,
   setFileMonitoring,
   undoFile,
   updateFile,
+  uploadFile,
   type LoomFile,
   type LoomFileEvent,
   type LoomFileMeta,
 } from "@/services/files";
+import { DocumentFileView, ExcelButton } from "@/pages/FileViewers";
 import { cn } from "@/lib/utils";
+import { plural, timeAgo } from "@/lib/format";
+import { FileKindIcon, fileDetail } from "@/components/FileKindIcon";
 
 const PAGE_SIZE = 200;
 
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return new Date(iso).toLocaleDateString();
-}
 
-function plural(n: number, word: string): string {
-  return `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
-}
 
 export default function FilesView() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -183,6 +177,20 @@ export default function FilesView() {
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
             <Loader2 className="mr-2 size-4 animate-spin" /> Opening file…
           </div>
+        ) : active && active.kind !== "csv" ? (
+          <DocumentFileView
+            key={`${active.file_id}:${active.updated_at}`}
+            file={active}
+            onSaved={onSaved}
+            onDeleted={onDeleted}
+            onDirtyChange={setDirty}
+            onCreated={(file) => {
+              const next = new URLSearchParams(searchParams);
+              next.set("file", file.file_id);
+              setSearchParams(next, { replace: true });
+              void refreshList();
+            }}
+          />
         ) : active ? (
           <FileEditor
             key={`${active.file_id}:${active.updated_at}`}
@@ -235,11 +243,11 @@ function FileList({
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
             )}
           >
-            <FileSpreadsheet className="mt-0.5 size-4 shrink-0" />
+            <FileKindIcon kind={f.kind} className="mt-0.5" />
             <span className="min-w-0 flex-1">
               <span className="block truncate font-medium">{f.name}</span>
               <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
-                {plural(f.row_count, "row")} · {timeAgo(f.updated_at)}
+                {fileDetail(f)} · {timeAgo(f.updated_at)}
                 {f.last_edited_by === "loombot" && (
                   <Bot className="size-3 shrink-0" aria-label="Last edited by LoomBot" />
                 )}
@@ -288,33 +296,39 @@ function NewFileForm({
   onCreated: (file: LoomFile) => void;
 }) {
   const [name, setName] = useState("");
+  const [kind, setKind] = useState<"csv" | "txt">("csv");
   const [headers, setHeaders] = useState("Name, Value");
-  const [imported, setImported] = useState<{ filename: string; content: string } | null>(null);
+  const [imported, setImported] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [monitor, setMonitor] = useState(false);
   const [instructions, setInstructions] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
 
+  const importedKind = imported ? kindFromName(imported.name) : null;
+  const finalKind = importedKind ?? kind;
   const finalName = (() => {
     const trimmed = name.trim();
     if (!trimmed) return "";
-    return trimmed.toLowerCase().endsWith(".csv") ? trimmed : `${trimmed}.csv`;
+    return trimmed.toLowerCase().endsWith(`.${finalKind}`) ? trimmed : `${trimmed}.${finalKind}`;
   })();
   const duplicate = finalName !== "" && existingNames.includes(finalName.toLowerCase());
+  const canMonitor = finalKind === "csv";
 
-  async function pick(list: FileList | null) {
+  function pick(list: FileList | null) {
     const file = list?.[0];
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".csv") && file.type !== "text/csv") {
-      setError("Choose a .csv file.");
+    const picked = kindFromName(file.name);
+    if (!picked) {
+      setError("Choose a .csv, .txt, .docx, .xlsx, or .pdf file.");
       return;
     }
-    if (file.size > 1_000_000) {
-      setError("CSV files are limited to 1 MB.");
+    const limit = picked === "csv" || picked === "txt" ? 1_000_000 : 15_000_000;
+    if (file.size > limit) {
+      setError(picked === "csv" || picked === "txt" ? "CSV and text files are limited to 1 MB." : "Files are limited to 15 MB.");
       return;
     }
-    setImported({ filename: file.name, content: await file.text() });
+    setImported(file);
     if (!name.trim()) setName(file.name);
     setError("");
   }
@@ -324,17 +338,19 @@ function NewFileForm({
     setBusy(true);
     setError("");
     try {
-      const columns = headers
-        .split(",")
-        .map((h) => h.trim())
-        .filter(Boolean);
-      const content = imported
-        ? imported.content
-        : columns.length
-          ? toCsv([columns])
-          : "";
-      let created = await createFile(finalName, content);
-      if (monitor && instructions.trim()) {
+      let created: LoomFile;
+      if (imported) {
+        created = await uploadFile(imported, finalName);
+      } else if (kind === "txt") {
+        created = await createFile(finalName, "", "txt");
+      } else {
+        const columns = headers
+          .split(",")
+          .map((h) => h.trim())
+          .filter(Boolean);
+        created = await createFile(finalName, columns.length ? toCsv([columns]) : "");
+      }
+      if (canMonitor && monitor && instructions.trim()) {
         created = await setFileMonitoring(created.file_id, true, instructions.trim());
       }
       onCreated(created);
@@ -347,14 +363,14 @@ function NewFileForm({
 
   return (
     <form
-      className="mx-auto w-full max-w-lg space-y-4 p-6"
+      className="mx-auto w-full max-w-lg space-y-4 overflow-y-auto p-6"
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
       }}
     >
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">New CSV file</h2>
+        <h2 className="text-lg font-semibold">New file</h2>
         <button
           type="button"
           onClick={onCancel}
@@ -364,13 +380,48 @@ function NewFileForm({
           <X className="size-4" />
         </button>
       </div>
+
+      {imported ? (
+        <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+          <span className="flex min-w-0 items-center gap-2 truncate">
+            <FileKindIcon kind={importedKind ?? "txt"} />
+            Uploading <span className="truncate font-medium">{imported.name}</span>
+          </span>
+          <button
+            type="button"
+            className="ml-2 shrink-0 text-xs font-medium text-primary hover:underline"
+            onClick={() => setImported(null)}
+          >
+            Remove
+          </button>
+        </div>
+      ) : (
+        <div className="flex rounded-md border border-border p-0.5 text-sm" role="radiogroup" aria-label="File type">
+          {(["csv", "txt"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={kind === option}
+              onClick={() => setKind(option)}
+              className={cn(
+                "flex-1 rounded px-3 py-1.5 font-medium",
+                kind === option ? "bg-secondary text-foreground" : "text-muted-foreground",
+              )}
+            >
+              {option === "csv" ? "Spreadsheet (CSV)" : "Text (TXT)"}
+            </button>
+          ))}
+        </div>
+      )}
+
       <label className="block text-sm font-medium">
         File name
         <input
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="budget.csv"
+          placeholder={`notes.${finalKind}`}
           maxLength={120}
           className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
         />
@@ -381,21 +432,7 @@ function NewFileForm({
         )}
       </label>
 
-      {imported ? (
-        <div className="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-          <span className="truncate">
-            Importing <span className="font-medium">{imported.filename}</span> (
-            {plural(Math.max(0, parseCsvMatrix(imported.content).length - 1), "row")})
-          </span>
-          <button
-            type="button"
-            className="ml-2 text-xs font-medium text-primary hover:underline"
-            onClick={() => setImported(null)}
-          >
-            Remove
-          </button>
-        </div>
-      ) : (
+      {!imported && kind === "csv" && (
         <label className="block text-sm font-medium">
           Column headers
           <input
@@ -413,52 +450,54 @@ function NewFileForm({
       <input
         ref={fileInput}
         type="file"
-        accept=".csv,text/csv"
+        accept={FILE_UPLOAD_ACCEPT}
         className="sr-only"
         onChange={(e) => {
-          void pick(e.target.files);
+          pick(e.target.files);
           e.target.value = "";
         }}
       />
 
-      <div className="space-y-2 rounded-md border border-border p-3">
-        <label className="flex items-start gap-2 text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={monitor}
-            onChange={(e) => setMonitor(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>
-            Keep this file updated automatically
-            <span className="block text-xs font-normal text-muted-foreground">
-              LoomBot adds rows when new information that matches arrives. It never deletes.
+      {canMonitor && (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <label className="flex items-start gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={monitor}
+              onChange={(e) => setMonitor(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Keep this file updated automatically
+              <span className="block text-xs font-normal text-muted-foreground">
+                LoomBot adds rows when new information that matches arrives. It never deletes.
+              </span>
             </span>
-          </span>
-        </label>
-        {monitor && (
-          <textarea
-            value={instructions}
-            onChange={(e) => setInstructions(e.target.value)}
-            rows={2}
-            maxLength={1000}
-            placeholder="What should be added? e.g. Add a row for each new invoice email from Stripe with date, amount, and invoice number."
-            aria-label="What should be added automatically"
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-          />
-        )}
-      </div>
+          </label>
+          {monitor && (
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              rows={2}
+              maxLength={1000}
+              placeholder="What should be added? e.g. Add a row for each new invoice email from Stripe with date, amount, and invoice number."
+              aria-label="What should be added automatically"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+          )}
+        </div>
+      )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex flex-wrap gap-2">
         <button
           type="submit"
-          disabled={busy || !finalName || duplicate || (monitor && !instructions.trim())}
+          disabled={busy || !finalName || duplicate || (canMonitor && monitor && !instructions.trim())}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <FilePlus2 className="size-4" />}
-          Create file
+          {imported ? "Upload file" : "Create file"}
         </button>
         {!imported && (
           <button
@@ -466,13 +505,17 @@ function NewFileForm({
             onClick={() => fileInput.current?.click()}
             className="flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/60"
           >
-            <Upload className="size-4" /> Import a .csv instead
+            <Upload className="size-4" /> Upload a file instead
           </button>
         )}
       </div>
+      <p className="text-xs text-muted-foreground">
+        You can upload CSV, TXT, Word (.docx), Excel (.xlsx), and PDF files.
+      </p>
     </form>
   );
 }
+
 
 function FileEditor({
   file,
@@ -657,6 +700,7 @@ function FileEditor({
               Undo
             </button>
           )}
+          <ExcelButton fileId={file.file_id} name={file.name} />
           <button
             type="button"
             onClick={download}

@@ -1,0 +1,32 @@
+apps/desktop-agent/Sources/MindLoomAgent/AgentConfigStore.swift
+  s_218d62697339ad::t_99f63e76c9b4db 38-52,71-75
+apps/desktop-agent/Sources/MindLoomAgent/Models.swift
+  s_218d62697339ad::t_fc7985fede8ba7 92-119,121-122,126-128,133-136
+apps/web/public/downloads/install-loom-capture.sh
+  s_218d62697339ad::t_de1f9a99a6b338 7,9-11,21,51-69
+apps/web/src/components/DesktopAgentDownload.tsx
+  s_218d62697339ad::t_5bbe34f4e0f126 10,66
+apps/web/src/lib/desktopAgent.ts
+  s_218d62697339ad::t_22d60454310655 21-32,36-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "beb752e9430bee2965dfa8eaea1ced61abc0d0dc",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_218d62697339ad": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "69cc522b-4948-4666-baec-7d8d3dffdf3c",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

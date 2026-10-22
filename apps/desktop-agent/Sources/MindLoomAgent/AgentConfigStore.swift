@@ -35,6 +35,21 @@ enum AgentConfigStore {
         var next = config
         next.apiBase = AgentConfig.resolvedAPIBase(apiBase: next.apiBase, webBase: next.webBase)
         let bundled = AgentConfig.default
+        // Installed from a website: always use that site. Switching sites signs
+        // the user out, since a token from one API is not valid on another.
+        if AgentConfig.installOverride != nil {
+            if normalized(next.webBase) != normalized(bundled.webBase)
+                || normalized(next.apiBase) != normalized(bundled.apiBase) {
+                next.apiBase = bundled.apiBase
+                next.webBase = bundled.webBase
+                next.accessToken = ""
+                next.orgId = "default"
+                next.userId = "desktop-user"
+                next.email = ""
+                save(next)
+            }
+            return next
+        }
         let savedIsLocal = isLocalDevHost(next.webBase) && isLocalDevHost(next.apiBase)
         let bundledIsLocal = isLocalDevHost(bundled.webBase)
         if !savedIsLocal && bundledIsLocal {
@@ -51,6 +66,11 @@ enum AgentConfigStore {
             save(next)
         }
         return next
+    }
+
+    private static func normalized(_ value: String) -> String {
+        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower.hasSuffix("/") ? String(lower.dropLast()) : lower
     }
 
     private static func isLocalDevHost(_ value: String) -> Bool {

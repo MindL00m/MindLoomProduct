@@ -18,10 +18,21 @@ export function absoluteAssetUrl(pathOrUrl: string, origin: string): string {
   return `${origin.replace(/\/$/, "")}${path}`;
 }
 
-/** Terminal install avoids Finder quarantine on the unsigned .app zip. */
-export function loomCaptureInstallCommand(origin: string, zipUrl = DESKTOP_AGENT_DOWNLOAD_URL): string {
+/**
+ * Terminal install avoids Finder quarantine on the unsigned .app zip.
+ *
+ * The site origin and the API origin this site talks to are passed to the
+ * installer, which saves them for the app. Without them the app falls back to
+ * the hosts baked into the zip (localhost for local builds).
+ */
+export function loomCaptureInstallCommand(
+  origin: string,
+  zipUrl = DESKTOP_AGENT_DOWNLOAD_URL,
+  apiBase = "/api",
+): string {
   const host = origin.replace(/\/$/, "");
   const zip = absoluteAssetUrl(zipUrl, host);
   const script = absoluteAssetUrl(INSTALL_SCRIPT_PATH, host);
-  return `curl -fsSL "${script}" | bash -s -- "${host}" "${zip}"`;
+  const api = absoluteAssetUrl(apiBase, host).replace(/\/$/, "");
+  return `curl -fsSL "${script}" | bash -s -- "${host}" "${zip}" "${api}"`;
 }

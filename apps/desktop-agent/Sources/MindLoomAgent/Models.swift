@@ -89,14 +89,49 @@ struct AgentConfig: Codable {
         !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Production builds bake these into Info.plist via `scripts/package-app.sh`.
+    /// Hosts written by the website installer (`install-loom-capture.sh`) to
+    /// `~/.mindloom/install.json`, so one zip works for whichever site it was
+    /// installed from. Missing or invalid files are ignored.
+    struct InstallOverride: Codable {
+        var webBase: String
+        var apiBase: String?
+    }
+
+    static var installOverrideURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mindloom/install.json")
+    }
+
+    static var installOverride: InstallOverride? {
+        guard let data = try? Data(contentsOf: installOverrideURL),
+              let parsed = try? JSONDecoder().decode(InstallOverride.self, from: data) else { return nil }
+        let web = parsed.webBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isHTTPURL(web) else { return nil }
+        let api = parsed.apiBase?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return InstallOverride(webBase: web, apiBase: (api?.isEmpty ?? true) ? nil : api)
+    }
+
+    private static func isHTTPURL(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        return (lower.hasPrefix("https://") || lower.hasPrefix("http://")) && URL(string: value) != nil
+    }
+
+    /// The installer's site wins; otherwise the hosts baked into Info.plist by
+    /// `scripts/package-app.sh`; otherwise local Compose defaults.
     static var bundledWebBase: String {
-        plistString("LoomWebBase") ?? "http://localhost:5500"
+        if let install = installOverride { return trimmedSlash(install.webBase) }
+        return plistString("LoomWebBase") ?? "http://localhost:5500"
     }
 
     static var bundledAPIBase: String {
+        if let install = installOverride {
+            return resolvedAPIBase(apiBase: install.apiBase ?? "/api", webBase: trimmedSlash(install.webBase))
+        }
         let raw = plistString("LoomAPIBase") ?? "http://localhost:8000"
         return resolvedAPIBase(apiBase: raw, webBase: bundledWebBase)
+    }
+
+    private static func trimmedSlash(_ value: String) -> String {
+        value.hasSuffix("/") ? String(value.dropLast()) : value
     }
 
     static var `default`: AgentConfig {

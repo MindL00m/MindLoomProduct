@@ -7,6 +7,7 @@ import {
   isAbsoluteUrl,
   loomCaptureInstallCommand,
 } from "@/lib/desktopAgent";
+import { API_BASE } from "@/lib/api";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
 
@@ -62,7 +63,7 @@ export function DesktopAgentDownload({
 
   const ready = availability === "ready";
   const installCommand = useMemo(
-    () => (origin ? loomCaptureInstallCommand(origin, DESKTOP_AGENT_DOWNLOAD_URL) : ""),
+    () => (origin ? loomCaptureInstallCommand(origin, DESKTOP_AGENT_DOWNLOAD_URL, API_BASE) : ""),
     [origin],
   );
 

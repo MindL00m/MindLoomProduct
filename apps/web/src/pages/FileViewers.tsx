@@ -4,6 +4,7 @@ import {
   Download,
   ExternalLink,
   Loader2,
+  Pencil,
   RefreshCw,
   Save,
   Sparkles,
@@ -105,7 +106,7 @@ export function ExcelButton({ fileId, name, compact }: { fileId: string; name: s
   );
 }
 
-/** Viewer and actions for TXT, DOCX, XLSX, and PDF files. */
+/** Viewer and actions for TXT, DOCX, XLSX, and PDF files (TXT and DOCX are editable). */
 export function DocumentFileView({
   file,
   onSaved,
@@ -121,13 +122,17 @@ export function DocumentFileView({
 }) {
   const [name, setName] = useState(file.name);
   const [text, setText] = useState(file.content ?? "");
-  const [busy, setBusy] = useState<"" | "save" | "undo" | "delete" | "rename" | "upload">("");
+  const [busy, setBusy] = useState<"" | "save" | "undo" | "delete" | "rename" | "upload" | "edit">("");
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
   const replaceInput = useRef<HTMLInputElement>(null);
   const isText = file.kind === "txt";
-  const dirty = isText && text !== (file.content ?? "");
+  // Word documents are edited as Markdown and rebuilt on save (undoable).
+  const [docText, setDocText] = useState<string | null>(null);
+  const [docOriginal, setDocOriginal] = useState("");
+  const editingDoc = file.kind === "docx" && docText !== null;
+  const dirty = isText ? text !== (file.content ?? "") : editingDoc && docText !== docOriginal;
 
   useEffect(() => {
     onDirtyChange(dirty);
@@ -166,6 +171,29 @@ export function DocumentFileView({
     if (dirty && !window.confirm("Undo the last saved change and discard your unsaved edits?")) return;
     void run("undo", async () => onSaved(await undoFile(file.file_id)));
   };
+
+  function startDocEdit() {
+    void run("edit", async () => {
+      const preview = await getFilePreview(file.file_id);
+      const markdown = preview.kind === "docx" ? preview.markdown ?? "" : "";
+      setDocOriginal(markdown);
+      setDocText(markdown);
+    });
+  }
+
+  function saveText() {
+    void run("save", async () => {
+      const content = isText ? text : docText ?? "";
+      const saved = await updateFile(file.file_id, { content });
+      setDocText(null);
+      onSaved(saved);
+    });
+  }
+
+  function discard() {
+    if (isText) setText(file.content ?? "");
+    else setDocText(null);
+  }
 
   function replace(list: FileList | null) {
     const picked = list?.[0];
@@ -208,6 +236,17 @@ export function DocumentFileView({
             <Sparkles className="size-3.5" /> Update from memory
           </button>
           {file.kind === "xlsx" && <ExcelButton fileId={file.file_id} name={file.name} />}
+          {file.kind === "docx" && !editingDoc && (
+            <button
+              type="button"
+              disabled={busy !== ""}
+              onClick={startDocEdit}
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60 disabled:opacity-50"
+            >
+              {busy === "edit" ? <Loader2 className="size-3.5 animate-spin" /> : <Pencil className="size-3.5" />}
+              Edit text
+            </button>
+          )}
           {file.can_undo && (
             <button
               type="button"
@@ -299,27 +338,43 @@ export function DocumentFileView({
           onChange={(e) => setText(e.target.value)}
           className="m-4 min-h-0 flex-1 resize-none rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed outline-none focus:border-primary"
         />
+      ) : editingDoc ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <p className="mx-4 mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            Editing as text: # headings, - bullets, 1. numbered lists, **bold**, *italic*, and |
+            tables. Saving rebuilds the Word file with standard styles, so custom fonts and layout
+            are not kept. Undo restores the previous version.
+          </p>
+          <textarea
+            aria-label="Document text"
+            value={docText ?? ""}
+            onChange={(e) => setDocText(e.target.value)}
+            className="m-4 min-h-0 flex-1 resize-none rounded-md border border-border bg-background p-3 font-mono text-sm leading-relaxed outline-none focus:border-primary"
+          />
+        </div>
       ) : file.kind === "pdf" ? (
         <PdfFrame fileId={file.file_id} updatedAt={file.updated_at} />
       ) : (
         <StructuredPreview fileId={file.file_id} updatedAt={file.updated_at} />
       )}
 
-      {dirty && (
+      {(dirty || editingDoc) && (
         <footer className="flex items-center justify-end gap-2 border-t border-border bg-muted/40 px-4 py-2">
-          <span className="mr-auto text-xs text-muted-foreground">Unsaved changes</span>
+          <span className="mr-auto text-xs text-muted-foreground">
+            {dirty ? "Unsaved changes" : "No changes yet"}
+          </span>
           <button
             type="button"
             disabled={busy !== ""}
-            onClick={() => setText(file.content ?? "")}
+            onClick={discard}
             className="rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium disabled:opacity-50"
           >
-            Discard
+            {editingDoc && !dirty ? "Done" : "Discard"}
           </button>
           <button
             type="button"
-            disabled={busy !== ""}
-            onClick={() => void run("save", async () => onSaved(await updateFile(file.file_id, { content: text })))}
+            disabled={busy !== "" || !dirty}
+            onClick={saveText}
             className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
           >
             {busy === "save" ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}

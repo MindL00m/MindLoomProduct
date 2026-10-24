@@ -4,6 +4,7 @@ import {
   Loader2,
   MessageSquare,
   Plus,
+  RefreshCw,
   Settings2,
   Unplug,
   X,
@@ -180,6 +181,8 @@ export default function AppsView({
           busy={busyProvider === "google_workspace"}
           connectLabel={oauthEnabled ? "Authorize Google" : "Authorize Google (dev)"}
           onConnect={() => void connectWorkspace("google_workspace")}
+          onReconnect={oauthEnabled ? () => void connectWorkspace("google_workspace") : undefined}
+          reconnectHint="Sign in to Google again to grant new permissions, such as scheduling meetings on Google Calendar. Your approved locations are kept."
           onManage={() => setWizardProvider("google_workspace")}
           onPause={(paused) => void setConnectionPaused("google_workspace", paused).then(loadIntegrations)}
           onDisconnect={() => void disconnectConnection("google_workspace").then(loadIntegrations)}
@@ -481,6 +484,8 @@ function WorkspaceCard({
   busy,
   connectLabel,
   onConnect,
+  onReconnect,
+  reconnectHint,
   onManage,
   onPause,
   onDisconnect,
@@ -492,6 +497,9 @@ function WorkspaceCard({
   busy: boolean;
   connectLabel: string;
   onConnect: () => void;
+  /** Re-run authorization on a connected account, e.g. to grant newly added scopes. */
+  onReconnect?: () => void;
+  reconnectHint?: string;
   onManage: () => void;
   onPause: (paused: boolean) => void;
   onDisconnect: () => void;
@@ -534,6 +542,11 @@ function WorkspaceCard({
             {status !== "setup_required" && (
               <SecondaryButton onClick={() => onPause(status !== "paused")}>
                 {status === "paused" ? "Resume" : "Pause"}
+              </SecondaryButton>
+            )}
+            {onReconnect && (
+              <SecondaryButton onClick={onReconnect} disabled={busy} title={reconnectHint}>
+                {busy ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}Reconnect
               </SecondaryButton>
             )}
             <SecondaryButton onClick={onDisconnect}><Unplug className="size-4" />Disconnect</SecondaryButton>

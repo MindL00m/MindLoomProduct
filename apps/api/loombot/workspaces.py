@@ -1,9 +1,17 @@
-"""Org group-chat workspaces, including the default everyone room and @Loombot."""
+"""Org group-chat workspaces, including the default everyone room and @Loombot.
+
+@Loombot in a workspace runs the same agent as Ask (files, email, meetings,
+status tracking, web search, ...) as the member who mentioned it. The reply's
+full response is stored with the message so every member sees the answer and
+its sources, while only the member who asked can act on its cards.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from typing import Any
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -23,14 +31,10 @@ _LOOMBOT_MENTION = re.compile(
 )
 _LOOMBOT_STRIP = re.compile(r"@loombot\b", re.IGNORECASE)
 
-_CONTEXT_ANSWER_SYSTEM = """\
-You are Loombot, answering only from the workspace CONTEXT.md below.
-Do not use outside knowledge. If the answer is not in CONTEXT.md, say you do
-not have that in this workspace context and suggest Resync or Ask.
-
-CONTEXT.md:
-{context_md}
-"""
+_MESSAGE_COLUMNS = """message_id, sender_user_id, sender_type, sender_name,
+                       body, created_at, payload, requested_by, card_state"""
+_HISTORY_TURNS = 12
+MAX_CARD_STATE_BYTES = 20_000
 
 
 async def ensure_org_workspace(org_id: str, user_id: str) -> str:
@@ -308,15 +312,93 @@ async def list_workspace_messages(
     factory = get_session_factory()
     async with factory() as session:
         rows = (
-            await session.execute(text("""
-                SELECT message_id, sender_user_id, sender_type, sender_name,
-                       body, created_at
+            await session.execute(text(f"""
+                SELECT {_MESSAGE_COLUMNS}
                 FROM workspace_messages
                 WHERE org_id=:org AND workspace_id=:workspace
                 ORDER BY created_at ASC
             """), {"org": org_id, "workspace": workspace_id})
         ).mappings().all()
-    return [dict(row) for row in rows]
+    return [_serialize_message(row, viewer_id=user_id) for row in rows]
+
+
+# What members other than the asker may see of a Loombot reply: the answer text
+# (already posted to the room) and public web results. Sources, drafts, and file
+# details can come from the asker's private mail, files, and access.
+_SHARED_PAYLOAD_KEYS = (
+    "answer", "confidence", "routed", "web_search_used", "web_search_query", "web_results",
+)
+
+
+def card_summaries(payload: dict[str, Any]) -> list[str]:
+    """One phrase per card in a reply, without the card's contents."""
+
+    out: list[str] = []
+    if payload.get("proposed_email") or payload.get("proposed_message"):
+        out.append("a message draft")
+    meeting = payload.get("proposed_meeting")
+    if meeting:
+        out.append(f"a meeting draft (\u201c{meeting.get('title') or 'Meeting'}\u201d)")
+    if payload.get("proposed_recurring_email"):
+        out.append("a recurring email")
+    if payload.get("proposed_workspace"):
+        out.append("a workspace draft")
+    if payload.get("proposed_pull_request"):
+        out.append("a pull request draft")
+    changes = payload.get("file_changes") or []
+    if changes:
+        out.append(f"{len(changes)} file change{'s' if len(changes) != 1 else ''} in their Files")
+    if payload.get("status_tracker"):
+        out.append("a status tracker on their Home page")
+    return out
+
+
+_OUTCOMES = (
+    ("emailProposalState", "sent", "email sent"),
+    ("proposalState", "sent", "Expert Message sent"),
+    ("meetingState", "scheduled", "meeting scheduled"),
+    ("recurringState", "scheduled", "recurring email scheduled"),
+    ("workspaceProposalState", "sent", "workspace created"),
+    ("prProposalState", "sent", "pull request opened"),
+)
+
+
+def card_outcomes(card_state: dict[str, Any]) -> list[str]:
+    """What the asker did on the cards, without any of the cards' contents."""
+
+    return [label for key, value, label in _OUTCOMES if card_state.get(key) == value]
+
+
+def _shared_payload(payload: dict[str, Any], card_state: dict[str, Any]) -> dict[str, Any]:
+    shared = {key: payload[key] for key in _SHARED_PAYLOAD_KEYS if key in payload}
+    shared["sources"] = []
+    shared["card_summaries"] = card_summaries(payload)
+    shared["card_outcomes"] = card_outcomes(card_state)
+    shared["shared_view"] = True
+    return shared
+
+
+def _load_json(value: Any) -> Any:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize_message(row: Any, *, viewer_id: str | None = None) -> dict:
+    """A message for ``viewer_id``; Loombot payloads are redacted for everyone but the asker."""
+
+    out = dict(row)
+    payload = _load_json(out.get("payload"))
+    card_state = _load_json(out.get("card_state")) or {}
+    if payload is not None and viewer_id is not None and viewer_id != out.get("requested_by"):
+        payload = _shared_payload(payload, card_state)
+        card_state = {}
+    out["payload"] = payload
+    out["card_state"] = card_state
+    return out
 
 
 async def _insert_message(
@@ -327,6 +409,8 @@ async def _insert_message(
     sender_type: str,
     sender_name: str,
     body: str,
+    payload: dict | None = None,
+    requested_by: str | None = None,
 ) -> dict:
     message_id = str(uuid4())
     factory = get_session_factory()
@@ -334,9 +418,10 @@ async def _insert_message(
         await session.execute(text("""
             INSERT INTO workspace_messages
               (message_id, workspace_id, org_id, sender_user_id, sender_type,
-               sender_name, body, created_at)
+               sender_name, body, payload, requested_by, created_at)
             VALUES
-              (:id, :workspace, :org, :sender, :type, :name, :body, now())
+              (:id, :workspace, :org, :sender, :type, :name, :body, :payload,
+               :requested_by, clock_timestamp())
         """), {
             "id": message_id,
             "workspace": workspace_id,
@@ -345,20 +430,21 @@ async def _insert_message(
             "type": sender_type,
             "name": sender_name,
             "body": body,
+            "payload": json.dumps(payload, default=str) if payload is not None else None,
+            "requested_by": requested_by,
         })
         await session.execute(text("""
             UPDATE workspaces SET updated_at=now()
             WHERE workspace_id=:workspace AND org_id=:org
         """), {"workspace": workspace_id, "org": org_id})
         created = (
-            await session.execute(text("""
-                SELECT message_id, sender_user_id, sender_type, sender_name,
-                       body, created_at
+            await session.execute(text(f"""
+                SELECT {_MESSAGE_COLUMNS}
                 FROM workspace_messages WHERE message_id=:id
             """), {"id": message_id})
         ).mappings().one()
         await session.commit()
-    return dict(created)
+    return _serialize_message(created)
 
 
 def extract_loombot_question(body: str) -> str | None:
@@ -373,24 +459,55 @@ def extract_loombot_question(body: str) -> str | None:
     return question or "What should the team know right now?"
 
 
-async def _loombot_reply_from_context(
-    question: str, context_md: str, org_id: str
-) -> str:
-    from core.llm_provider import get_llm_client
+async def _recent_history(
+    org_id: str, workspace_id: str, before_message_id: str, asker_id: str
+) -> tuple[list, list[str]]:
+    """Chat turns for Loombot, and what other members said, before ``before_message_id``.
 
-    client = await get_llm_client(org_id)
-    response = await client.chat.completions.create(
-        model=client.configuration.model,
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": _CONTEXT_ANSWER_SYSTEM.format(context_md=context_md),
-            },
-            {"role": "user", "content": question},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip()
+    Only the asker's own messages and Loombot's replies to them become chat turns.
+    Other members' messages are returned separately as context, so one member
+    cannot steer tools that run with another member's mailbox and files.
+    """
+
+    from core.models import ChatMessage
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text("""
+                SELECT sender_type, sender_name, body, sender_user_id, requested_by
+                FROM workspace_messages
+                WHERE org_id=:org AND workspace_id=:workspace AND message_id<>:current
+                  AND created_at <= (
+                      SELECT created_at FROM workspace_messages WHERE message_id=:current
+                  )
+                  AND sender_type IN ('user', 'bot')
+                ORDER BY created_at DESC
+                LIMIT :limit
+            """), {
+                "org": org_id, "workspace": workspace_id, "current": before_message_id,
+                "limit": _HISTORY_TURNS,
+            })
+        ).mappings().all()
+    return split_history([dict(row) for row in reversed(rows)], asker_id)
+
+
+def split_history(rows: list[dict], asker_id: str) -> tuple[list, list[str]]:
+    """(the asker's conversation with Loombot, other members' messages as context)."""
+
+    from core.models import ChatMessage
+
+    turns = []
+    others: list[str] = []
+    for row in rows:
+        if row["sender_type"] == "bot":
+            if row.get("requested_by") == asker_id:
+                turns.append(ChatMessage(role="assistant", content=row["body"]))
+        elif row.get("sender_user_id") == asker_id:
+            turns.append(ChatMessage(role="user", content=row["body"]))
+        else:
+            others.append(f"{row['sender_name']}: {row['body']}")
+    return turns, others
 
 
 async def _loombot_reply(
@@ -399,46 +516,87 @@ async def _loombot_reply(
     user_id: str,
     question: str,
     workspace: dict | None = None,
-) -> str:
-    mode = (workspace or {}).get("loombot_mode") or LOOMBOT_MODE_ORG
-    context_md = ((workspace or {}).get("context_md") or "").strip()
+    requester_name: str = "",
+    message_id: str | None = None,
+    user_timezone: str | None = None,
+    attached_file_names: list[str] | None = None,
+) -> tuple[str, dict | None]:
+    """Loombot's reply text and Ask's full response (cards, sources) for the message."""
 
+    from core.models import EphemeralDocument, RetrievalResult
+    from loombot.ask_agent import WorkspaceContext, request_expert_if_routed, run_ask_agent
+
+    workspace = workspace or {}
+    workspace_id = str(workspace.get("workspace_id") or "")
+    mode = workspace.get("loombot_mode") or LOOMBOT_MODE_ORG
+    context_md = (workspace.get("context_md") or "").strip()
+
+    if mode == LOOMBOT_MODE_CONTEXT and not context_md:
+        return (
+            "This workspace is scoped to CONTEXT.md, but that file is empty. "
+            "Use Resync in the workspace header to rebuild it from company knowledge."
+        ), None
+
+    try:
+        history, others_said = (
+            await _recent_history(org_id, workspace_id, message_id, user_id)
+            if workspace_id and message_id else ([], [])
+        )
+        members = (
+            await list_workspace_members(org_id, user_id, workspace_id) if workspace_id else []
+        )
+        context = WorkspaceContext(
+            workspace_id=workspace_id,
+            name=str(workspace.get("name") or "Workspace"),
+            kind=str(workspace.get("kind") or "group"),
+            mode=mode,
+            members=[
+                {"user_id": m["user_id"], "name": m["name"], "email": m["email"]} for m in members
+            ],
+            requester_name=requester_name,
+            others_said=others_said,
+        )
+        if mode == LOOMBOT_MODE_CONTEXT:
+            # Knowledge answers come only from CONTEXT.md; tools still work.
+            retrieval = RetrievalResult(chunks=[], experts=[], entities_found=[])
+            ephemeral = [EphemeralDocument(
+                document_id=f"context-{workspace_id}", filename="CONTEXT.md", text=context_md
+            )]
+        else:
+            from brain.retrieval import retrieve
+            from keeper.auth import get_user_access_tokens
+
+            access_tokens = await get_user_access_tokens(org_id, user_id)
+            retrieval = await retrieve(question, history, org_id, access_tokens)
+            ephemeral = []
+        response = await run_ask_agent(
+            question=question,
+            retrieval=retrieval,
+            history=history,
+            org_id=org_id,
+            user_id=user_id,
+            ephemeral_documents=ephemeral,
+            attached_file_names=attached_file_names,
+            user_timezone=user_timezone,
+            workspace=context,
+        )
+        await request_expert_if_routed(
+            response, org_id=org_id, user_id=user_id, question=question
+        )
+        answer = (response.answer or "").strip()
+        if answer:
+            return answer, response.model_dump(mode="json")
+    except Exception:
+        logger.exception("Loombot failed for org=%s user=%s", org_id, user_id)
     if mode == LOOMBOT_MODE_CONTEXT:
-        if not context_md:
-            return (
-                "This workspace is scoped to CONTEXT.md, but that file is empty. "
-                "Use Resync in the workspace header to rebuild it from company knowledge."
-            )
-        try:
-            answer = await _loombot_reply_from_context(question, context_md, org_id)
-            if answer:
-                return answer
-        except Exception:
-            logger.exception(
-                "Context-only Loombot failed for org=%s user=%s", org_id, user_id
-            )
         return (
             "I couldn't answer from this workspace's CONTEXT.md. "
             "Try Resync, or rephrase the question."
-        )
-
-    from keeper.auth import get_user_access_tokens
-    from loombot.answerer import generate_answer
-    from brain.retrieval import retrieve
-
-    try:
-        access_tokens = await get_user_access_tokens(org_id, user_id)
-        retrieval = await retrieve(question, [], org_id, access_tokens)
-        response = await generate_answer(question, retrieval, [], org_id)
-        answer = (response.answer or "").strip()
-        if answer:
-            return answer
-    except Exception:
-        logger.exception("Loombot failed for org=%s user=%s", org_id, user_id)
+        ), None
     return (
         "I couldn't find a confident answer in company knowledge. "
         "Try Ask for a deeper search, or rephrase the question."
-    )
+    ), None
 
 
 async def send_workspace_message(
@@ -447,6 +605,8 @@ async def send_workspace_message(
     user_id: str,
     workspace_id: str,
     body: str,
+    user_timezone: str | None = None,
+    attached_file_names: list[str] | None = None,
 ) -> dict:
     cleaned = body.strip()
     if not cleaned:
@@ -477,11 +637,15 @@ async def send_workspace_message(
     bot_message = None
     question = extract_loombot_question(cleaned)
     if question is not None:
-        answer = await _loombot_reply(
+        answer, payload = await _loombot_reply(
             org_id=org_id,
             user_id=user_id,
             question=question,
             workspace=workspace,
+            requester_name=str(sender["name"]),
+            message_id=user_message["message_id"],
+            user_timezone=user_timezone,
+            attached_file_names=attached_file_names,
         )
         bot_message = await _insert_message(
             org_id=org_id,
@@ -490,6 +654,136 @@ async def send_workspace_message(
             sender_type="bot",
             sender_name=LOOMBOT_NAME,
             body=answer,
+            payload=payload,
+            requested_by=user_id,
         )
 
     return {"message": user_message, "bot_message": bot_message}
+
+
+async def update_card_state(
+    *,
+    org_id: str,
+    user_id: str,
+    workspace_id: str,
+    message_id: str,
+    state: dict,
+) -> dict:
+    """Record what the member who asked did on a Loombot reply's cards."""
+
+    await _require_member(org_id, user_id, workspace_id)
+    encoded = json.dumps(state or {}, default=str)
+    if len(encoded.encode("utf-8")) > MAX_CARD_STATE_BYTES:
+        raise HTTPException(status_code=413, detail="Card state is too large.")
+    factory = get_session_factory()
+    async with factory() as session:
+        row = (
+            await session.execute(text(f"""
+                UPDATE workspace_messages SET card_state=:state
+                WHERE org_id=:org AND workspace_id=:workspace AND message_id=:id
+                  AND sender_type='bot' AND requested_by=:user
+                RETURNING {_MESSAGE_COLUMNS}
+            """), {
+                "state": encoded, "org": org_id, "workspace": workspace_id,
+                "id": message_id, "user": user_id,
+            })
+        ).mappings().one_or_none()
+        await session.commit()
+    if row is None:
+        raise HTTPException(
+            status_code=403, detail="Only the person who asked Loombot can act on this reply."
+        )
+    return _serialize_message(row)
+
+
+async def add_members(
+    *,
+    org_id: str,
+    user_id: str,
+    workspace_id: str,
+    member_user_ids: list[str],
+) -> dict:
+    """Add signed-in org members to a workspace and post a note in the chat."""
+
+    workspace = await _require_member(org_id, user_id, workspace_id)
+    if workspace["kind"] == "org_wide":
+        raise HTTPException(
+            status_code=400, detail="Everyone in the organization is already in this workspace."
+        )
+    wanted = list(dict.fromkeys(str(m).strip() for m in member_user_ids if str(m).strip()))
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Choose at least one person to add.")
+    factory = get_session_factory()
+    async with factory() as session:
+        people = (
+            await session.execute(text("""
+                SELECT user_id, coalesce(name, email) AS name, email FROM users
+                WHERE org_id=:org AND user_id = ANY(:ids)
+            """), {"org": org_id, "ids": wanted})
+        ).mappings().all()
+        found = {str(row["user_id"]): dict(row) for row in people}
+        if set(wanted) - set(found):
+            raise HTTPException(
+                status_code=400,
+                detail="One or more people were not found in this organization.",
+            )
+        existing = set((
+            await session.execute(text("""
+                SELECT user_id FROM workspace_members
+                WHERE workspace_id=:workspace AND user_id = ANY(:ids)
+            """), {"workspace": workspace_id, "ids": wanted})
+        ).scalars().all())
+        added = [found[uid] for uid in wanted if uid not in existing]
+        for person in added:
+            await session.execute(text("""
+                INSERT INTO workspace_members (workspace_id, user_id, joined_at)
+                VALUES (:workspace, :member, now())
+                ON CONFLICT DO NOTHING
+            """), {"workspace": workspace_id, "member": person["user_id"]})
+        adder = (
+            await session.execute(text("""
+                SELECT coalesce(name, email) FROM users WHERE org_id=:org AND user_id=:user
+            """), {"org": org_id, "user": user_id})
+        ).scalar_one_or_none() or "Someone"
+        await session.commit()
+    if added:
+        names = [person["name"] for person in added]
+        listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        await _insert_message(
+            org_id=org_id,
+            workspace_id=workspace_id,
+            sender_user_id=None,
+            sender_type="system",
+            sender_name="MindLoom",
+            body=f"{adder} added {listed} to the workspace.",
+        )
+    return {
+        "added": [{"user_id": p["user_id"], "name": p["name"], "email": p["email"]} for p in added],
+        "already_members": [found[uid]["name"] for uid in wanted if uid in existing],
+        "members": await list_workspace_members(org_id, user_id, workspace_id),
+    }
+
+
+async def add_members_by_query(
+    *,
+    org_id: str,
+    user_id: str,
+    workspace_id: str,
+    queries: list[str],
+) -> dict:
+    """Resolve names, emails, or titles to signed-in users and add them (for Loombot)."""
+
+    from loombot.workspace_context import resolve_members_from_queries
+
+    matched, unmatched = await resolve_members_from_queries(
+        org_id, queries, exclude_user_id=user_id
+    )
+    result: dict[str, Any] = {"added": [], "already_members": [], "unmatched": unmatched}
+    if matched:
+        added = await add_members(
+            org_id=org_id, user_id=user_id, workspace_id=workspace_id,
+            member_user_ids=[m["user_id"] for m in matched],
+        )
+        result["added"] = added["added"]
+        result["already_members"] = added["already_members"]
+    return result

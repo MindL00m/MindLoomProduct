@@ -36,6 +36,10 @@ export interface Turn {
   recurringState?: "pending" | "sending" | "scheduled" | "cancelled";
   recurringId?: string;
   recurringError?: string;
+  /** Local UI state for a LoomBot-drafted Google Calendar meeting. */
+  meetingState?: "pending" | "sending" | "scheduled" | "cancelled";
+  meetingResult?: { label: string; html_link?: string | null; meet_link?: string | null; attendees: string[] };
+  meetingError?: string;
   fileChangeState?: Record<
     string,
     {

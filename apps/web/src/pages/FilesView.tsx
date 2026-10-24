@@ -30,6 +30,7 @@ import {
   type LoomFile,
   type LoomFileEvent,
   type LoomFileMeta,
+  type WritableKind,
 } from "@/services/files";
 import { DocumentFileView, ExcelButton } from "@/pages/FileViewers";
 import { cn } from "@/lib/utils";
@@ -121,7 +122,7 @@ export default function FilesView() {
             onClick={() => setShowNew(true)}
             className="flex w-full items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
           >
-            <FilePlus2 className="size-4" /> New CSV file
+            <FilePlus2 className="size-4" /> New file
           </button>
         </div>
         <FileList
@@ -270,17 +271,18 @@ function EmptyState({ loading, onNew }: { loading: boolean; onNew: () => void })
       <span className="flex size-12 items-center justify-center rounded-full bg-brand-50 text-brand-700">
         <FileSpreadsheet className="size-6" />
       </span>
-      <h2 className="mt-4 text-xl font-semibold tracking-tight">Your CSV files</h2>
+      <h2 className="mt-4 text-xl font-semibold tracking-tight">Your files</h2>
       <p className="mt-1 max-w-md text-sm text-muted-foreground">
-        Create a CSV here or import one from your computer. You can also ask LoomBot in
-        Ask to create a file or change one, for example “add a Q3 column to budget.csv”.
+        Create a spreadsheet (CSV), text file, or Word document here, or upload one from your
+        computer. You can also ask LoomBot in Ask or a workspace to write or change one, for
+        example “add a Q3 column to budget.csv” or “write a launch memo as a Word doc”.
       </p>
       <button
         type="button"
         onClick={onNew}
         className="mt-5 flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
       >
-        <FilePlus2 className="size-4" /> New CSV file
+        <FilePlus2 className="size-4" /> New file
       </button>
     </div>
   );
@@ -296,8 +298,9 @@ function NewFileForm({
   onCreated: (file: LoomFile) => void;
 }) {
   const [name, setName] = useState("");
-  const [kind, setKind] = useState<"csv" | "txt">("csv");
+  const [kind, setKind] = useState<WritableKind>("csv");
   const [headers, setHeaders] = useState("Name, Value");
+  const [body, setBody] = useState("");
   const [imported, setImported] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -341,8 +344,8 @@ function NewFileForm({
       let created: LoomFile;
       if (imported) {
         created = await uploadFile(imported, finalName);
-      } else if (kind === "txt") {
-        created = await createFile(finalName, "", "txt");
+      } else if (kind === "txt" || kind === "docx") {
+        created = await createFile(finalName, body, kind);
       } else {
         const columns = headers
           .split(",")
@@ -397,7 +400,7 @@ function NewFileForm({
         </div>
       ) : (
         <div className="flex rounded-md border border-border p-0.5 text-sm" role="radiogroup" aria-label="File type">
-          {(["csv", "txt"] as const).map((option) => (
+          {(["csv", "txt", "docx"] as const).map((option) => (
             <button
               key={option}
               type="button"
@@ -405,11 +408,12 @@ function NewFileForm({
               aria-checked={kind === option}
               onClick={() => setKind(option)}
               className={cn(
-                "flex-1 rounded px-3 py-1.5 font-medium",
+                "flex flex-1 items-center justify-center gap-1.5 rounded px-3 py-1.5 font-medium",
                 kind === option ? "bg-secondary text-foreground" : "text-muted-foreground",
               )}
             >
-              {option === "csv" ? "Spreadsheet (CSV)" : "Text (TXT)"}
+              <FileKindIcon kind={option} />
+              {option === "csv" ? "Spreadsheet (CSV)" : option === "txt" ? "Text (TXT)" : "Word (DOCX)"}
             </button>
           ))}
         </div>
@@ -443,6 +447,28 @@ function NewFileForm({
           />
           <span className="mt-1 block text-xs font-normal text-muted-foreground">
             Separate columns with commas. You can add more later.
+          </span>
+        </label>
+      )}
+
+      {!imported && (kind === "txt" || kind === "docx") && (
+        <label className="block text-sm font-medium">
+          {kind === "docx" ? "Document text" : "Text"}
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={8}
+            placeholder={
+              kind === "docx"
+                ? "# Title\n\nWrite paragraphs here.\n\n- Bullet point\n- **Bold** and *italic*\n\n| Column | Column |\n| --- | --- |\n| Cell | Cell |"
+                : "Start typing, or leave empty."
+            }
+            className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm"
+          />
+          <span className="mt-1 block text-xs font-normal text-muted-foreground">
+            {kind === "docx"
+              ? "Optional. Use # for headings, - for bullets, 1. for numbered lists, **bold**, *italic*, and | for tables. You can edit it later."
+              : "Optional. You can edit it later."}
           </span>
         </label>
       )}

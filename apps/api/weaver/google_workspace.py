@@ -44,7 +44,11 @@ from core.models import (
     WorkspaceWatchResponse,
 )
 from brain.pipeline import DocumentInput, run_ingestion
-from brain.source_registry import ingest_external_source, mark_external_source_deleted
+from brain.source_registry import (
+    get_external_source,
+    ingest_external_source,
+    mark_external_source_deleted,
+)
 from core.provider_http import request_with_backoff
 from brain.file_extract import extract_file_text
 from weaver.subscriptions import find_subscription, upsert_subscription
@@ -62,6 +66,8 @@ WORKSPACE_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/calendar.readonly",
+    # Lets Ask and workspace Loombot add meetings the user approves to their calendar.
+    "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/drive.metadata.readonly",
 ]
@@ -469,17 +475,11 @@ def _gmail_headers(message: dict[str, Any]) -> dict[str, str]:
 
 
 def _gmail_body_from_part(part: dict[str, Any]) -> str:
-    body = part.get("body", {})
-    data = body.get("data")
-    mime_type = part.get("mimeType")
-    if data and mime_type in {"text/plain", "text/html"}:
-        text = _b64decode(str(data)).decode("utf-8", errors="replace")
-        return text
-    for child in part.get("parts", []) or []:
-        text = _gmail_body_from_part(child)
-        if text:
-            return text
-    return ""
+    """Visible body text: plain parts when present, otherwise HTML converted to text."""
+
+    from weaver.email_content import gmail_body_text
+
+    return gmail_body_text(part)
 
 
 def _gmail_timestamp(headers: dict[str, str], fallback_ms: str | None) -> datetime:
@@ -502,6 +502,8 @@ def _sender_id(email_or_name: str) -> str:
 
 
 def _message_to_conversation(message: dict[str, Any], account_email: str) -> Conversation:
+    from weaver.email_content import attachment_names_line, gmail_attachment_refs
+
     headers = _gmail_headers(message)
     sender = headers.get("from", "Unknown sender")
     subject = headers.get("subject", "(No subject)")
@@ -509,7 +511,13 @@ def _message_to_conversation(message: dict[str, Any], account_email: str) -> Con
     body = _gmail_body_from_part(message.get("payload", {})).strip()
     if not body:
         body = message.get("snippet", "")
-    text = f"Subject: {subject}\nFrom: {sender}\nTo: {headers.get('to', account_email)}\n\n{body}"
+    attached = attachment_names_line([
+        ref.filename for ref in gmail_attachment_refs(message.get("payload") or {}) if not ref.inline
+    ])
+    text = f"Subject: {subject}\nFrom: {sender}\nTo: {headers.get('to', account_email)}\n"
+    if attached:
+        text += f"{attached}\n"
+    text += f"\n{body}"
     participant_id = _sender_id(sender)
     return Conversation(
         source="gmail",
@@ -642,6 +650,12 @@ async def sync_gmail(
                 permissions=[account_email.lower()],
             )
             await run_ingestion(conversation, org_id, document=document)
+            try:
+                await _ingest_gmail_attachments(
+                    client, access_token, message, account_email, org_id
+                )
+            except Exception:  # noqa: BLE001 - attachments never block the email itself
+                logger.exception("Gmail attachments failed for message %s", message_id)
             ingested += 1
             newest_history_id = str(message.get("historyId") or newest_history_id or "")
 
@@ -654,6 +668,167 @@ async def sync_gmail(
         mark_synced=True,
     )
     return ingested
+
+
+async def _ingest_gmail_attachments(
+    client: httpx.AsyncClient,
+    access_token: str,
+    message: dict[str, Any],
+    account_email: str,
+    org_id: str,
+) -> int:
+    """Index each readable attachment of a Gmail message as its own document."""
+
+    from weaver.email_content import gmail_attachment_refs, read_gmail_attachments
+
+    if not gmail_attachment_refs(message.get("payload") or {}):
+        return 0
+    headers = _gmail_headers(message)
+    owner = account_email.lower()
+    message_id = str(message.get("id") or "")
+
+    async def already_indexed(index: int, ref: Any) -> bool:
+        return await email_attachment_indexed(org_id, owner, message_id, index, ref.filename)
+
+    results = await read_gmail_attachments(
+        client,
+        {"Authorization": f"Bearer {access_token}"},
+        "https://gmail.googleapis.com/gmail/v1/users/me",
+        message,
+        skip=already_indexed,
+    )
+    count = 0
+    for attachment in results:
+        if not attachment.text.strip():
+            if attachment.note:
+                logger.info(
+                    "Gmail attachment %s not indexed: %s", attachment.filename, attachment.note
+                )
+            continue
+        await ingest_email_attachment(
+            org_id=org_id,
+            provider="gmail",
+            message_id=message_id,
+            index=attachment.index,
+            attachment=attachment,
+            subject=headers.get("subject", "(No subject)"),
+            sender=headers.get("from", "Unknown sender"),
+            recipients=headers.get("to", account_email),
+            timestamp=_gmail_timestamp(headers, message.get("internalDate")),
+            account=owner,
+            visible_to=[owner],
+            source_application="Gmail",
+            source_location="Gmail INBOX",
+        )
+        count += 1
+    return count
+
+
+EMAIL_ATTACHMENT_SOURCE = "email_attachment"
+
+
+def email_attachment_source_id(account: str, message_id: str, index: int, filename: str) -> str:
+    return f"{account.lower()}:{message_id}:{index}:{filename}"
+
+
+async def email_attachment_indexed(
+    org_id: str, account: str, message_id: str, index: int, filename: str
+) -> bool:
+    """True when this attachment of this mailbox's message is already searchable."""
+
+    current = await get_external_source(
+        org_id, EMAIL_ATTACHMENT_SOURCE,
+        email_attachment_source_id(account, message_id, index, filename),
+    )
+    return bool(current and current.status == "active")
+
+
+async def ingest_email_attachment(
+    *,
+    org_id: str,
+    provider: str,
+    message_id: str,
+    index: int,
+    attachment: Any,
+    subject: str,
+    sender: str,
+    recipients: str,
+    timestamp: datetime,
+    account: str,
+    visible_to: list[str],
+    source_application: str,
+    source_location: str,
+    source_url: str | None = None,
+) -> None:
+    """Store one email attachment's text as a searchable document.
+
+    The stored record holds the extracted text plus which mailbox and message it
+    came from, so the same file sent to two people stays visible to both rather
+    than de-duplicating into the first person's private copy.
+    """
+
+    from weaver.email_content import split_for_chunks
+
+    participant_id = _sender_id(sender)
+    header = f"[Attachment: {attachment.filename} | Email: \"{subject}\" from {sender}]"
+    segments = split_for_chunks(attachment.text, max_tokens=600)
+    if not segments:
+        return
+    conversation = Conversation(
+        source="email_attachment",
+        conversation_id=f"{provider}-attachment:{message_id}:{index}",
+        title=f"{attachment.filename} (attached to \"{subject}\")",
+        participants=[Participant(id=participant_id, name=sender)],
+        messages=[
+            IncomingMessage(
+                id=f"{provider}:{message_id}:attachment:{index}:{n}",
+                sender=participant_id,
+                timestamp=timestamp + timedelta(microseconds=n),
+                text=f"{header}\n{segment}",
+            )
+            for n, segment in enumerate(segments)
+        ],
+    )
+    record = json.dumps({
+        "kind": "email_attachment",
+        "provider": provider,
+        "account": account,
+        "message_id": message_id,
+        "filename": attachment.filename,
+        "mime_type": attachment.mime_type,
+        "size_bytes": attachment.size,
+        "read_with": attachment.method,
+        "text": attachment.text,
+    }, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    # Registered per mailbox, message, and position: a re-sync skips it, and a
+    # changed reading (e.g. better OCR) replaces the old version instead of
+    # leaving a duplicate.
+    await ingest_external_source(
+        org_id=org_id,
+        provider=EMAIL_ATTACHMENT_SOURCE,
+        external_id=email_attachment_source_id(account, message_id, index, attachment.filename),
+        version=message_id,
+        conversation=conversation,
+        document=DocumentInput(
+            data=record,
+            source="email_attachment",
+            source_label=f"{attachment.filename} (email attachment)",
+            original_filename=attachment.filename,
+            mime_type="application/json",
+            visible_to=visible_to,
+            title=attachment.filename,
+            author=sender,
+            owners=[account],
+            source_created_at=timestamp,
+            source_updated_at=timestamp,
+            source_application=source_application,
+            source_location=f"{source_location}: {subject}",
+            version=message_id,
+            contributors=[value for value in (sender, recipients) if value],
+            permissions=visible_to,
+            source_url=source_url,
+        ),
+    )
 
 
 async def _drive_export_file(

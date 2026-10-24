@@ -1,4 +1,5 @@
 import { apiFetch } from "@/lib/api";
+import type { QueryResponse } from "@/services/ask";
 
 export interface Workspace {
   workspace_id: string;
@@ -20,11 +21,29 @@ export interface Workspace {
 export interface WorkspaceMessage {
   message_id: string;
   sender_user_id?: string | null;
-  sender_type: "user" | "bot" | string;
+  sender_type: "user" | "bot" | "system" | string;
   sender_name: string;
   body: string;
   created_at: string;
+  /**
+   * For Loombot replies: the full Ask response for the member who asked. Everyone
+   * else gets a shared view (answer, web results, and one-line card summaries),
+   * because sources and drafts can come from the asker's private mail and files.
+   */
+  payload?: LoombotPayload | null;
+  /** The member who asked Loombot; only they can act on the reply's cards. */
+  requested_by?: string | null;
+  /** What the asker did on the cards (sent, scheduled, undone); only sent to the asker. */
+  card_state?: Record<string, unknown> | null;
 }
+
+export type LoombotPayload = QueryResponse & {
+  /** Set on the shared view other members receive. */
+  shared_view?: boolean;
+  card_summaries?: string[];
+  /** What the asker did on the cards, e.g. "meeting scheduled". */
+  card_outcomes?: string[];
+};
 
 export interface WorkspaceMember {
   user_id: string;
@@ -114,15 +133,61 @@ export async function listWorkspaceMembers(
   return response.json();
 }
 
+async function errorDetail(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await response.json();
+    return typeof payload?.detail === "string" ? payload.detail : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function sendWorkspaceMessage(
   workspaceId: string,
   message: string,
+  options: { timezone?: string; attachedFileNames?: string[] } = {},
 ): Promise<{ message: WorkspaceMessage; bot_message?: WorkspaceMessage | null }> {
   const response = await apiFetch(`/workspaces/${workspaceId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      timezone: options.timezone ?? null,
+      attached_file_names: options.attachedFileNames ?? [],
+    }),
   });
-  if (!response.ok) throw new Error("Could not send the message.");
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not send the message."));
+  return response.json();
+}
+
+/** Add signed-in colleagues to an existing workspace. */
+export async function addWorkspaceMembers(
+  workspaceId: string,
+  memberUserIds: string[],
+): Promise<{ added: WorkspaceMember[]; already_members: string[]; members: WorkspaceMember[] }> {
+  const response = await apiFetch(`/workspaces/${workspaceId}/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ member_user_ids: memberUserIds }),
+  });
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not add members."));
+  return response.json();
+}
+
+/** Save what the asker did on a Loombot reply's cards, so every member sees it. */
+export async function saveCardState(
+  workspaceId: string,
+  messageId: string,
+  state: Record<string, unknown>,
+): Promise<WorkspaceMessage> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/messages/${encodeURIComponent(messageId)}/card-state`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not save the card."));
   return response.json();
 }

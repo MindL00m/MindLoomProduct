@@ -1,19 +1,82 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Bot, FileText, Loader2, Plus, RefreshCw, Send, Users, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bot,
+  FileText,
+  Loader2,
+  Paperclip,
+  Plus,
+  RefreshCw,
+  Send,
+  UserPlus,
+  Users,
+  X,
+} from "lucide-react";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
+import { Markdown } from "@/components/Markdown";
+import { FileKindIcon } from "@/components/FileKindIcon";
 import { listMessageContacts, type MessageContact } from "@/services/reviews";
 import {
+  addWorkspaceMembers,
   createWorkspace,
+  listWorkspaceMembers,
   listWorkspaceMessages,
   listWorkspaces,
   resyncWorkspaceContext,
+  saveCardState,
   sendWorkspaceMessage,
+  type LoombotPayload,
   type Workspace,
+  type WorkspaceMember,
   type WorkspaceMessage,
 } from "@/services/workspaces";
+import { FILE_UPLOAD_ACCEPT, kindFromName, uploadFile } from "@/services/files";
+import { userTimezone } from "@/services/workflows";
+import {
+  AnswerView,
+  SourceList,
+  WebSearchPill,
+  WebSources,
+  citationRenderer,
+  type AnswerState,
+} from "@/pages/AskView";
+import type { Turn } from "@/store/chat";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
+
+const LOOMBOT_MENTION = /(?:^|[\s([{])@loombot\b/i;
+
+interface Attachment {
+  id: string;
+  name: string;
+  status: "uploading" | "ready" | "error";
+  error?: string;
+}
+
+/** Card state worth keeping after a reload: in-flight states fall back to pending. */
+function persistable(state: AnswerState): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (key.endsWith("Error")) continue;
+    if (value === "sending") {
+      out[key] = "pending";
+    } else if (key === "fileChangeState" && value && typeof value === "object") {
+      const entries: Record<string, unknown> = {};
+      for (const [fileId, entry] of Object.entries(value as Record<string, Record<string, unknown>>)) {
+        const { status, monitor, error: _error, ...rest } = entry;
+        entries[fileId] = {
+          ...rest,
+          ...(status === "undone" ? { status } : {}),
+          ...(monitor === "on" || monitor === "declined" ? { monitor } : {}),
+        };
+      }
+      out[key] = entries;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
 
 export default function WorkspacesView() {
   const userId = useSession((state) => state.userId);
@@ -23,13 +86,27 @@ export default function WorkspacesView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  // The workspace where Loombot is working on a reply, if any.
+  const [thinkingIn, setThinkingIn] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [resyncing, setResyncing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
   const [resyncError, setResyncError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [cardStates, setCardStates] = useState<Record<string, AnswerState>>({});
+  const cardStatesRef = useRef(cardStates);
+  // Card saves run one after another per message, so "sent" never loses to an
+  // earlier "pending" that arrives late.
+  const cardSaves = useRef(new Map<string, Promise<unknown>>());
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const fileInput = useRef<HTMLInputElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const active = workspaces.find((row) => row.workspace_id === activeId) ?? null;
   const isContextOnly = active?.loombot_mode === "context_only";
@@ -47,13 +124,25 @@ export default function WorkspacesView() {
     ]).finally(() => setLoading(false));
   }, [loadWorkspaces]);
 
+  const loadMessages = useCallback(async (workspaceId: string) => {
+    const rows = await listWorkspaceMessages(workspaceId);
+    // Ignore a slow response for a workspace the user has already left.
+    if (activeIdRef.current === workspaceId) setMessages(rows);
+  }, []);
+
   useEffect(() => {
+    setAttachments([]);
+    setSendError(null);
     if (!activeId) {
       setMessages([]);
       return;
     }
-    void listWorkspaceMessages(activeId).then(setMessages);
-  }, [activeId]);
+    void loadMessages(activeId);
+  }, [activeId, loadMessages]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, thinkingIn, activeId]);
 
   const subtitle = useMemo(() => {
     if (!active) return "";
@@ -69,21 +158,98 @@ export default function WorkspacesView() {
     return `${active.member_count} members · Mention @Loombot to ask the company brain`;
   }, [active]);
 
+  const readyAttachments = attachments.filter((a) => a.status === "ready").map((a) => a.name);
+
   async function send() {
-    if (!activeId || !message.trim()) return;
+    if (!activeId || !message.trim() || busy) return;
+    const workspaceId = activeId;
+    const stillHere = () => activeIdRef.current === workspaceId;
+    const body = message;
+    const asksLoombot = LOOMBOT_MENTION.test(` ${body}`);
+    const optimistic: WorkspaceMessage = {
+      message_id: `pending-${Date.now()}`,
+      sender_user_id: userId,
+      sender_type: "user",
+      sender_name: "You",
+      body: body.trim(),
+      created_at: new Date().toISOString(),
+    };
     setBusy(true);
+    setSendError(null);
+    setThinkingIn(asksLoombot ? workspaceId : null);
+    setMessage("");
+    setMessages((rows) => [...rows, optimistic]);
     try {
-      const result = await sendWorkspaceMessage(activeId, message);
-      setMessage("");
-      setMessages((rows) => [
-        ...rows,
-        result.message,
-        ...(result.bot_message ? [result.bot_message] : []),
-      ]);
+      const result = await sendWorkspaceMessage(workspaceId, body, {
+        timezone: userTimezone(),
+        attachedFileNames: asksLoombot ? readyAttachments : [],
+      });
+      // If the user switched rooms while Loombot worked, the reply loads with that
+      // room next time; it must not be added to the room now on screen.
+      if (stillHere()) {
+        setMessages((rows) => [
+          ...rows.filter((row) => row.message_id !== optimistic.message_id),
+          result.message,
+          ...(result.bot_message ? [result.bot_message] : []),
+        ]);
+        if (asksLoombot) setAttachments([]);
+      }
       await loadWorkspaces();
+    } catch (err) {
+      if (stillHere()) {
+        setMessages((rows) => rows.filter((row) => row.message_id !== optimistic.message_id));
+        setMessage(body);
+        setSendError(err instanceof Error ? err.message : "Could not send the message.");
+      }
     } finally {
       setBusy(false);
+      setThinkingIn(null);
     }
+  }
+
+  async function attach(list: FileList | null) {
+    const file = list?.[0];
+    if (!file) return;
+    if (!kindFromName(file.name)) {
+      setSendError("Attach a .csv, .txt, .docx, .xlsx, or .pdf file.");
+      return;
+    }
+    const id = crypto.randomUUID();
+    setAttachments((rows) => [...rows, { id, name: file.name, status: "uploading" }]);
+    try {
+      const saved = await uploadFile(file);
+      setAttachments((rows) =>
+        rows.map((row) => (row.id === id ? { ...row, name: saved.name, status: "ready" } : row)),
+      );
+    } catch (err) {
+      setAttachments((rows) =>
+        rows.map((row) =>
+          row.id === id
+            ? { ...row, status: "error", error: err instanceof Error ? err.message : "Upload failed." }
+            : row,
+        ),
+      );
+    }
+  }
+
+  function patchCard(item: WorkspaceMessage, patch: Partial<Turn>) {
+    const workspaceId = activeIdRef.current;
+    const id = item.message_id;
+    const base = cardStatesRef.current[id] ?? ((item.card_state ?? {}) as AnswerState);
+    const next: AnswerState = { ...base, ...patch };
+    cardStatesRef.current = { ...cardStatesRef.current, [id]: next };
+    setCardStates(cardStatesRef.current);
+    // In-flight states ("sending") are not worth a save; the final state follows.
+    const inFlight = Object.values(patch).some((value) => value === "sending");
+    if (!workspaceId || inFlight) return;
+    const previous = cardSaves.current.get(id) ?? Promise.resolve();
+    const saved = previous
+      .catch(() => undefined)
+      .then(() => saveCardState(workspaceId, id, persistable(cardStatesRef.current[id] ?? next)))
+      .catch(() => {
+        /* the card still works locally; it just won't show the result after a reload */
+      });
+    cardSaves.current.set(id, saved);
   }
 
   async function create() {
@@ -145,7 +311,7 @@ export default function WorkspacesView() {
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden rounded-xl border border-border bg-card">
-      <aside className="w-80 shrink-0 border-r border-border">
+      <aside className="w-80 shrink-0 border-r border-border max-md:hidden">
         <div className="flex items-center justify-between border-b border-border p-3">
           <div>
             <h2 className="font-semibold">Workspaces</h2>
@@ -202,6 +368,27 @@ export default function WorkspacesView() {
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-border p-2 md:hidden">
+          <select
+            className="min-w-0 flex-1 rounded-md border border-border bg-background p-2 text-sm"
+            value={activeId ?? ""}
+            onChange={(e) => e.target.value && setActiveId(e.target.value)}
+            aria-label="Workspace"
+          >
+            {workspaces.map((w) => (
+              <option key={w.workspace_id} value={w.workspace_id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setShowNew(true)}
+            className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground"
+          >
+            <Plus className="size-3.5" /> New
+          </button>
+        </div>
         {active ? (
           <>
             <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-3">
@@ -212,31 +399,42 @@ export default function WorkspacesView() {
                   <p className="mt-1 text-xs text-destructive">{resyncError}</p>
                 )}
               </div>
-              {isContextOnly && (
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
-                    onClick={() => setShowContext(true)}
-                  >
-                    <FileText className="size-3.5" />
-                    CONTEXT.md
-                  </button>
-                  <button
-                    type="button"
-                    disabled={resyncing}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
-                    onClick={() => void resync()}
-                  >
-                    {resyncing ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <RefreshCw className="size-3.5" />
-                    )}
-                    Resync
-                  </button>
-                </div>
-              )}
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                  onClick={() => setShowMembers(true)}
+                >
+                  <Users className="size-3.5" />
+                  Members
+                  {active.kind !== "org_wide" && <UserPlus className="size-3.5 text-primary" />}
+                </button>
+                {isContextOnly && (
+                  <>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                      onClick={() => setShowContext(true)}
+                    >
+                      <FileText className="size-3.5" />
+                      CONTEXT.md
+                    </button>
+                    <button
+                      type="button"
+                      disabled={resyncing}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                      onClick={() => void resync()}
+                    >
+                      {resyncing ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-3.5" />
+                      )}
+                      Resync
+                    </button>
+                  </>
+                )}
+              </div>
             </header>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted/20 p-5">
               {messages.length === 0 && (
@@ -249,56 +447,31 @@ export default function WorkspacesView() {
                   >
                     @Loombot
                   </button>{" "}
-                  {isContextOnly
-                    ? "a question from this workspace’s CONTEXT.md."
-                    : "a question from company knowledge."}
+                  anything you would ask in Ask: questions, emails, meetings, files, and status
+                  tracking.
                 </p>
               )}
-              {messages.map((item) => {
-                const mine = item.sender_user_id === userId;
-                const isBot = item.sender_type === "bot";
-                return (
-                  <div
-                    key={item.message_id}
-                    className={cn("flex", mine ? "justify-end" : "justify-start")}
-                  >
-                    <div
-                      className={cn(
-                        "max-w-[75%] rounded-2xl px-4 py-2 text-sm shadow-sm",
-                        isBot
-                          ? "rounded-bl-sm border border-brand-200 bg-brand-50 text-foreground"
-                          : mine
-                            ? "rounded-br-sm bg-primary text-primary-foreground"
-                            : "rounded-bl-sm border border-border bg-background",
-                      )}
-                    >
-                      {!mine && (
-                        <p
-                          className={cn(
-                            "mb-1 flex items-center gap-1 text-[11px] font-medium",
-                            isBot ? "text-brand-700" : "text-muted-foreground",
-                          )}
-                        >
-                          {isBot && <Bot className="size-3" />}
-                          {item.sender_name}
-                        </p>
-                      )}
-                      <p className="whitespace-pre-wrap">{item.body}</p>
-                      <p
-                        className={cn(
-                          "mt-1 text-[10px]",
-                          mine ? "text-primary-foreground/70" : "text-muted-foreground",
-                        )}
-                      >
-                        {new Date(item.created_at).toLocaleString()}
-                      </p>
-                    </div>
+              {messages.map((item) => (
+                <MessageRow
+                  key={item.message_id}
+                  item={item}
+                  userId={userId}
+                  messages={messages}
+                  cardState={cardStates[item.message_id] ?? ((item.card_state ?? {}) as AnswerState)}
+                  onPatch={(patch) => patchCard(item, patch)}
+                />
+              ))}
+              {thinkingIn === activeId && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm border border-brand-200 bg-brand-50 px-4 py-2 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin text-brand-700" /> Loombot is working on it…
                   </div>
-                );
-              })}
+                </div>
+              )}
+              <div ref={bottomRef} />
             </div>
             <div className="border-t border-border p-3">
-              <div className="mb-2 flex items-center gap-2">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -309,17 +482,71 @@ export default function WorkspacesView() {
                 </button>
                 <span className="text-xs text-muted-foreground">
                   {isContextOnly
-                    ? "Mention the bot to answer from CONTEXT.md"
-                    : "Mention the bot to answer from company knowledge"}
+                    ? "Answers from CONTEXT.md, and can email, schedule meetings, write files, and track status for you"
+                    : "Answers from company knowledge, and can email, schedule meetings, write files, and track status for you"}
                 </span>
               </div>
+              {attachments.length > 0 && (
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {attachments.map((attachment) => (
+                    <span
+                      key={attachment.id}
+                      title={attachment.error}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                        attachment.status === "error"
+                          ? "border-destructive/30 bg-destructive/10 text-destructive"
+                          : "border-border bg-background",
+                      )}
+                    >
+                      {attachment.status === "uploading" ? (
+                        <Loader2 className="size-3 animate-spin" />
+                      ) : (
+                        <FileKindIcon kind={kindFromName(attachment.name) ?? "txt"} className="size-3" />
+                      )}
+                      {attachment.name}
+                      {attachment.status === "error" && ` · ${attachment.error}`}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${attachment.name}`}
+                        onClick={() => setAttachments((rows) => rows.filter((r) => r.id !== attachment.id))}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <span className="self-center text-[11px] text-muted-foreground">
+                    Saved to your Files. Loombot reads them with your next @Loombot message.
+                  </span>
+                </div>
+              )}
+              {sendError && <p className="mb-2 text-xs text-destructive">{sendError}</p>}
+              <input
+                ref={fileInput}
+                type="file"
+                accept={FILE_UPLOAD_ACCEPT}
+                className="sr-only"
+                onChange={(event) => {
+                  void attach(event.target.files);
+                  event.target.value = "";
+                }}
+              />
               <div className="flex items-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInput.current?.click()}
+                  aria-label="Attach a file for Loombot"
+                  className="flex size-10 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                >
+                  <Paperclip className="size-4" />
+                </button>
                 <textarea
                   className="max-h-32 min-h-11 flex-1 resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm"
                   placeholder={
                     isContextOnly
-                      ? "Write a message… use @Loombot to ask from CONTEXT.md"
-                      : "Write a message… use @Loombot to ask the company brain"
+                      ? "Write a message… use @Loombot to ask from CONTEXT.md or get things done"
+                      : "Write a message… use @Loombot to ask the company brain or get things done"
                   }
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
@@ -334,6 +561,7 @@ export default function WorkspacesView() {
                   className="flex size-10 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-40"
                   disabled={busy || !message.trim()}
                   onClick={() => void send()}
+                  aria-label="Send"
                 >
                   {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
                 </button>
@@ -353,7 +581,7 @@ export default function WorkspacesView() {
             <div>
               <h3 className="font-semibold">Create a workspace</h3>
               <p className="text-sm text-muted-foreground">
-                A group chat for a team, project, or topic.
+                A group chat for a team, project, or topic. You can add more people later.
               </p>
             </div>
             <input
@@ -405,6 +633,17 @@ export default function WorkspacesView() {
         </div>
       )}
 
+      {showMembers && active && (
+        <MembersDialog
+          workspace={active}
+          contacts={contacts}
+          onClose={() => setShowMembers(false)}
+          onAdded={async () => {
+            await Promise.all([loadWorkspaces(), loadMessages(active.workspace_id)]);
+          }}
+        />
+      )}
+
       {showContext && active && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4"
@@ -442,6 +681,293 @@ export default function WorkspacesView() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function MessageRow({
+  item,
+  userId,
+  messages,
+  cardState,
+  onPatch,
+}: {
+  item: WorkspaceMessage;
+  userId: string | null;
+  messages: WorkspaceMessage[];
+  cardState: AnswerState;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const mine = item.sender_user_id === userId;
+  const isBot = item.sender_type === "bot";
+
+  if (item.sender_type === "system") {
+    return (
+      <p className="text-center text-xs text-muted-foreground" role="status">
+        {item.body} · {new Date(item.created_at).toLocaleString()}
+      </p>
+    );
+  }
+
+  const payload = isBot ? item.payload ?? null : null;
+  const askedByMe = Boolean(
+    payload && !payload.shared_view && item.requested_by && item.requested_by === userId,
+  );
+  const asker =
+    messages.find(
+      (m) => m.sender_type === "user" && m.sender_user_id === item.requested_by,
+    )?.sender_name ?? "the person who asked";
+
+  return (
+    <div className={cn("flex", mine ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "rounded-2xl px-4 py-2 text-sm shadow-sm",
+          isBot
+            ? "w-full max-w-[min(100%,48rem)] rounded-bl-sm border border-brand-200 bg-brand-50 text-foreground"
+            : mine
+              ? "max-w-[75%] rounded-br-sm bg-primary text-primary-foreground"
+              : "max-w-[75%] rounded-bl-sm border border-border bg-background",
+        )}
+      >
+        {!mine && (
+          <p
+            className={cn(
+              "mb-1 flex items-center gap-1 text-[11px] font-medium",
+              isBot ? "text-brand-700" : "text-muted-foreground",
+            )}
+          >
+            {isBot && <Bot className="size-3" />}
+            {item.sender_name}
+            {isBot && payload && item.requested_by && (
+              <span className="font-normal text-muted-foreground">
+                {" "}· replying to {askedByMe ? "you" : asker}
+              </span>
+            )}
+          </p>
+        )}
+        {payload && askedByMe ? (
+          <AnswerView response={payload} state={cardState} onProposalPatch={onPatch} />
+        ) : payload ? (
+          <SharedAnswer payload={payload} asker={asker} />
+        ) : isBot ? (
+          <Markdown text={item.body} />
+        ) : (
+          <p className="whitespace-pre-wrap">{item.body}</p>
+        )}
+        <p
+          className={cn(
+            "mt-1 text-[10px]",
+            mine ? "text-primary-foreground/70" : "text-muted-foreground",
+          )}
+        >
+          {new Date(item.created_at).toLocaleString()}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A Loombot reply as other members see it: the answer and any web results. The
+ * asker's sources and drafts stay private to them; members see only what was prepared.
+ */
+function SharedAnswer({ payload, asker }: { payload: LoombotPayload; asker: string }) {
+  const summaries = payload.card_summaries ?? [];
+  const outcomes = payload.card_outcomes ?? [];
+  const webResults = payload.web_results ?? [];
+  const sources = payload.sources ?? [];
+  return (
+    <div className="space-y-3">
+      {payload.web_search_used && <WebSearchPill query={payload.web_search_query} />}
+      <Markdown text={payload.answer} renderCitation={citationRenderer(sources, webResults)} />
+      {summaries.length > 0 && (
+        <p className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+          Loombot prepared {summaries.join("; ")} for {asker}. Only {asker} can see the details
+          and approve them.
+          {outcomes.length > 0 && (
+            <span className="mt-1 block font-medium text-foreground">
+              {asker}: {outcomes.join(", ")}.
+            </span>
+          )}
+        </p>
+      )}
+      {webResults.length > 0 && <WebSources results={webResults} />}
+      {sources.length > 0 && <SourceList sources={sources} cited={new Set()} />}
+    </div>
+  );
+}
+
+function MembersDialog({
+  workspace,
+  contacts,
+  onClose,
+  onAdded,
+}: {
+  workspace: Workspace;
+  contacts: MessageContact[];
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const [members, setMembers] = useState<WorkspaceMember[] | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const canAdd = workspace.kind !== "org_wide";
+
+  useEffect(() => {
+    let cancelled = false;
+    void listWorkspaceMembers(workspace.workspace_id)
+      .then((rows) => !cancelled && setMembers(rows))
+      .catch((err: Error) => !cancelled && setError(err.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace.workspace_id]);
+
+  const memberIds = new Set((members ?? []).map((m) => m.user_id));
+  const query = filter.trim().toLowerCase();
+  const available = contacts.filter(
+    (c) =>
+      !memberIds.has(c.user_id) &&
+      (!query || c.name.toLowerCase().includes(query) || c.email.toLowerCase().includes(query)),
+  );
+
+  async function add() {
+    if (selected.length === 0) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await addWorkspaceMembers(workspace.workspace_id, selected);
+      setMembers(result.members);
+      setSelected([]);
+      setNotice(
+        result.added.length
+          ? `Added ${result.added.map((m) => m.name).join(", ")}.`
+          : "Everyone you picked is already a member.",
+      );
+      await onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add members.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Members of ${workspace.name}`}
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[85dvh] w-full max-w-md flex-col gap-4 rounded-xl bg-background p-5 shadow-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h3 className="font-semibold">Members of {workspace.name}</h3>
+            <p className="text-sm text-muted-foreground">
+              {canAdd
+                ? "Anyone in the workspace can add signed-in colleagues. New members see the whole chat history."
+                : "Everyone in your organization is in this workspace automatically."}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <div className="min-h-0 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+          {members === null ? (
+            <p className="flex items-center gap-2 p-2 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" /> Loading members…
+            </p>
+          ) : (
+            members.map((member) => (
+              <p key={member.user_id} className="truncate px-2 py-1 text-sm">
+                {member.name}
+                <span className="text-muted-foreground"> — {member.email}</span>
+              </p>
+            ))
+          )}
+        </div>
+
+        {canAdd && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Add people</p>
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Search colleagues"
+              aria-label="Search colleagues"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            />
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border border-border p-2">
+              {available.length === 0 ? (
+                <p className="p-2 text-xs text-muted-foreground">
+                  {contacts.length === 0
+                    ? "No other signed-in colleagues yet."
+                    : "Everyone who matches is already a member."}
+                </p>
+              ) : (
+                available.map((contact) => (
+                  <label
+                    key={contact.user_id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(contact.user_id)}
+                      onChange={() =>
+                        setSelected((current) =>
+                          current.includes(contact.user_id)
+                            ? current.filter((id) => id !== contact.user_id)
+                            : [...current, contact.user_id],
+                        )
+                      }
+                    />
+                    <span className="truncate">
+                      {contact.name}
+                      <span className="text-muted-foreground"> — {contact.email}</span>
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Only people who have signed in to MindLoom can be added. You can also ask
+              “@Loombot add Priya to this workspace”.
+            </p>
+          </div>
+        )}
+
+        {error && <p className="text-xs text-destructive">{error}</p>}
+        {notice && <p className="text-xs text-foreground">{notice}</p>}
+
+        <div className="flex justify-end gap-2">
+          <SecondaryButton onClick={onClose}>Close</SecondaryButton>
+          {canAdd && (
+            <PrimaryButton disabled={saving || selected.length === 0} onClick={() => void add()}>
+              {saving
+                ? "Adding…"
+                : selected.length > 1
+                  ? `Add ${selected.length} people`
+                  : "Add to workspace"}
+            </PrimaryButton>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

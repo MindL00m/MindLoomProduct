@@ -14,8 +14,9 @@ router = APIRouter(prefix="/loombot/files", tags=["loombot-files"])
 
 class CreateFileInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    # CSV text, plain text, or Markdown for a Word document.
     content: str = ""
-    kind: Literal["csv", "txt"] = "csv"
+    kind: Literal["csv", "txt", "docx"] = "csv"
 
 
 class UpdatedVersionInput(BaseModel):
@@ -42,6 +43,7 @@ def _download_response(data: bytes, meta: dict, *, inline: bool) -> Response:
 
 class UpdateFileInput(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    # Full new text: CSV, plain text, or Markdown for a Word document (undoable).
     content: str | None = None
 
 
@@ -55,7 +57,7 @@ async def create_file(
     body: CreateFileInput,
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict:
-    return await files_service.create_file(*ctx, body.name, body.content, kind=body.kind)
+    return await files_service.create_document(*ctx, body.name, body.content, kind=body.kind)
 
 
 @router.post("/upload", status_code=201)

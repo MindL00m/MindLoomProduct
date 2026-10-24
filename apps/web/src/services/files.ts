@@ -1,4 +1,4 @@
-/** LoomBot Files: the signed-in user's private CSV files. */
+/** LoomBot Files: the signed-in user's private CSV, TXT, DOCX, XLSX, and PDF files. */
 
 import { apiFetch } from "@/lib/api";
 
@@ -75,10 +75,13 @@ export function getFile(fileId: string): Promise<LoomFile> {
   return request(`/${encodeURIComponent(fileId)}`, { method: "GET" }, "Could not open file.");
 }
 
+/** Kinds that can be created and edited as text (DOCX content is Markdown). */
+export type WritableKind = "csv" | "txt" | "docx";
+
 export function createFile(
   name: string,
   content = "",
-  kind: "csv" | "txt" = "csv",
+  kind: WritableKind = "csv",
 ): Promise<LoomFile> {
   return request(
     "",
@@ -124,7 +127,7 @@ export async function saveFileToDisk(fileId: string, name: string): Promise<void
 }
 
 export type FilePreview =
-  | { kind: "docx"; blocks: DocBlock[] }
+  | { kind: "docx"; blocks: DocBlock[]; markdown?: string }
   | { kind: "xlsx"; sheets: SheetPreview[] }
   | { kind: "pdf"; pages: number }
   | { kind: "csv" | "txt"; content: string };
@@ -185,6 +188,7 @@ export function createUpdatedVersion(
   );
 }
 
+/** Save new content (CSV, text, or Markdown for a Word document) and/or rename. Undoable. */
 export function updateFile(
   fileId: string,
   changes: { content?: string; name?: string },

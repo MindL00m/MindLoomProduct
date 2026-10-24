@@ -159,6 +159,32 @@ async def ingest_external_source(
     return result
 
 
+async def mark_external_sources_deleted_by_prefix(
+    org_id: str, provider: str, external_id_prefix: str
+) -> int:
+    """Retire every active source whose external id starts with the prefix."""
+
+    escaped = (
+        external_id_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            select(ExternalSourceRow.external_id).where(
+                ExternalSourceRow.org_id == org_id,
+                ExternalSourceRow.provider == provider,
+                ExternalSourceRow.status == "active",
+                ExternalSourceRow.external_id.like(f"{escaped}%", escape="\\"),
+            )
+        )
+        external_ids = [str(value) for value in result.scalars().all()]
+    retired = 0
+    for external_id in external_ids:
+        if await mark_external_source_deleted(org_id, provider, external_id):
+            retired += 1
+    return retired
+
+
 async def mark_external_source_deleted(
     org_id: str, provider: str, external_id: str
 ) -> bool:

@@ -65,6 +65,7 @@ _SOURCE_AUTHORITY = {
     "spreadsheet": 0.85,
     "presentation": 0.8,
     "microsoft_teams": 0.7,
+    "email_attachment": 0.8,
     "gmail": 0.65,
 }
 

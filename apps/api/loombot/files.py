@@ -1,7 +1,8 @@
 """Per-user files for the LoomBot Files tab, editable from Files and Ask.
 
 Supported kinds: CSV and TXT (text, stored in ``content`` and editable in the
-app) plus DOCX, XLSX and PDF (binary, stored in blob storage). Files are private
+app) plus DOCX, XLSX and PDF (binary, stored in blob storage). DOCX files can
+also be created and edited as Markdown (see ``docx_builder``). Files are private
 to their owner within an org. Every change keeps the prior version
 (``previous_content`` or ``previous_blob_key``) so the last change, including
 one made by Ask, can be undone; undoing twice re-applies the change.
@@ -414,6 +415,38 @@ async def create_binary_file(
         raise
 
 
+WRITABLE_KINDS = frozenset({"csv", "txt", "docx"})
+
+
+async def create_document(
+    org_id: str,
+    user_id: str,
+    name: str,
+    content: str = "",
+    *,
+    kind: str = "csv",
+    edited_by: EditedBy = "user",
+    based_on: str | None = None,
+) -> dict[str, Any]:
+    """Create a CSV or TXT file from text, or a DOCX file from Markdown."""
+
+    if kind in TEXT_KINDS:
+        return await create_file(
+            org_id, user_id, name, content, edited_by=edited_by, kind=kind, based_on=based_on
+        )
+    if kind != "docx":
+        raise HTTPException(status_code=422, detail="New files can be CSV, TXT, or DOCX.")
+    if len((content or "").encode("utf-8")) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="Document text is limited to 1 MB.")
+    from loombot.docx_builder import markdown_to_docx
+
+    clean_name = normalize_name(name, "docx")
+    data = markdown_to_docx(content or "", title=stem(clean_name))
+    return await create_binary_file(
+        org_id, user_id, clean_name, "docx", data, edited_by=edited_by, based_on=based_on
+    )
+
+
 async def upload_file(
     org_id: str, user_id: str, filename: str, data: bytes, name: str | None = None
 ) -> dict[str, Any]:
@@ -448,6 +481,22 @@ async def update_file(
         return await get_file(org_id, user_id, file_id)
     current = await get_file(org_id, user_id, file_id)
     kind = current["kind"]
+    if content is not None and kind == "docx":
+        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="Document text is limited to 1 MB.")
+        from loombot.docx_builder import blocks_to_markdown, markdown_to_docx
+
+        existing, _ = await get_file_bytes(org_id, user_id, file_id)
+        unchanged = blocks_to_markdown(docx_blocks(existing)).strip() == content.strip()
+        if not unchanged:
+            # Only a real change replaces the file, so a no-op save keeps the undo point.
+            current = await _replace_binary(
+                org_id, user_id, file_id, "docx",
+                markdown_to_docx(content, title=stem(current["name"])), edited_by=edited_by,
+            )
+        if name is None:
+            return current
+        content = None
     params: dict[str, Any] = {
         "org": org_id, "user": user_id, "id": file_id, "edited_by": edited_by,
     }
@@ -457,7 +506,7 @@ async def update_file(
             raise HTTPException(
                 status_code=422,
                 detail=f"{current['name']} is a .{kind} file; upload a new version instead.",
-            )
+            )  # DOCX text edits were handled above.
         body, rows, columns = normalize_text(kind, content)
         params.update(content=body, rows=rows, columns=columns, size=len(body.encode("utf-8")))
         # Only remember the old content when it actually changes, so a no-op
@@ -507,6 +556,14 @@ async def replace_upload(
         if len(data) > MAX_FILE_BYTES:
             raise HTTPException(status_code=413, detail="CSV and text files are limited to 1 MB.")
         return await update_file(org_id, user_id, file_id, content=_decode_text(data))
+    return await _replace_binary(org_id, user_id, file_id, kind, data, edited_by="user")
+
+
+async def _replace_binary(
+    org_id: str, user_id: str, file_id: str, kind: str, data: bytes, *, edited_by: EditedBy
+) -> dict[str, Any]:
+    """Swap in new bytes for a binary file, keeping the old version for undo."""
+
     validate_binary(kind, data)
     blob = await _put_blob(org_id, file_id, kind, data)
     rows, columns = binary_stats(kind, data)
@@ -520,12 +577,12 @@ async def replace_upload(
             UPDATE loombot_files
             SET previous_blob_key=blob_key, blob_key=:blob, size_bytes=:size,
                 row_count=:rows, column_count=:columns,
-                last_edited_by='user', updated_at=now()
+                last_edited_by=:edited_by, updated_at=now()
             WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
             RETURNING {_META_COLUMNS}, content
         """), {
             "org": org_id, "user": user_id, "id": file_id, "blob": blob,
-            "size": len(data), "rows": rows, "columns": columns,
+            "size": len(data), "rows": rows, "columns": columns, "edited_by": edited_by,
         })).mappings().one_or_none()
     if row is None:
         await _delete_blobs(blob)
@@ -717,6 +774,8 @@ def docx_blocks(data: bytes) -> list[dict[str, Any]]:
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
+    from loombot.docx_builder import paragraph_markdown
+
     document = docx.Document(io.BytesIO(data))
     blocks: list[dict[str, Any]] = []
     for element in document.element.body.iterchildren():
@@ -730,10 +789,18 @@ def docx_blocks(data: bytes) -> list[dict[str, Any]]:
             match = re.match(r"heading\s*(\d)", style.strip().lower())
             if match or style.lower() == "title":
                 blocks.append({"type": "heading", "level": int(match.group(1)) if match else 1, "text": value})
-            elif style.lower().startswith("list"):
-                blocks.append({"type": "list_item", "text": value})
+                continue
+            # "markdown" keeps bold, italics, and links so editing as text keeps them.
+            formatted = paragraph_markdown(paragraph)
+            if style.lower().startswith("list"):
+                item = {"type": "list_item", "text": value}
+                if style.lower().startswith("list number"):
+                    item["ordered"] = True
             else:
-                blocks.append({"type": "paragraph", "text": value})
+                item = {"type": "paragraph", "text": value}
+            if formatted and formatted != value:
+                item["markdown"] = formatted
+            blocks.append(item)
         elif tag == "tbl":
             table = Table(element, document)
             blocks.append({
@@ -796,17 +863,9 @@ async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> 
     if kind == "pdf":
         return pdf_text(data)
     if kind == "docx":
-        lines: list[str] = []
-        for block in docx_blocks(data):
-            if block["type"] == "heading":
-                lines.append(f"{'#' * min(block['level'], 6)} {block['text']}")
-            elif block["type"] == "list_item":
-                lines.append(f"- {block['text']}")
-            elif block["type"] == "table":
-                lines += ["| " + " | ".join(row) + " |" for row in block["rows"]]
-            else:
-                lines.append(block["text"])
-        return "\n\n".join(lines)
+        from loombot.docx_builder import blocks_to_markdown
+
+        return blocks_to_markdown(docx_blocks(data))
     out: list[str] = []
     for sheet in xlsx_sheets(data, max_rows=2000):
         out.append(f"[Sheet: {sheet['name']}]")
@@ -821,7 +880,10 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
 
     data, meta = await get_file_bytes(org_id, user_id, file_id)
     if meta["kind"] == "docx":
-        return {"kind": "docx", "blocks": docx_blocks(data)}
+        from loombot.docx_builder import blocks_to_markdown
+
+        blocks = docx_blocks(data)
+        return {"kind": "docx", "blocks": blocks, "markdown": blocks_to_markdown(blocks)}
     if meta["kind"] == "xlsx":
         return {"kind": "xlsx", "sheets": xlsx_sheets(data)}
     if meta["kind"] == "pdf":

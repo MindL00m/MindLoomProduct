@@ -139,7 +139,29 @@ class Settings(BaseSettings):
     )
     capture_vision_model: str = Field(
         "gpt-4o-mini",
-        description="Vision-capable model used to summarize approved captures.",
+        description=(
+            "Vision-capable model used to summarize approved captures and to read "
+            "scanned PDFs and images attached to emails."
+        ),
+    )
+    email_attachment_ocr: bool = Field(
+        default=True,
+        description=(
+            "Read scanned PDFs and image attachments in email with the vision model. "
+            "Text-based PDFs, Word, Excel, PowerPoint, CSV, and text attachments are "
+            "always read locally."
+        ),
+    )
+    tavily_api_key: str = Field(
+        default="",
+        description=(
+            "Tavily Search API key (https://tavily.com). When set, Ask and workspace "
+            "Loombot fall back to a labelled web search for low-confidence answers."
+        ),
+    )
+    web_search_enabled: bool = Field(
+        default=True,
+        description="Set false to turn off web search even when TAVILY_API_KEY is set.",
     )
     token_encryption_key: str = Field(
         default="",

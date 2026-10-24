@@ -117,6 +117,11 @@ services:
       CAPTURE_STORAGE_ROOT: /app/data/captures
       BLOB_STORAGE_ROOT: /app/data/blobs
       CAPTURE_VISION_MODEL: ${CAPTURE_VISION_MODEL:-gpt-4o-mini}
+      # Read scanned PDFs and images attached to emails with the vision model.
+      EMAIL_ATTACHMENT_OCR: ${EMAIL_ATTACHMENT_OCR:-true}
+      # Web search fallback for low-confidence answers (https://tavily.com). Empty = off.
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
     ports:
       - "8000:8000"
     depends_on:
@@ -155,6 +160,9 @@ services:
       MICROSOFT_GRAPH_WEBHOOK_URL: ${MICROSOFT_GRAPH_WEBHOOK_URL:-}
       MICROSOFT_GRAPH_CLIENT_STATE: ${MICROSOFT_GRAPH_CLIENT_STATE:-dev-client-state}
       BLOB_STORAGE_ROOT: /app/data/blobs
+      # Mailbox syncs run here, so attachment OCR settings apply to the worker too.
+      CAPTURE_VISION_MODEL: ${CAPTURE_VISION_MODEL:-gpt-4o-mini}
+      EMAIL_ATTACHMENT_OCR: ${EMAIL_ATTACHMENT_OCR:-true}
     depends_on:
       postgres:
         condition: service_healthy

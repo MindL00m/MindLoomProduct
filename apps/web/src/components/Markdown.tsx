@@ -8,7 +8,8 @@
  * links are limited to http(s), mailto, and in-app paths.
  *
  * ``renderCitation`` lets callers turn ``[SOURCE: id]`` style markers into
- * inline references; it is never applied inside code.
+ * inline references; it is never applied inside code. Web citations
+ * (``[WEB: 2]``) reach it as ``web:2``.
  */
 
 import { Fragment, type ReactNode } from "react";
@@ -370,7 +371,7 @@ function renderList(lines: string[], start: number, ctx: Ctx): [ReactNode, numbe
 // ---------------------------------------------------------------------------
 // Inline
 
-const CITE_INLINE = /^\[(?:SOURCE|EPHEMERAL):\s*([^\]]+?)\]/i;
+const CITE_INLINE = /^\[(SOURCE|EPHEMERAL|WEB):\s*([^\]]+?)\]/i;
 const LINK_INLINE =
   /^\[((?:[^\[\]]|\[[^\]]*\])*)\]\(\s*<?((?:[^\s()<>]|\([^\s()<>]*\))+)>?(?:\s+"[^"]*")?\s*\)/;
 const AUTOLINK = /^<(https?:\/\/[^\s>]+|mailto:[^\s>]+)>/;
@@ -471,7 +472,8 @@ function renderInline(text: string, ctx: Ctx): ReactNode[] {
       const cite = CITE_INLINE.exec(rest);
       if (cite) {
         flush();
-        const node = ctx.renderCitation?.(cite[1].trim(), key());
+        const id = cite[2].trim();
+        const node = ctx.renderCitation?.(cite[1].toUpperCase() === "WEB" ? `web:${id}` : id, key());
         if (node) out.push(node);
         i += cite[0].length;
         continue;

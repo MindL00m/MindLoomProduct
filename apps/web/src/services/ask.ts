@@ -146,6 +146,45 @@ export interface StatusTrackerCard {
   update_count: number;
 }
 
+/** One public web page a web search returned; answers cite it as [WEB: n] (1-based). */
+export interface WebResult {
+  title: string;
+  url: string;
+  snippet?: string;
+  published_date?: string | null;
+}
+
+export interface MeetingAttendee {
+  email: string;
+  name?: string;
+  user_id?: string | null;
+}
+
+export interface MeetingTimeOption {
+  start: string;
+  end: string;
+  label?: string;
+}
+
+/** A Google Calendar meeting LoomBot drafted; nothing is scheduled until the user approves. */
+export interface ProposedMeeting {
+  title: string;
+  description?: string;
+  start?: string | null;
+  end?: string | null;
+  duration_minutes: number;
+  timezone?: string | null;
+  attendees: MeetingAttendee[];
+  location?: string;
+  add_video_call: boolean;
+  alternatives: MeetingTimeOption[];
+  unknown_availability?: string[];
+  calendar_connected: boolean;
+  can_schedule: boolean;
+  calendar_note?: string | null;
+  candidates?: MessageablePerson[];
+}
+
 export interface QueryResponse {
   answer: string;
   sources: Source[];
@@ -161,6 +200,11 @@ export interface QueryResponse {
   file_changes?: FileChange[];
   status_tracker?: StatusTrackerCard | null;
   proposed_recurring_email?: ProposedRecurringEmail | null;
+  proposed_meeting?: ProposedMeeting | null;
+  /** True when any part of the answer came from a public web search. */
+  web_search_used?: boolean;
+  web_search_query?: string | null;
+  web_results?: WebResult[];
 }
 
 export interface ChatMessage {

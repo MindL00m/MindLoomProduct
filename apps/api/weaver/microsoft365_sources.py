@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -23,6 +24,8 @@ from brain.pipeline import DocumentInput
 from core.provider_http import request_with_backoff
 from brain.source_registry import ingest_external_source, mark_external_source_deleted
 
+logger = logging.getLogger(__name__)
+
 SYNC_PROVIDER_OUTLOOK_MAIL = "outlook_mail"
 SYNC_PROVIDER_OUTLOOK_CALENDAR = "outlook_calendar"
 SYNC_PROVIDER_TEAMS_CHAT = "teams_chat"
@@ -35,6 +38,71 @@ def _plain_html(value: str) -> str:
 
 def _email(address: dict[str, Any] | None) -> str:
     return str(((address or {}).get("emailAddress") or {}).get("address") or "").lower()
+
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+
+
+async def _outlook_attachments(
+    client: httpx.AsyncClient, token: str, message_id: str, *, skip: Any = None
+) -> list[Any]:
+    """Read the file attachments of one Outlook message (attached items are skipped).
+
+    ``skip(index, ref)`` may return True for attachments that are already indexed.
+    """
+
+    from weaver.email_content import (
+        MAX_ATTACHMENTS_PER_MESSAGE,
+        AttachmentRef,
+        AttachmentText,
+        attachment_kind,
+        extract_attachment,
+        skip_reason,
+    )
+
+    headers = {"Authorization": f"Bearer {token}"}
+    listed = await request_with_backoff(
+        client, "GET", f"{_GRAPH}/me/messages/{message_id}/attachments",
+        headers=headers, params={"$select": "id,name,contentType,size,isInline"},
+    )
+    if listed.status_code >= 400:
+        return []
+    results: list[Any] = []
+    for index, item in enumerate((listed.json().get("value") or [])[:MAX_ATTACHMENTS_PER_MESSAGE]):
+        if item.get("@odata.type") not in (None, "#microsoft.graph.fileAttachment"):
+            continue
+        ref = AttachmentRef(
+            filename=str(item.get("name") or "attachment"),
+            mime_type=str(item.get("contentType") or ""),
+            size=int(item.get("size") or 0),
+            attachment_id=str(item.get("id") or ""),
+            inline=bool(item.get("isInline")),
+        )
+        reason = skip_reason(ref)
+        if reason or not ref.attachment_id:
+            results.append(AttachmentText(
+                filename=ref.filename, mime_type=ref.mime_type, size=ref.size,
+                kind=attachment_kind(ref.filename, ref.mime_type), note=reason, index=index,
+            ))
+            continue
+        if skip is not None and await skip(index, ref):
+            results.append(AttachmentText(
+                filename=ref.filename, mime_type=ref.mime_type, size=ref.size,
+                kind=attachment_kind(ref.filename, ref.mime_type), note="Already indexed.",
+                index=index,
+            ))
+            continue
+        raw = await request_with_backoff(
+            client, "GET",
+            f"{_GRAPH}/me/messages/{message_id}/attachments/{ref.attachment_id}/$value",
+            headers=headers,
+        )
+        if raw.status_code >= 400:
+            continue
+        extracted = await extract_attachment(ref.filename, ref.mime_type, raw.content)
+        extracted.index = index
+        results.append(extracted)
+    return results
 
 
 async def _delta(
@@ -71,7 +139,7 @@ async def sync_outlook_mail(org_id: str, user_id: str, *, max_results: int = 100
     url = cursor.cursor_value if cursor and cursor.cursor_value.startswith("http") else (
         "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta"
         "?$select=id,conversationId,subject,body,bodyPreview,from,toRecipients,ccRecipients,"
-        "createdDateTime,lastModifiedDateTime,receivedDateTime,webLink,isDraft"
+        "createdDateTime,lastModifiedDateTime,receivedDateTime,webLink,isDraft,hasAttachments"
     )
     visible_to = visibility_for_policy(policy, org_id=org_id, source_account=account)
     ingested = 0
@@ -83,6 +151,13 @@ async def sync_outlook_mail(org_id: str, user_id: str, *, max_results: int = 100
                 continue
             if "@removed" in message:
                 await mark_external_source_deleted(org_id, SYNC_PROVIDER_OUTLOOK_MAIL, message_id)
+                # Its attachments were indexed as their own documents; retire them too.
+                from brain.source_registry import mark_external_sources_deleted_by_prefix
+                from weaver.google_workspace import EMAIL_ATTACHMENT_SOURCE
+
+                await mark_external_sources_deleted_by_prefix(
+                    org_id, EMAIL_ATTACHMENT_SOURCE, f"{account.lower()}:{message_id}:"
+                )
                 continue
             if message.get("isDraft"):
                 continue
@@ -97,8 +172,35 @@ async def sync_outlook_mail(org_id: str, user_id: str, *, max_results: int = 100
                 [*(message.get("toRecipients") or []), *(message.get("ccRecipients") or [])]
                 if _email(item)
             ]
-            body = _plain_html(str((message.get("body") or {}).get("content") or ""))
-            text = f"Subject: {message.get('subject') or '(no subject)'}\nFrom: {sender}\nTo: {', '.join(recipients)}\n\n{body or message.get('bodyPreview') or ''}"
+            from weaver.email_content import attachment_names_line, html_to_text
+
+            raw_body = (message.get("body") or {})
+            body = (
+                html_to_text(str(raw_body.get("content") or ""))
+                if str(raw_body.get("contentType") or "html").lower() == "html"
+                else _plain_html(str(raw_body.get("content") or ""))
+            )
+            attachments: list[Any] = []
+            if message.get("hasAttachments"):
+                from weaver.google_workspace import email_attachment_indexed
+
+                async def already_indexed(index: int, ref: Any, _mid: str = message_id) -> bool:
+                    return await email_attachment_indexed(
+                        org_id, account, _mid, index, ref.filename
+                    )
+
+                try:
+                    attachments = await _outlook_attachments(
+                        client, token, message_id, skip=already_indexed
+                    )
+                except Exception:  # noqa: BLE001 - attachments never block the email
+                    attachments = []
+            names = attachment_names_line([item.filename for item in attachments])
+            text = (
+                f"Subject: {message.get('subject') or '(no subject)'}\nFrom: {sender}\n"
+                f"To: {', '.join(recipients)}\n" + (f"{names}\n" if names else "")
+                + f"\n{body or message.get('bodyPreview') or ''}"
+            )
             conversation = Conversation(
                 source="outlook_email",
                 conversation_id=f"outlook:{message.get('conversationId') or message_id}",
@@ -125,6 +227,24 @@ async def sync_outlook_mail(org_id: str, user_id: str, *, max_results: int = 100
                     source_url=message.get("webLink"),
                 ),
             )
+            from weaver.google_workspace import ingest_email_attachment
+
+            for attachment in attachments:
+                if not attachment.text.strip():
+                    continue
+                try:
+                    await ingest_email_attachment(
+                        org_id=org_id, provider="outlook", message_id=message_id,
+                        index=attachment.index,
+                        attachment=attachment,
+                        subject=str(message.get("subject") or "(no subject)"),
+                        sender=sender, recipients=", ".join(recipients), timestamp=created,
+                        account=account.lower(), visible_to=visible_to,
+                        source_application="Microsoft Outlook", source_location="Outlook Inbox",
+                        source_url=message.get("webLink"),
+                    )
+                except Exception:  # noqa: BLE001 - one attachment must not stop the sync
+                    logger.exception("Outlook attachment %s failed", attachment.filename)
             ingested += 1
         if next_cursor:
             await _upsert_cursor(

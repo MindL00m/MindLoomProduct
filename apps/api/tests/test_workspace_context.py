@@ -147,43 +147,58 @@ async def test_propose_workspace_does_not_create(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_loombot_context_only_skips_retrieve(monkeypatch) -> None:
+    """Context-only rooms run the full Ask agent, answering knowledge from CONTEXT.md only."""
+
+    from core.models import QueryResponse
+
     retrieve_called = {"n": 0}
+    seen: dict = {}
 
     async def fake_retrieve(*_a, **_k):
         retrieve_called["n"] += 1
         return RetrievalResult(chunks=[], experts=[], entities_found=[])
 
-    async def fake_context_answer(question: str, context_md: str, org_id: str) -> str:
-        assert "Project X" in context_md
-        assert org_id == "org-1"
-        assert "timeline" in question.lower() or True
-        return "From CONTEXT.md: launch is Q3."
+    async def fake_agent(**kwargs):
+        seen.update(kwargs)
+        return QueryResponse(
+            answer="From CONTEXT.md: launch is Q3.", sources=[], confidence="medium", routed=False
+        )
 
     monkeypatch.setattr("brain.retrieval.retrieve", fake_retrieve)
-    monkeypatch.setattr(workspaces, "_loombot_reply_from_context", fake_context_answer)
+    monkeypatch.setattr(ask_agent, "run_ask_agent", fake_agent)
 
-    answer = await workspaces._loombot_reply(
+    answer, payload = await workspaces._loombot_reply(
         org_id="org-1",
         user_id="u-1",
         question="What is the timeline?",
         workspace={
             "loombot_mode": "context_only",
             "context_md": "# Purpose\n\nProject X\n",
+            "name": "Project X",
         },
+        requester_name="Alex",
     )
     assert retrieve_called["n"] == 0
-    assert "CONTEXT.md" in answer or "Q3" in answer
+    assert "Q3" in answer
+    assert payload["answer"] == answer
+    # CONTEXT.md is the only knowledge source; tools still get the workspace context.
+    assert seen["retrieval"].chunks == []
+    assert [doc.filename for doc in seen["ephemeral_documents"]] == ["CONTEXT.md"]
+    assert "Project X" in seen["ephemeral_documents"][0].text
+    assert seen["workspace"].mode == "context_only"
+    assert seen["workspace"].requester_name == "Alex"
 
 
 @pytest.mark.asyncio
 async def test_loombot_context_only_empty_prompts_resync() -> None:
-    answer = await workspaces._loombot_reply(
+    answer, payload = await workspaces._loombot_reply(
         org_id="org-1",
         user_id="u-1",
         question="Anything?",
         workspace={"loombot_mode": "context_only", "context_md": ""},
     )
     assert "Resync" in answer
+    assert payload is None
 
 
 @pytest.mark.asyncio

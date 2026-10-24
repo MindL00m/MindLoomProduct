@@ -348,7 +348,8 @@ async def test_knowledge_inventory_filters_by_source_alias(monkeypatch) -> None:
     result = await data_tools.knowledge_inventory(
         "org-1", "u-1", source="Email", start_date="2026-10-01", end_date="2026-10-18"
     )
-    assert calls[0]["sources"] == ["gmail", "outlook_email"]
+    # "Email" also covers the files attached to emails, which are indexed separately.
+    assert calls[0]["sources"] == ["gmail", "outlook_email", "email_attachment"]
     assert calls[0]["start"] == "2026-10-01T00:00:00+00:00"
     assert calls[0]["end"] == "2026-10-19T00:00:00+00:00"
     assert result["total_documents"] == 25

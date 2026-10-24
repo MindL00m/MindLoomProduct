@@ -9,14 +9,15 @@ The source is grouped by agent, matching how the product is described:
 ```text
 main.py      HTTP app, startup and the remaining top-level routes
 worker.py    Durable Redis ingestion worker (python -m worker)
-api/routes/  HTTP routers for captures, GitHub, LLM settings, reviews, status,
-             workspaces, WhatsApp, Zoom and connection setup
+api/routes/  HTTP routers for calendar, captures, files, GitHub, LLM settings,
+             reviews, status, workspaces, WhatsApp, Zoom and connection setup
 core/        Shared infrastructure: config, databases, models, schema, jobs,
              Redis, rate limits, health probes, token encryption, the
              organization-selectable LLM provider and HTTP helpers
 brain/       The MindLoom Brain: ingestion pipeline, parsers, chunkers, file text,
              extraction, embeddings, storage and retrieval
-loombot/     LoomBot: Ask agent, cited answers, workspaces and CONTEXT.md
+loombot/     LoomBot: Ask agent, cited answers, web search, Files (CSV, TXT,
+             DOCX), workspaces and CONTEXT.md
 weaver/      Weaver (Capture): Google, Microsoft, Zoom, WhatsApp and GitHub
              connectors, webhook verification, connection setup, sync
              reporting and MindLoom Capture
@@ -24,7 +25,8 @@ keeper/      Keeper (Keep true): sign-in and session tokens, tenancy and
              visibility ACLs, review queues, expert answers, conflicts and
              expiry schedules
 lens/        Lens (Understand): status board and analysis
-shuttle/     Shuttle (Act): notification delivery and GitHub pull requests
+shuttle/     Shuttle (Act): notification delivery, GitHub pull requests,
+             recurring emails and Google Calendar meetings
 tests/       Automated backend tests
 db/          PostgreSQL schema, migrations and Neo4j constraints
 ```
@@ -89,9 +91,11 @@ evidence, and returns only the sources it actually cites.
 
 The controlled Google Workspace setup can select Gmail, calendars, shared
 drives, and folders. The Google OAuth client must have the Calendar API enabled
-and grant `calendar.readonly` and `gmail.send` in addition to the existing Gmail
-and Drive scopes. Existing connections must reconnect once to grant the new
-scopes.
+and grant `calendar.readonly`, `calendar.events`, and `gmail.send` in addition to
+the existing Gmail and Drive scopes. `calendar.events` lets Ask and workspace
+Loombot create meetings the user approves; add it to the OAuth consent screen.
+Existing connections reconnect once (Apps, Google Workspace, Reconnect) to grant
+new scopes; approved locations are kept.
 
 The Microsoft 365 setup can select Outlook Inbox, Outlook Calendar, SharePoint,
 Teams channels, and the connected user's private/group chats. The Entra app
@@ -104,6 +108,28 @@ Outlook mail and calendar use Microsoft Graph delta links. Google Calendar uses
 Calendar sync tokens. Teams private chats use source versions plus scheduled
 reconciliation because Graph does not expose the same delta contract for every
 delegated chat collection.
+
+## Email attachments
+
+Gmail and Outlook syncs index every readable attachment as its own document
+(source `email_attachment`), linked to its email and visible to the same
+mailbox owner: PDF, Word, Excel, PowerPoint, CSV, text, HTML, and forwarded
+emails. With `EMAIL_ATTACHMENT_OCR=true`, scanned PDFs (first five pages) and
+image attachments are transcribed with `CAPTURE_VISION_MODEL`. Inline and small
+images (logos, signatures) and legacy `.doc`/`.xls` files are skipped. Ask's
+live `search_emails` returns attachment text too, and `read_email_attachment`
+and `save_email_attachment` read one in full or save it to Files.
+
+## Web search
+
+When `TAVILY_API_KEY` is set, Ask and workspace Loombot fall back to a Tavily web
+search when a company-knowledge answer has low confidence. A model call first
+decides whether the question is about public information; internal company
+questions are never sent to Tavily, and the query excludes internal details.
+Users can also ask to search the web explicitly. Every answer that used the web
+starts with a "Web search used" notice, sets `web_search_used`, and lists the
+pages in `web_results`; the web app shows a badge and the web sources. Set
+`WEB_SEARCH_ENABLED=false` to turn it off.
 
 ## WhatsApp exports
 

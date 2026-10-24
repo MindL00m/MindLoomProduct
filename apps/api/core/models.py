@@ -1005,6 +1005,54 @@ class StatusTrackerCard(BaseModel):
     update_count: int = 0
 
 
+class WebResult(BaseModel):
+    """One public web page a web search returned."""
+
+    title: str
+    url: str
+    snippet: str = ""
+    published_date: Optional[str] = None
+
+
+class MeetingAttendee(BaseModel):
+    """Someone invited to a proposed meeting."""
+
+    email: str
+    name: str = ""
+    user_id: Optional[str] = None
+
+
+class MeetingTimeOption(BaseModel):
+    """A start time for a meeting, usually a free slot from Google Calendar."""
+
+    start: datetime
+    end: datetime
+    label: str = ""
+
+
+class ProposedMeeting(BaseModel):
+    """A Google Calendar meeting Ask drafted; nothing is scheduled until the user approves."""
+
+    title: str
+    description: str = ""
+    start: Optional[datetime] = Field(default=None, description="Chosen start time (UTC).")
+    end: Optional[datetime] = None
+    duration_minutes: int = 30
+    timezone: Optional[str] = Field(default=None, description="The organizer's IANA timezone.")
+    attendees: list[MeetingAttendee] = Field(default_factory=list)
+    location: str = ""
+    add_video_call: bool = True
+    alternatives: list[MeetingTimeOption] = Field(default_factory=list)
+    unknown_availability: list[str] = Field(
+        default_factory=list,
+        description="Attendees whose free/busy times Google Calendar could not share.",
+    )
+    calendar_connected: bool = False
+    can_schedule: bool = False
+    calendar_note: Optional[str] = None
+    candidates: list[MessageablePerson] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """An answer generated from retrieved context, with routing metadata."""
 
@@ -1049,6 +1097,19 @@ class QueryResponse(BaseModel):
     proposed_recurring_email: Optional[ProposedRecurringEmail] = Field(
         default=None,
         description="Repeating email awaiting the user's approval in Ask.",
+    )
+    proposed_meeting: Optional[ProposedMeeting] = Field(
+        default=None,
+        description="Google Calendar meeting awaiting the user's approval.",
+    )
+    web_search_used: bool = Field(
+        default=False,
+        description="True when any part of the answer came from a public web search.",
+    )
+    web_search_query: Optional[str] = None
+    web_results: list[WebResult] = Field(
+        default_factory=list,
+        description="Web pages the answer may cite as [WEB: n] (1-based).",
     )
 
 

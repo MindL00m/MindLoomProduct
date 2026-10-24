@@ -83,6 +83,7 @@ from core.models import (
     TeamsWatchResponse,
     TeamsSyncStartResponse,
 )
+from api.routes.calendar import router as calendar_router
 from api.routes.captures import router as captures_router
 from api.routes.connection_setup import router as connection_setup_router
 from api.routes.files import router as files_router
@@ -155,6 +156,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
+app.include_router(calendar_router)
 app.include_router(captures_router)
 app.include_router(connection_setup_router)
 app.include_router(files_router)
@@ -453,7 +455,7 @@ async def query(
         retrieval = await retrieve(
             body.question, body.history, org_id, access_tokens
         )
-        from loombot.ask_agent import run_ask_agent
+        from loombot.ask_agent import request_expert_if_routed, run_ask_agent
 
         response = await run_ask_agent(
             question=body.question,
@@ -465,22 +467,9 @@ async def query(
             attached_file_names=body.attached_file_names,
             user_timezone=body.timezone,
         )
-        if (
-            response.proposed_message is None
-            and response.proposed_email is None
-            and response.routed
-            and response.expert
-        ):
-            from keeper.review_workflows import create_expert_request
-            request_id = await create_expert_request(
-                org_id=org_id,
-                requester_user_id=user_id,
-                question=body.question,
-                expert_name=response.expert.name,
-                expert_email=response.expert.email,
-                source_ids=[source.chunk_id for source in response.sources],
-            )
-            response.expert_request_created = request_id is not None
+        await request_expert_if_routed(
+            response, org_id=org_id, user_id=user_id, question=body.question
+        )
         return response
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
         raise HTTPException(status_code=500, detail=str(e)) from e

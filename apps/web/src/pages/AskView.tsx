@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowUp,
+  CalendarClock,
   Database,
+  ExternalLink,
+  Globe,
   FileText,
   Hash,
   GitPullRequest,
@@ -32,11 +35,14 @@ import {
   type StatusTrackerCard,
   type ProposedExpertMessage,
   type ProposedPullRequest,
+  type ProposedMeeting,
   type ProposedRecurringEmail,
   type ProposedWorkspace,
   type QueryResponse,
   type Source,
+  type WebResult,
 } from "@/services/ask";
+import { createMeeting, findMeetingTimes, type MeetingSuggestion } from "@/services/calendar";
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
@@ -69,9 +75,26 @@ const EXAMPLES = [
 const CITE_RE = /\[(?:SOURCE|EPHEMERAL):\s*([^\]]+?)\]/gi;
 
 /** Turn citation markers into numbered refs; unknown ids render nothing. */
-function citationRenderer(sources: Source[]): CitationRenderer {
+export function citationRenderer(sources: Source[], web: WebResult[] = []): CitationRenderer {
   const index = new Map(sources.map((s, i) => [s.chunk_id, i + 1]));
   return (id, key) => {
+    if (id.startsWith("web:")) {
+      const n = Number(id.slice(4));
+      const result = Number.isInteger(n) ? web[n - 1] : undefined;
+      if (!result) return null;
+      return (
+        <a
+          key={key}
+          href={result.url}
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+          title={`Web: ${result.title}`}
+          className="mx-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded bg-sky-100 px-0.5 text-[10px] font-semibold text-sky-800 align-super no-underline hover:bg-sky-200"
+        >
+          W{n}
+        </a>
+      );
+    }
     const n = index.get(id);
     if (!n) return null;
     return (
@@ -184,6 +207,7 @@ export default function AskView() {
           ? "pending"
           : undefined,
         recurringState: response.proposed_recurring_email ? "pending" : undefined,
+        meetingState: response.proposed_meeting ? "pending" : undefined,
       });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -552,38 +576,7 @@ function TurnView({
           {turn.status === "done" && turn.response && (
             <AnswerView
               response={turn.response}
-              proposedMessage={
-                turn.proposedMessage ?? turn.response.proposed_message ?? null
-              }
-              proposedEmail={
-                turn.proposedEmail ?? turn.response.proposed_email ?? null
-              }
-              proposalState={turn.proposalState}
-              proposalReviewId={turn.proposalReviewId}
-              proposalError={turn.proposalError}
-              emailProposalState={turn.emailProposalState}
-              emailProposalId={turn.emailProposalId}
-              emailProposalError={turn.emailProposalError}
-              proposedPullRequest={
-                turn.proposedPullRequest ??
-                turn.response.proposed_pull_request ??
-                null
-              }
-              prProposalState={turn.prProposalState}
-              prProposalUrl={turn.prProposalUrl}
-              prProposalError={turn.prProposalError}
-              proposedWorkspace={
-                turn.proposedWorkspace ??
-                turn.response.proposed_workspace ??
-                null
-              }
-              workspaceProposalState={turn.workspaceProposalState}
-              workspaceProposalId={turn.workspaceProposalId}
-              workspaceProposalError={turn.workspaceProposalError}
-              fileChangeState={turn.fileChangeState}
-              recurringState={turn.recurringState}
-              recurringId={turn.recurringId}
-              recurringError={turn.recurringError}
+              state={turn}
               onProposalPatch={onProposalPatch}
             />
           )}
@@ -843,52 +836,20 @@ function ProposedComposeCard({
   );
 }
 
-function AnswerView({
+/** Card state for one answer: Ask keeps it on the turn, workspaces on the message. */
+export type AnswerState = Partial<Omit<Turn, "id" | "question" | "status" | "response" | "error">>;
+
+/** The answer, its cards, and its sources. Shared by Ask and workspace Loombot replies. */
+export function AnswerView({
   response,
-  proposedMessage,
-  proposedEmail,
-  proposalState,
-  proposalReviewId,
-  proposalError,
-  emailProposalState,
-  emailProposalId,
-  emailProposalError,
-  proposedPullRequest,
-  prProposalState,
-  prProposalUrl,
-  prProposalError,
-  proposedWorkspace,
-  workspaceProposalState,
-  workspaceProposalId,
-  workspaceProposalError,
-  fileChangeState,
-  recurringState,
-  recurringId,
-  recurringError,
+  state = {},
   onProposalPatch,
+  hideConfidence = false,
 }: {
   response: QueryResponse;
-  proposedMessage?: ProposedExpertMessage | null;
-  proposedEmail?: ProposedEmail | null;
-  proposalState?: Turn["proposalState"];
-  proposalReviewId?: string;
-  proposalError?: string;
-  emailProposalState?: Turn["emailProposalState"];
-  emailProposalId?: string;
-  emailProposalError?: string;
-  proposedPullRequest?: ProposedPullRequest | null;
-  prProposalState?: Turn["prProposalState"];
-  prProposalUrl?: string;
-  prProposalError?: string;
-  proposedWorkspace?: ProposedWorkspace | null;
-  workspaceProposalState?: Turn["workspaceProposalState"];
-  workspaceProposalId?: string;
-  workspaceProposalError?: string;
-  fileChangeState?: Turn["fileChangeState"];
-  recurringState?: Turn["recurringState"];
-  recurringId?: string;
-  recurringError?: string;
+  state?: AnswerState;
   onProposalPatch: (patch: Partial<Turn>) => void;
+  hideConfidence?: boolean;
 }) {
   const cited = new Set<string>();
   let match: RegExpExecArray | null;
@@ -896,31 +857,41 @@ function AnswerView({
   while ((match = CITE_RE.exec(response.answer)) !== null) {
     cited.add(match[1].trim());
   }
-  const proposal = proposedMessage ?? response.proposed_message ?? null;
-  const emailProposal = proposedEmail ?? response.proposed_email ?? null;
-  const prProposal =
-    proposedPullRequest ?? response.proposed_pull_request ?? null;
-  const wsProposal =
-    proposedWorkspace ?? response.proposed_workspace ?? null;
+  const proposal = state.proposedMessage ?? response.proposed_message ?? null;
+  const emailProposal = state.proposedEmail ?? response.proposed_email ?? null;
+  const prProposal = state.proposedPullRequest ?? response.proposed_pull_request ?? null;
+  const wsProposal = state.proposedWorkspace ?? response.proposed_workspace ?? null;
+  const webResults = response.web_results ?? [];
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <ConfidencePill confidence={response.confidence} />
+      <div className="flex flex-wrap items-center gap-2">
+        {!hideConfidence && <ConfidencePill confidence={response.confidence} />}
+        {response.web_search_used && <WebSearchPill query={response.web_search_query} />}
       </div>
 
       <Markdown
         text={response.answer}
-        renderCitation={citationRenderer(response.sources)}
+        renderCitation={citationRenderer(response.sources, webResults)}
       />
 
       {response.status_tracker && <TrackerCard tracker={response.status_tracker} />}
 
+      {response.proposed_meeting && (
+        <MeetingCard
+          proposal={response.proposed_meeting}
+          state={state.meetingState}
+          result={state.meetingResult}
+          error={state.meetingError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
       {response.proposed_recurring_email && (
         <RecurringEmailCard
           proposal={response.proposed_recurring_email}
-          state={recurringState}
-          workflowId={recurringId}
-          error={recurringError}
+          state={state.recurringState}
+          workflowId={state.recurringId}
+          error={state.recurringError}
           onPatch={onProposalPatch}
         />
       )}
@@ -928,7 +899,7 @@ function AnswerView({
       {(response.file_changes?.length ?? 0) > 0 && (
         <FileChangesCard
           changes={response.file_changes!}
-          state={fileChangeState}
+          state={state.fileChangeState}
           onPatch={onProposalPatch}
         />
       )}
@@ -937,12 +908,12 @@ function AnswerView({
         <ProposedComposeCard
           expert={proposal}
           email={emailProposal}
-          expertState={proposalState}
-          expertReviewId={proposalReviewId}
-          expertError={proposalError}
-          emailState={emailProposalState}
-          emailId={emailProposalId}
-          emailError={emailProposalError}
+          expertState={state.proposalState}
+          expertReviewId={state.proposalReviewId}
+          expertError={state.proposalError}
+          emailState={state.emailProposalState}
+          emailId={state.emailProposalId}
+          emailError={state.emailProposalError}
           onPatch={onProposalPatch}
         />
       )}
@@ -950,9 +921,9 @@ function AnswerView({
       {prProposal && (
         <ProposedPullRequestCard
           proposal={prProposal}
-          state={prProposalState}
-          prUrl={prProposalUrl}
-          error={prProposalError}
+          state={state.prProposalState}
+          prUrl={state.prProposalUrl}
+          error={state.prProposalError}
           onPatch={onProposalPatch}
         />
       )}
@@ -960,50 +931,120 @@ function AnswerView({
       {wsProposal && (
         <ProposedWorkspaceCard
           proposal={wsProposal}
-          state={workspaceProposalState}
-          workspaceId={workspaceProposalId}
-          error={workspaceProposalError}
+          state={state.workspaceProposalState}
+          workspaceId={state.workspaceProposalId}
+          error={state.workspaceProposalError}
           onPatch={onProposalPatch}
         />
       )}
 
-      {response.routed && response.expert && !proposal && (
-        <div className="rounded-md border border-border bg-muted/50 px-3 py-3 text-sm">
-          <span className="font-medium">Suggested expert: {response.expert.name}</span>
-          <span className="text-muted-foreground"> — {response.expert.reason}</span>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {response.expert_request_created
-              ? "An in-app request was sent to this expert."
-              : "This expert is not yet linked to a signed-in employee account, so no notification was sent."}
-          </p>
-          {response.expert_request_created && (
-            <a
-              href="/dashboard?tab=messages"
-              className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
-            >
-              Open expert conversation
-            </a>
-          )}
-        </div>
-      )}
+      {response.routed && response.expert && !proposal && <ExpertNote response={response} />}
 
-      {response.sources.length > 0 && (
-        <div className="rounded-lg border border-border bg-card">
-          <p className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Sources
-          </p>
-          <ol className="divide-y divide-border">
-            {response.sources.map((source, i) => (
-              <SourceRow
-                key={source.chunk_id}
-                source={source}
-                index={i + 1}
-                cited={cited.has(source.chunk_id)}
-              />
-            ))}
-          </ol>
-        </div>
+      {webResults.length > 0 && <WebSources results={webResults} />}
+
+      {response.sources.length > 0 && <SourceList sources={response.sources} cited={cited} />}
+    </div>
+  );
+}
+
+export function ExpertNote({ response }: { response: QueryResponse }) {
+  if (!response.expert) return null;
+  return (
+    <div className="rounded-md border border-border bg-muted/50 px-3 py-3 text-sm">
+      <span className="font-medium">Suggested expert: {response.expert.name}</span>
+      <span className="text-muted-foreground"> — {response.expert.reason}</span>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {response.expert_request_created
+          ? "An in-app request was sent to this expert."
+          : "This expert is not yet linked to a signed-in employee account, so no notification was sent."}
+      </p>
+      {response.expert_request_created && (
+        <a
+          href="/dashboard?tab=messages"
+          className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          Open expert conversation
+        </a>
       )}
+    </div>
+  );
+}
+
+export function SourceList({ sources, cited }: { sources: Source[]; cited: Set<string> }) {
+  return (
+    <div className="rounded-lg border border-border bg-card">
+      <p className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Sources
+      </p>
+      <ol className="divide-y divide-border">
+        {sources.map((source, i) => (
+          <SourceRow
+            key={source.chunk_id}
+            source={source}
+            index={i + 1}
+            cited={cited.has(source.chunk_id)}
+          />
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** Says, every time, that an answer used the public web. */
+export function WebSearchPill({ query }: { query?: string | null }) {
+  return (
+    <span
+      data-testid="web-search-pill"
+      title={query ? `Searched the web for: ${query}` : "This answer used a web search"}
+      className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-0.5 text-xs font-semibold text-sky-800 ring-1 ring-inset ring-sky-200"
+    >
+      <Globe className="size-3.5" />
+      Web search used
+    </span>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+export function WebSources({ results }: { results: WebResult[] }) {
+  return (
+    <div className="rounded-lg border border-sky-200 bg-card" data-testid="web-sources">
+      <p className="flex items-center gap-1.5 border-b border-sky-200 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-sky-800">
+        <Globe className="size-3.5" /> Web results (public internet, not company sources)
+      </p>
+      <ol className="divide-y divide-border">
+        {results.map((result, i) => (
+          <li key={`${result.url}:${i}`} className="flex gap-3 px-3 py-2.5">
+            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded bg-sky-100 text-[11px] font-semibold text-sky-800">
+              {i + 1}
+            </span>
+            <div className="min-w-0 flex-1">
+              <a
+                href={result.url}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+              >
+                <span className="truncate">{result.title}</span>
+                <ExternalLink className="size-3 shrink-0" />
+              </a>
+              <p className="text-[11px] text-muted-foreground">
+                {hostOf(result.url)}
+                {result.published_date ? ` · ${result.published_date}` : ""}
+              </p>
+              {result.snippet && (
+                <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{result.snippet}</p>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -1030,6 +1071,311 @@ function TrackerCard({ tracker }: { tracker: StatusTrackerCard }) {
       >
         View tracker
       </a>
+    </div>
+  );
+}
+
+const DURATIONS = [15, 30, 45, 60, 90, 120];
+
+function splitEmails(value: string): string[] {
+  return value
+    .split(/[\s,;]+/)
+    .map((item) => item.trim().replace(/^<|>$/g, ""))
+    .filter(Boolean);
+}
+
+function MeetingCard({
+  proposal,
+  state,
+  result,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedMeeting;
+  state?: Turn["meetingState"];
+  result?: Turn["meetingResult"];
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [title, setTitle] = useState(proposal.title);
+  const [attendees, setAttendees] = useState(proposal.attendees.map((a) => a.email).join(", "));
+  const [start, setStart] = useState(proposal.start ? toLocalInput(new Date(proposal.start)) : "");
+  const [duration, setDuration] = useState(proposal.duration_minutes || 30);
+  const [description, setDescription] = useState(proposal.description ?? "");
+  const [location, setLocation] = useState(proposal.location ?? "");
+  const [video, setVideo] = useState(proposal.add_video_call);
+  const [options, setOptions] = useState<MeetingSuggestion[]>(
+    proposal.alternatives.map((option) => ({
+      start: option.start,
+      end: option.end,
+      label: option.label || new Date(option.start).toLocaleString(),
+    })),
+  );
+  const [finding, setFinding] = useState(false);
+  const [findNote, setFindNote] = useState("");
+  const emails = splitEmails(attendees);
+  const names = new Map(proposal.attendees.map((a) => [a.email.toLowerCase(), a.name]));
+
+  async function findTimes() {
+    setFinding(true);
+    setFindNote("");
+    try {
+      const found = await findMeetingTimes({
+        attendee_emails: emails,
+        duration_minutes: duration,
+        timezone: userTimezone(),
+      });
+      if (found.error) throw new Error(found.error);
+      setOptions(found.suggestions);
+      const unknown = found.unknown_availability.map((u) => u.email);
+      setFindNote(
+        found.suggestions.length === 0
+          ? "No shared free time in the next week. Try a shorter meeting."
+          : unknown.length
+            ? `Could not check ${unknown.join(", ")}; they may still be busy.`
+            : "Everyone is free at these times.",
+      );
+    } catch (err) {
+      setFindNote(err instanceof Error ? err.message : "Could not check availability.");
+    } finally {
+      setFinding(false);
+    }
+  }
+
+  async function schedule() {
+    if (!start) return;
+    onPatch({ meetingState: "sending", meetingError: undefined });
+    try {
+      const begins = new Date(start);
+      const created = await createMeeting({
+        title: title.trim(),
+        start: begins.toISOString(),
+        end: new Date(begins.getTime() + duration * 60_000).toISOString(),
+        attendees: emails,
+        description,
+        location,
+        add_video_call: video,
+        timezone: userTimezone(),
+      });
+      onPatch({
+        meetingState: "scheduled",
+        meetingError: undefined,
+        meetingResult: {
+          label: created.label,
+          html_link: created.html_link,
+          meet_link: created.meet_link,
+          attendees: created.attendees,
+        },
+      });
+    } catch (err) {
+      onPatch({
+        meetingState: "pending",
+        meetingError: err instanceof Error ? err.message : "Could not schedule the meeting.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Meeting draft discarded.
+      </div>
+    );
+  }
+
+  if (status === "scheduled" && result) {
+    return (
+      <div
+        data-testid="meeting-scheduled"
+        className="flex flex-wrap items-start gap-3 rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm"
+      >
+        <CalendarClock className="mt-0.5 size-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">Scheduled: {title}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {result.label}
+            {result.attendees.length
+              ? ` · Google Calendar emailed invitations to ${result.attendees.join(", ")}.`
+              : "."}
+          </p>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          {result.meet_link && (
+            <a
+              href={result.meet_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+            >
+              Google Meet
+            </a>
+          )}
+          {result.html_link && (
+            <a
+              href={result.html_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+            >
+              Open in Calendar
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const sending = status === "sending";
+  const inputClass = "mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground";
+  return (
+    <div
+      data-testid="meeting-card"
+      className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm"
+    >
+      <p className="flex items-center gap-2 font-semibold text-foreground">
+        <CalendarClock className="size-4 text-primary" /> Meeting on Google Calendar
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Check the time and guests. Nothing is scheduled until you choose Schedule; Google Calendar
+        then emails the invitations from your account.
+      </p>
+
+      <label className="mt-3 block text-xs font-medium text-muted-foreground">
+        Title
+        <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
+      </label>
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Guests
+        <input
+          value={attendees}
+          onChange={(e) => setAttendees(e.target.value)}
+          placeholder="name@company.com, another@company.com"
+          className={inputClass}
+        />
+      </label>
+      {emails.length > 0 && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {emails.map((email) => names.get(email.toLowerCase()) || email).join(", ")}
+        </p>
+      )}
+      <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+        <label className="block text-xs font-medium text-muted-foreground">
+          Starts
+          <input
+            type="datetime-local"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className={inputClass}
+          />
+        </label>
+        <label className="block text-xs font-medium text-muted-foreground">
+          Length
+          <select
+            value={duration}
+            onChange={(e) => setDuration(Number(e.target.value))}
+            className={inputClass}
+          >
+            {[...new Set([...DURATIONS, duration])].sort((a, b) => a - b).map((minutes) => (
+              <option key={minutes} value={minutes}>
+                {minutes < 60 ? `${minutes} min` : `${minutes / 60} h`}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {options.map((option) => {
+          const value = toLocalInput(new Date(option.start));
+          return (
+            <button
+              key={option.start}
+              type="button"
+              onClick={() => setStart(value)}
+              className={cn(
+                "rounded-full border px-2.5 py-1 text-xs",
+                start === value
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          disabled={finding || emails.length === 0}
+          onClick={() => void findTimes()}
+          className="inline-flex items-center gap-1 rounded-full border border-dashed border-primary/50 px-2.5 py-1 text-xs font-medium text-primary disabled:opacity-50"
+        >
+          {finding ? <Loader2 className="size-3 animate-spin" /> : <CalendarClock className="size-3" />}
+          Find times everyone is free
+        </button>
+      </div>
+      {findNote && <p className="mt-1 text-[11px] text-muted-foreground">{findNote}</p>}
+      {(proposal.unknown_availability?.length ?? 0) > 0 && !findNote && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Availability not checked for {proposal.unknown_availability!.join(", ")}.
+        </p>
+      )}
+
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Agenda
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          className={inputClass}
+        />
+      </label>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[auto_1fr] sm:items-end">
+        <label className="flex items-center gap-2 text-xs font-medium text-foreground">
+          <input type="checkbox" checked={video} onChange={(e) => setVideo(e.target.checked)} />
+          Add a Google Meet link
+        </label>
+        <input
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+          placeholder="Room or address (optional)"
+          aria-label="Location"
+          className={inputClass}
+        />
+      </div>
+
+      {(!proposal.calendar_connected || !proposal.can_schedule) && proposal.calendar_note && (
+        <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+          {proposal.calendar_note}{" "}
+          <a href="/dashboard?tab=apps" className="font-medium underline">
+            Open Apps
+          </a>
+        </p>
+      )}
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={sending || !title.trim() || !start}
+          onClick={() => void schedule()}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="size-3.5 animate-spin" /> : <CalendarClock className="size-3.5" />}
+          {sending ? "Scheduling…" : "Schedule meeting"}
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          onClick={() => onPatch({ meetingState: "cancelled" })}
+          className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+      {!start && (
+        <p className="mt-2 text-xs text-muted-foreground">Pick a start time or find a free slot.</p>
+      )}
     </div>
   );
 }

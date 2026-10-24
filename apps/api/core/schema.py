@@ -284,6 +284,11 @@ _DURABLE_INTEGRATIONS_SQL = [
 )""",
 """CREATE INDEX IF NOT EXISTS idx_workspace_messages_thread
   ON workspace_messages (workspace_id, created_at)""",
+# Loombot replies keep Ask's full response (cards, sources, web results), who asked,
+# and the state of the cards that person acted on.
+"""ALTER TABLE workspace_messages ADD COLUMN IF NOT EXISTS payload TEXT""",
+"""ALTER TABLE workspace_messages ADD COLUMN IF NOT EXISTS requested_by TEXT""",
+"""ALTER TABLE workspace_messages ADD COLUMN IF NOT EXISTS card_state TEXT""",
 """CREATE TABLE IF NOT EXISTS captures (
     capture_id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,

@@ -117,7 +117,10 @@ the turn runs on `MODEL_SIMPLE`, `MODEL_MODERATE`, or `MODEL_COMPLEX` with that
 tier's reasoning effort. Routing applies only when the organization uses OpenAI
 with the default model; a pinned or local model is kept. If routing fails, or a
 tier's model id is rejected as unknown, the answer uses gpt-6-luna. Responses
-report `model_used` and `model_tier`.
+report `model_used` and `model_tier`. Chat Completions rejects function tools
+combined with any reasoning effort but `none`, so every request that carries
+tools, on every model, is sent with `none`; the tier's effort applies to calls
+without tools, such as knowledge answers.
 
 ## Knowledge conflicts
 

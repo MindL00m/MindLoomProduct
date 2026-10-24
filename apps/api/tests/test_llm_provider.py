@@ -16,6 +16,62 @@ from core import llm_provider
 @pytest.fixture(autouse=True)
 def _fresh_rejected_params(monkeypatch) -> None:
     monkeypatch.setattr(llm_provider, "_REJECTED_PARAMS", {})
+    monkeypatch.setattr(llm_provider, "_EFFORT_NONE_ONLY", set())
+    monkeypatch.setattr(llm_provider, "_UNKNOWN_MODELS", set())
+
+
+TOOLS = [{"type": "function", "function": {"name": "lookup"}}]
+TOOLS_WITH_EFFORT = (
+    "Error code: 400 - Function tools with reasoning_effort are not supported for gpt-6-luna "
+    "in /v1/chat/completions. To use function tools, use /v1/responses or set "
+    "reasoning_effort to 'none'."
+)
+
+
+def _adapter(create, model="gpt-6-luna", effort="medium"):
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    config = llm_provider.LLMConfiguration(model=model, context_window=128_000, reasoning_effort=effort)
+    return llm_provider.LLMClientAdapter(sdk, config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra", "gpt-5.4-mini"])
+async def test_tool_requests_never_send_a_reasoning_effort_on_any_model(model) -> None:
+    create = AsyncMock(return_value="ok")
+    client = _adapter(create, model=model, effort="high")
+    await client.chat.completions.create(model="", messages=[], tools=TOOLS, tool_choice="required")
+    await client.chat.completions.create(model="", messages=[], tools=TOOLS, tool_choice="none")
+    assert [c.kwargs["reasoning_effort"] for c in create.await_args_list] == ["none", "none"]
+    # Calls without tools keep the routed effort.
+    await client.chat.completions.create(model="", messages=[])
+    assert create.await_args.kwargs["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_rejected_effort_is_retried_as_none_not_dropped() -> None:
+    create = AsyncMock(side_effect=[_bad_request(TOOLS_WITH_EFFORT, param="reasoning_effort"), "ok", "next"])
+    client = _adapter(create, effort="low")
+    assert await client.chat.completions.create(model="", messages=[]) == "ok"
+    assert [c.kwargs["reasoning_effort"] for c in create.await_args_list] == ["low", "none"]
+    # Remembered: this model only takes "none", and the field is still sent.
+    assert await client.chat.completions.create(model="", messages=[]) == "next"
+    assert create.await_args.kwargs["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_routed_tier_with_tools_works_end_to_end() -> None:
+    """The reported failure: a moderate/complex tier turn that calls tools."""
+
+    async def strict(**kwargs):
+        if kwargs.get("tools") and kwargs.get("reasoning_effort") not in (None, "none"):
+            raise _bad_request(TOOLS_WITH_EFFORT, param="reasoning_effort")
+        return "ok"
+
+    sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=strict)))
+    base = llm_provider.LLMClientAdapter(sdk, llm_provider.LLMConfiguration(model="gpt-6-luna"))
+    for model, effort in [("gpt-6-luna", "low"), ("gpt-6-sol", "medium"), ("gpt-6-astra", "high")]:
+        routed = base.with_model(model, effort)
+        assert await routed.chat.completions.create(model="", messages=[], tools=TOOLS) == "ok"
 
 
 def _bad_request(message: str, param: str | None = None) -> openai.BadRequestError:

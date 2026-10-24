@@ -172,6 +172,29 @@ def _drop_params(kwargs: dict[str, Any], params: set[str]) -> None:
 
 # Model ids the provider said do not exist; later calls go straight to the fallback.
 _UNKNOWN_MODELS: set[tuple[str | None, str]] = set()
+# Models that rejected a reasoning effort other than "none" even without tools.
+_EFFORT_NONE_ONLY: set[tuple[str | None, str]] = set()
+
+
+def _reasoning_effort(config: LLMConfiguration, kwargs: dict[str, Any]) -> str:
+    """The effort to send. Chat Completions rejects function tools combined with any
+    effort but "none" (GPT-6 models and later), so every request carrying tools,
+    on any model, uses "none"; other requests keep the configured effort."""
+
+    effort = config.reasoning_effort or "none"
+    if effort != "none" and (
+        kwargs.get("tools") or (config.base_url, config.model) in _EFFORT_NONE_ONLY
+    ):
+        return "none"
+    return effort
+
+
+def _effort_must_be_none(exc: BaseException, kwargs: dict[str, Any]) -> bool:
+    """A rejected non-"none" reasoning effort, which should be retried as "none"."""
+
+    if not isinstance(exc, BadRequestError) or kwargs.get("reasoning_effort") in (None, "none"):
+        return False
+    return getattr(exc, "param", None) == "reasoning_effort" or "reasoning_effort" in str(exc)
 
 
 def _unknown_model(exc: BaseException) -> bool:
@@ -198,7 +221,7 @@ class _CompletionsAdapter:
         rejected = _REJECTED_PARAMS.setdefault(
             (config.base_url, config.model), set()
         )
-        kwargs["reasoning_effort"] = config.reasoning_effort or "none"
+        kwargs["reasoning_effort"] = _reasoning_effort(config, kwargs)
         _drop_params(kwargs, rejected)
         try:
             while True:
@@ -217,8 +240,20 @@ class _CompletionsAdapter:
                         _UNKNOWN_MODELS.add((config.base_url, config.model))
                         config = replace(config, model=config.fallback_model, fallback_model=None)
                         kwargs["model"] = config.model
+                        kwargs["reasoning_effort"] = _reasoning_effort(config, kwargs)
                         rejected = _REJECTED_PARAMS.setdefault((config.base_url, config.model), set())
                         _drop_params(kwargs, rejected)
+                        continue
+                    if _effort_must_be_none(exc, kwargs):
+                        # Retry as "none" rather than dropping the field: without it
+                        # the model's default effort is rejected the same way.
+                        logger.info(
+                            "Model %s rejected reasoning_effort=%s; retrying with none",
+                            config.model, kwargs["reasoning_effort"],
+                        )
+                        if not kwargs.get("tools"):
+                            _EFFORT_NONE_ONLY.add((config.base_url, config.model))
+                        kwargs["reasoning_effort"] = "none"
                         continue
                     param = _rejected_param(exc, kwargs)
                     if param is None:

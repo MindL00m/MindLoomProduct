@@ -1,0 +1,52 @@
+apps/api/.env.example
+  s_e2c06dc675aae3::t_982b1a305fc198 65-78
+apps/api/README.md
+  s_e2c06dc675aae3::t_16184cb35cecbe 112-131
+apps/api/api/routes/reviews.py
+  s_e2c06dc675aae3::t_dd89c488452b2d 21,45-51,304-315
+apps/api/core/config.py
+  s_e2c06dc675aae3::t_0f2f1783ca1689 147-166
+apps/api/core/llm_provider.py
+  s_e2c06dc675aae3::t_9bc7e44fc95af5 10,13-15,43-63,173-184,191-194,196,199,201,208-222,228,233,235,248,252-261,265-271
+apps/api/core/model_router.py
+  s_e2c06dc675aae3::t_2cd138ff037e41 1-149
+apps/api/core/models.py
+  s_e2c06dc675aae3::t_49166506b636fe 1114-1117
+apps/api/keeper/review_workflows.py
+  s_e2c06dc675aae3::t_10e124a7c225f6 6,22-23,1069-1171,1175-1180,1187-1225,1227-1230,1243-1273
+apps/api/loombot/ask_agent.py
+  s_e2c06dc675aae3::t_6aac33f32879a7 3015-3057
+apps/api/tests/test_review_conflicts.py
+  s_e2c06dc675aae3::t_76d8bbf2729f29 1-261
+apps/web/src/components/LLMSettingsPanel.tsx
+  s_e2c06dc675aae3::t_b39a15b68b3a24 37-43
+apps/web/src/pages/AppsView.tsx
+  s_e2c06dc675aae3::t_173f0eec70704c 3,37,74-75,344-380,383
+apps/web/src/pages/AskView.tsx
+  s_e2c06dc675aae3::t_2d737df59a9e66 870-878
+apps/web/src/services/ask.ts
+  s_e2c06dc675aae3::t_4a7a304b16a56e 208-210
+apps/web/src/services/reviews.ts
+  s_e2c06dc675aae3::t_ffcbd8e4132733 213-223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aefb4a7c8c786f586ba3af08a0ab22c42d9b8cd9",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_e2c06dc675aae3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "62b0f149-3457-42cc-b98c-efad0f17aca5",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

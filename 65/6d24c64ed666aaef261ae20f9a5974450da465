@@ -1,0 +1,30 @@
+apps/api/.env.example
+  s_e2c06dc675aae3::t_716f82021b2606 70-71
+apps/api/README.md
+  s_e2c06dc675aae3::t_47c721e2183143 120-123
+apps/api/core/llm_provider.py
+  s_e2c06dc675aae3::t_498d5f5fbfa7d4 175-197,224,243,247-257
+apps/api/tests/test_llm_provider.py
+  s_e2c06dc675aae3::t_a451a15c968e91 19-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "656d24c64ed666aaef261ae20f9a5974450da465",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_e2c06dc675aae3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "62b0f149-3457-42cc-b98c-efad0f17aca5",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

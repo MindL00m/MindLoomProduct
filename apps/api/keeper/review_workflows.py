@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -17,6 +18,8 @@ from brain.source_registry import (
     ingest_external_source,
     mark_external_source_deleted,
 )
+
+logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -1063,43 +1066,168 @@ async def moderate_expert_answer(
     return {"review_id": review_id, "status": status}
 
 
+_NUMBER_RE = re.compile(r"\b\d[\d,]*(?:\.\d+)?%?\b")
+_NEGATION_RE = re.compile(r"\b(?:no|not|never|cannot|can't|won't|isn't|aren't|wasn't|doesn't|didn't)\b", re.I)
+_CLAIM_WORD_RE = re.compile(r"[a-z][a-z'-]{2,}")
+_CLAIM_STOPWORDS = frozenset("""
+the and was were are has have had will would should could can may might for with from
+this that these those its their there here than then into onto over under about after
+before when which who whom whose what also been being being per via our your his her
+they them she him it's not no never
+january february march april may june july august september october november december
+jan feb mar apr jun jul aug sep sept oct nov dec monday tuesday wednesday thursday
+friday saturday sunday today yesterday tomorrow
+""".split())
+# Candidate pairs must share at least this share of their subject words.
+_MIN_SUBJECT_OVERLAP = 0.34
+_MAX_JUDGED_PER_CLAIM = 3
+
+_CONFLICT_SYSTEM = """\
+You check whether two statements from a company's knowledge base contradict each other.
+They contradict only when both describe the SAME attribute of the SAME thing (the same
+item, person, project, document, order, or event) and cannot both be true.
+- Different facts about one thing are compatible: a receipt's total and its receipt
+  number; a project's owner and its deadline; an order's date and its amount.
+- Facts about two different things are compatible: two receipts, two orders, two meetings.
+- A value that changed over time, where the later statement updates the earlier one, is
+  an update, not a contradiction.
+Reply with JSON only: {"verdict": "contradiction" | "update" | "compatible",
+"reason": "<one short sentence>"}
+"""
+
+
+def _claim_terms(claim: str) -> set[str]:
+    """Subject words of a claim: no numbers, dates, or filler words."""
+
+    return {
+        word.strip("'-") for word in _CLAIM_WORD_RE.findall(claim.lower())
+        if word.strip("'-") not in _CLAIM_STOPWORDS
+    }
+
+
+def _normalize_claim(claim: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", claim.lower()))
+
+
+def is_conflict_candidate(new_claim: str, old_claim: str) -> bool:
+    """Cheap filter: both claims talk about the same attribute and disagree on a value or a negation.
+
+    "The total paid was $21.40" and "The receipt number is 2290-2314-6727" share no
+    subject words, so they are never compared, even though their numbers differ.
+    """
+
+    if _normalize_claim(new_claim) == _normalize_claim(old_claim):
+        return False
+    new_terms, old_terms = _claim_terms(new_claim), _claim_terms(old_claim)
+    shared = new_terms & old_terms
+    if not shared:
+        return False
+    overlap = len(shared) / len(new_terms | old_terms)
+    if overlap < _MIN_SUBJECT_OVERLAP:
+        return False
+    new_numbers = set(_NUMBER_RE.findall(new_claim))
+    old_numbers = set(_NUMBER_RE.findall(old_claim))
+    numbers_differ = bool(new_numbers and old_numbers and new_numbers != old_numbers)
+    negation_differs = bool(_NEGATION_RE.search(new_claim)) != bool(_NEGATION_RE.search(old_claim))
+    return numbers_differ or negation_differs
+
+
+async def judge_conflict(
+    new_claim: str, old_claim: str, *, new_at: datetime | None = None, old_at: datetime | None = None
+) -> tuple[str, str] | None:
+    """(verdict, reason) from the cheap model, or None when it could not decide."""
+
+    from core.config import get_settings
+    from core.llm_provider import get_default_openai_client
+
+    def when(value: datetime | None) -> str:
+        return f" (recorded {value.date().isoformat()})" if value else ""
+
+    try:
+        client = get_default_openai_client().with_model(get_settings().model_router_model, "none")
+        response = await client.chat.completions.create(
+            model="",
+            messages=[
+                {"role": "system", "content": _CONFLICT_SYSTEM},
+                {"role": "user", "content": (
+                    f"Earlier statement{when(old_at)}: {old_claim}\n"
+                    f"New statement{when(new_at)}: {new_claim}"
+                )},
+            ],
+            temperature=0,
+            max_tokens=80,
+            response_format={"type": "json_object"},
+        )
+        match = re.search(r"\{.*\}", response.choices[0].message.content or "", re.S)
+        parsed = json.loads(match.group(0)) if match else {}
+    except Exception:  # noqa: BLE001 - without a verdict nothing is queued
+        logger.warning("Conflict check failed", exc_info=True)
+        return None
+    verdict = str(parsed.get("verdict") or "").strip().lower() if isinstance(parsed, dict) else ""
+    if verdict not in {"contradiction", "update", "compatible"}:
+        return None
+    return verdict, " ".join(str(parsed.get("reason") or "").split())[:300]
+
+
 async def record_claims_and_detect_conflicts(
     org_id: str, chunk: Chunk, metadata: ChunkMetadata
 ) -> None:
-    """Queue only strong numeric/negation contradictions for administrator review."""
+    """Record a chunk's claims and queue reviews only for real contradictions.
+
+    A pair is reviewed only when the claims share their subject and disagree on a
+    value or negation (``is_conflict_candidate``) AND the cheap model confirms they
+    describe the same attribute of the same thing and cannot both be true.
+    """
 
     if not metadata.factual_claims:
         return
     entity_key = "|".join(sorted(item.lower() for item in metadata.entities[:5]))
     factory = get_session_factory()
     async with factory() as session:
-        for claim in metadata.factual_claims:
-            prior = (
-                await session.execute(text("""
-                    SELECT claim_id, chunk_id, claim_text
-                    FROM knowledge_claims
-                    WHERE org_id = :org AND entity_key = :key AND chunk_id <> :chunk
-                    ORDER BY created_at DESC LIMIT 20
-                """), {"org": org_id, "key": entity_key, "chunk": chunk.chunk_id})
-            ).mappings().all()
-            current_numbers = set(re.findall(r"\b\d+(?:\.\d+)?%?\b", claim))
-            current_negative = bool(re.search(r"\b(no|not|never|cannot|won't|isn't)\b", claim, re.I))
-            for old in prior:
-                old_claim = str(old["claim_text"])
-                old_numbers = set(re.findall(r"\b\d+(?:\.\d+)?%?\b", old_claim))
-                old_negative = bool(re.search(r"\b(no|not|never|cannot|won't|isn't)\b", old_claim, re.I))
-                contradiction = (
-                    bool(current_numbers and old_numbers and current_numbers != old_numbers)
-                    or current_negative != old_negative
+        prior = (
+            await session.execute(text("""
+                SELECT claim_id, chunk_id, claim_text, created_at
+                FROM knowledge_claims
+                WHERE org_id = :org AND entity_key = :key AND chunk_id <> :chunk
+                ORDER BY created_at DESC LIMIT 40
+            """), {"org": org_id, "key": entity_key, "chunk": chunk.chunk_id})
+        ).mappings().all()
+
+    for claim in metadata.factual_claims:
+        candidates = [old for old in prior if is_conflict_candidate(claim, str(old["claim_text"]))]
+        for old in candidates[:_MAX_JUDGED_PER_CLAIM]:
+            old_claim = str(old["claim_text"])
+            judged = await judge_conflict(
+                claim, old_claim, new_at=chunk.end_time, old_at=old.get("created_at")
+            )
+            if judged is None or judged[0] != "contradiction":
+                continue
+            description = f"New claim: {claim}\nExisting claim: {old_claim}"
+            if judged[1]:
+                description += f"\nWhy they conflict: {judged[1]}"
+            async with factory() as session:
+                duplicate = (
+                    await session.execute(text("""
+                        SELECT 1 FROM knowledge_reviews
+                        WHERE org_id=:org AND review_type='conflict' AND status='open'
+                          AND starts_with(description, :prefix)
+                        LIMIT 1
+                    """), {
+                        "org": org_id,
+                        "prefix": f"New claim: {claim}\nExisting claim: {old_claim}",
+                    })
+                ).scalar_one_or_none()
+            if duplicate is None:
+                await create_review(
+                    org_id=org_id, review_type="conflict",
+                    title="Potentially conflicting company knowledge",
+                    description=description,
+                    source_ids=[chunk.chunk_id, str(old["chunk_id"])],
                 )
-                if contradiction:
-                    await create_review(
-                        org_id=org_id, review_type="conflict",
-                        title="Potentially conflicting company knowledge",
-                        description=f"New claim: {claim}\nExisting claim: {old_claim}",
-                        source_ids=[chunk.chunk_id, str(old["chunk_id"])],
-                    )
-                    break
+            break
+
+    async with factory() as session:
+        for claim in metadata.factual_claims:
             await session.execute(text("""
                 INSERT INTO knowledge_claims
                   (claim_id, org_id, chunk_id, entity_key, claim_text, created_at)
@@ -1110,6 +1238,37 @@ async def record_claims_and_detect_conflicts(
                 "key": entity_key, "claim": claim,
             })
         await session.commit()
+
+
+async def resolve_all_reviews(
+    org_id: str,
+    *,
+    actor_user_id: str,
+    review_types: list[str] | None = None,
+    note: str | None = None,
+) -> dict:
+    """Resolve every open conflict and verification review at once.
+
+    Expert-proposed answers are left open: approving one publishes it as company
+    knowledge, so each needs its own decision.
+    """
+
+    allowed = {"conflict", "verification"}
+    types = sorted(set(review_types or allowed) & allowed)
+    if not types:
+        raise HTTPException(status_code=400, detail="Only conflicts and verifications can be resolved in bulk.")
+    factory = get_session_factory()
+    async with factory() as session:
+        async with session.begin():
+            result = await session.execute(text("""
+                UPDATE knowledge_reviews SET status='resolved', resolved_by=:actor,
+                  resolution_note=:note, resolved_at=now(), updated_at=now()
+                WHERE org_id=:org AND status='open' AND review_type = ANY(:types)
+            """), {
+                "actor": actor_user_id, "note": note or "Resolved in bulk",
+                "org": org_id, "types": types,
+            })
+    return {"resolved": int(result.rowcount or 0), "review_types": types}
 
 
 async def list_reviews(org_id: str, *, review_type: str | None = None) -> list[dict]:

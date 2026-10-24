@@ -210,6 +210,17 @@ export async function decideKnowledgeReview(
   if (!response.ok) throw new Error("Could not update this review.");
 }
 
+/** Resolve every open conflict and verification review. Expert proposals stay open. */
+export async function resolveAllKnowledgeReviews(): Promise<{ resolved: number }> {
+  const response = await apiFetch("/knowledge/reviews/resolve-all", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ review_types: ["conflict", "verification"] }),
+  });
+  if (!response.ok) throw new Error("Could not resolve the reviews.");
+  return response.json();
+}
+
 export async function proposeExpertAnswer(
   question: string,
   answer: string,

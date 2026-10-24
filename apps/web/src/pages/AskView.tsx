@@ -867,6 +867,15 @@ export function AnswerView({
       <div className="flex flex-wrap items-center gap-2">
         {!hideConfidence && <ConfidencePill confidence={response.confidence} />}
         {response.web_search_used && <WebSearchPill query={response.web_search_query} />}
+        {response.model_used && (
+          <span
+            className="text-[11px] text-muted-foreground"
+            title="MindLoom picks the model for each question by how hard it is."
+          >
+            {response.model_used}
+            {response.model_tier ? ` · ${response.model_tier} question` : ""}
+          </span>
+        )}
       </div>
 
       <Markdown

@@ -109,6 +109,26 @@ Calendar sync tokens. Teams private chats use source versions plus scheduled
 reconciliation because Graph does not expose the same delta contract for every
 delegated chat collection.
 
+## Model mixing
+
+Ask and workspace Loombot pick a chat model per question. `MODEL_ROUTER_MODEL`
+(gpt-6-luna, no reasoning) rates the request simple, moderate, or complex, and
+the turn runs on `MODEL_SIMPLE`, `MODEL_MODERATE`, or `MODEL_COMPLEX` with that
+tier's reasoning effort. Routing applies only when the organization uses OpenAI
+with the default model; a pinned or local model is kept. If routing fails, or a
+tier's model id is rejected as unknown, the answer uses gpt-6-luna. Responses
+report `model_used` and `model_tier`.
+
+## Knowledge conflicts
+
+Conflict reviews are queued only when two claims share their subject and
+disagree on a value or a negation, and the router model confirms they describe
+the same attribute of the same thing and cannot both be true. Different facts
+about one item (a receipt's total and its receipt number), facts about
+different items, and values that changed over time are not queued. Admins can
+resolve all open conflict and verification reviews at once; expert-proposed
+answers always need an individual decision.
+
 ## Email attachments
 
 Gmail and Outlook syncs index every readable attachment as its own document

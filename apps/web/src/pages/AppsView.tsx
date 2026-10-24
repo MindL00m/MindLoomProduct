@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
+  CheckCheck,
   LayoutGrid,
   Loader2,
   MessageSquare,
@@ -33,6 +34,7 @@ import {
 import {
   decideKnowledgeReview,
   listKnowledgeReviews,
+  resolveAllKnowledgeReviews,
   moderateExpertAnswer,
   type KnowledgeReview,
 } from "@/services/reviews";
@@ -69,6 +71,8 @@ export default function AppsView({
   const [banner, setBanner] = useState<string | null>(null);
   const [reviews, setReviews] = useState<KnowledgeReview[]>([]);
   const [answerEdits, setAnswerEdits] = useState<Record<string, string>>({});
+  const [resolvingAll, setResolvingAll] = useState(false);
+  const [reviewNotice, setReviewNotice] = useState<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [slack, setSlack] = useState<SlackStatus | null>(null);
   const [slackOpen, setSlackOpen] = useState(false);
@@ -337,13 +341,46 @@ export default function AppsView({
 
       {isAdmin && (
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Knowledge review queue</CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Resolve detected conflicts, verify ageing sources, and approve expert-proposed answers.
-          </p>
+        <CardHeader className="flex-row flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-lg">Knowledge review queue</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Resolve detected conflicts, verify ageing sources, and approve expert-proposed answers.
+            </p>
+          </div>
+          {(() => {
+            const bulk = reviews.filter(
+              (review) =>
+                review.status === "open" &&
+                (review.review_type === "conflict" || review.review_type === "verification"),
+            ).length;
+            if (bulk === 0) return null;
+            return (
+              <SecondaryButton
+                disabled={resolvingAll}
+                onClick={() => {
+                  if (!window.confirm(
+                    `Resolve all ${bulk} open conflict and verification reviews? Expert-proposed answers stay open for approval.`,
+                  )) return;
+                  setResolvingAll(true);
+                  setReviewNotice(null);
+                  void resolveAllKnowledgeReviews()
+                    .then((result) => {
+                      setReviewNotice(`Resolved ${result.resolved} reviews.`);
+                      return loadIntegrations();
+                    })
+                    .catch((err: Error) => setReviewNotice(err.message))
+                    .finally(() => setResolvingAll(false));
+                }}
+              >
+                {resolvingAll ? <Loader2 className="size-4 animate-spin" /> : <CheckCheck className="size-4" />}
+                Resolve all ({bulk})
+              </SecondaryButton>
+            );
+          })()}
         </CardHeader>
         <CardContent>
+          {reviewNotice && <p className="mb-3 text-sm text-muted-foreground">{reviewNotice}</p>}
           {reviews.filter((review) => review.status === "open" && review.review_type !== "expert_request").length === 0 ? (
             <p className="text-sm text-muted-foreground">No open reviews.</p>
           ) : (

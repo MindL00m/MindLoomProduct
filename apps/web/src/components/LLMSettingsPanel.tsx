@@ -34,6 +34,13 @@ export function LLMSettingsPanel() {
     <section className="rounded-lg border border-border bg-card p-5">
       <h3 className="flex items-center gap-2 text-lg font-semibold"><Bot className="size-5" />Chat model</h3>
       <p className="mt-1 text-sm text-muted-foreground">Organization-wide provider used by Ask. Local endpoints must expose an OpenAI-compatible API.</p>
+      {settings.provider === "openai" && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          {settings.model === DEFAULT_OPENAI_MODEL
+            ? `Automatic: Ask and Workspaces pick a model for each question by difficulty, starting from ${DEFAULT_OPENAI_MODEL}.`
+            : `Pinned: every question uses ${settings.model}. Set the model back to ${DEFAULT_OPENAI_MODEL} to pick models automatically.`}
+        </p>
+      )}
       <div className="mt-4 grid gap-4 md:grid-cols-2">
         <label className="text-sm font-medium">Provider
           <select className="mt-1 w-full rounded-md border border-border bg-background p-2" value={settings.provider}

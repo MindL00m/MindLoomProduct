@@ -1111,6 +1111,10 @@ class QueryResponse(BaseModel):
         default_factory=list,
         description="Web pages the answer may cite as [WEB: n] (1-based).",
     )
+    model_used: Optional[str] = Field(
+        default=None, description="Chat model chosen for this question by difficulty."
+    )
+    model_tier: Optional[Literal["simple", "moderate", "complex"]] = None
 
 
 # --- Auth / tenancy ---------------------------------------------------------

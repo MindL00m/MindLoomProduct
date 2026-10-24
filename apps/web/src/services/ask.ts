@@ -205,6 +205,9 @@ export interface QueryResponse {
   web_search_used?: boolean;
   web_search_query?: string | null;
   web_results?: WebResult[];
+  /** The chat model picked for this question's difficulty, when routing applied. */
+  model_used?: string | null;
+  model_tier?: "simple" | "moderate" | "complex" | null;
 }
 
 export interface ChatMessage {

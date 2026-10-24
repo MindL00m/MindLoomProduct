@@ -18,6 +18,7 @@ from keeper.review_workflows import (
     list_expert_requests,
     list_reviews,
     moderate_expert_answer,
+    resolve_all_reviews,
     resolve_review,
     send_expert_message,
     send_proposed_email,
@@ -39,6 +40,13 @@ class ProposalInput(BaseModel):
 class DecisionInput(BaseModel):
     status: Literal["approved", "rejected", "resolved"]
     note: str | None = None
+
+
+class ResolveAllInput(BaseModel):
+    review_types: list[Literal["conflict", "verification"]] = Field(
+        default_factory=lambda: ["conflict", "verification"]
+    )
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ReviewScheduleInput(BaseModel):
@@ -291,6 +299,18 @@ async def save_schedule(
         next_review_at=request.next_review_at, expires_at=request.expires_at,
     )
     return {"schedule_id": schedule_id, "status": "active"}
+
+
+@router.post("/resolve-all")
+async def resolve_all(
+    request: ResolveAllInput,
+    ctx: tuple[str, str] = Depends(require_admin_context),
+) -> dict:
+    """Resolve every open conflict and verification review (proposals stay open)."""
+
+    return await resolve_all_reviews(
+        ctx[0], actor_user_id=ctx[1], review_types=list(request.review_types), note=request.note
+    )
 
 
 @router.post("/{review_id}/decision")

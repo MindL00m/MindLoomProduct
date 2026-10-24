@@ -7,10 +7,12 @@ response and streaming contract for both providers.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any, Literal
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from typing import Any, Iterator, Literal
 
 import httpx
 import tiktoken
@@ -38,6 +40,27 @@ class LLMConfiguration:
     model: str = _DEFAULT_OPENAI_MODEL
     context_window: int = 128_000
     supports_tools: bool = True
+    reasoning_effort: str | None = "none"
+    # Used when ``model`` is rejected as unknown (e.g. a routed tier's model id).
+    fallback_model: str | None = None
+
+
+# A model chosen for the current Ask/workspace turn (see core.model_router). Every
+# get_llm_client call made while answering that turn uses it.
+_TURN_MODEL: contextvars.ContextVar[tuple[str, str | None] | None] = contextvars.ContextVar(
+    "turn_model", default=None
+)
+
+
+@contextmanager
+def use_model_for_turn(model: str, reasoning_effort: str | None) -> Iterator[None]:
+    """Route this turn's chat calls (on OpenAI) to ``model`` with ``reasoning_effort``."""
+
+    token = _TURN_MODEL.set((model, reasoning_effort))
+    try:
+        yield
+    finally:
+        _TURN_MODEL.reset(token)
 
 
 def default_openai_model() -> str:
@@ -147,39 +170,69 @@ def _drop_params(kwargs: dict[str, Any], params: set[str]) -> None:
             kwargs.pop(param, None)
 
 
+# Model ids the provider said do not exist; later calls go straight to the fallback.
+_UNKNOWN_MODELS: set[tuple[str | None, str]] = set()
+
+
+def _unknown_model(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    message = str(exc).lower()
+    return "model" in message and (
+        status == 404 or "model_not_found" in message or "does not exist" in message
+    )
+
+
 class _CompletionsAdapter:
     def __init__(self, completions: Any, config: LLMConfiguration):
         self._completions = completions
         self._config = config
 
     async def create(self, **kwargs: Any) -> Any:
-        kwargs["model"] = self._config.model
+        config = self._config
+        if config.fallback_model and (config.base_url, config.model) in _UNKNOWN_MODELS:
+            config = replace(config, model=config.fallback_model, fallback_model=None)
+        kwargs["model"] = config.model
         kwargs["messages"] = limit_messages(
-            list(kwargs.get("messages") or []), self._config.context_window
+            list(kwargs.get("messages") or []), config.context_window
         )
         rejected = _REJECTED_PARAMS.setdefault(
-            (self._config.base_url, self._config.model), set()
+            (config.base_url, config.model), set()
         )
-        kwargs["reasoning_effort"] = "none"
+        kwargs["reasoning_effort"] = config.reasoning_effort or "none"
         _drop_params(kwargs, rejected)
         try:
             while True:
                 try:
                     return await self._completions.create(**kwargs)
                 except Exception as exc:
+                    if (
+                        config.fallback_model
+                        and config.fallback_model != config.model
+                        and _unknown_model(exc)
+                    ):
+                        logger.warning(
+                            "Model %s is not available; using %s instead",
+                            config.model, config.fallback_model,
+                        )
+                        _UNKNOWN_MODELS.add((config.base_url, config.model))
+                        config = replace(config, model=config.fallback_model, fallback_model=None)
+                        kwargs["model"] = config.model
+                        rejected = _REJECTED_PARAMS.setdefault((config.base_url, config.model), set())
+                        _drop_params(kwargs, rejected)
+                        continue
                     param = _rejected_param(exc, kwargs)
                     if param is None:
                         raise
                     logger.info(
                         "Model %s rejected %s; retrying without it",
-                        self._config.model, param,
+                        config.model, param,
                     )
                     rejected.add(param)
                     _drop_params(kwargs, {param})
         except Exception as exc:
-            if self._config.provider == "local":
+            if config.provider == "local":
                 raise LLMProviderError(
-                    f"Local LLM '{self._config.model}' at {self._config.base_url} failed: {exc}"
+                    f"Local LLM '{config.model}' at {config.base_url} failed: {exc}"
                 ) from exc
             raise
 
@@ -192,12 +245,30 @@ class _ChatAdapter:
 class LLMClientAdapter:
     """Expose the SDK's ``chat.completions.create`` interface unchanged."""
     def __init__(self, client: AsyncOpenAI, config: LLMConfiguration):
+        self._client = client
         self.chat = _ChatAdapter(client.chat, config)
         self.configuration = config
+
+    def with_model(self, model: str, reasoning_effort: str | None = "none") -> "LLMClientAdapter":
+        """The same connection on another model; falls back to this one if it is unknown."""
+
+        return LLMClientAdapter(self._client, replace(
+            self.configuration,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            fallback_model=self.configuration.model if model != self.configuration.model else None,
+        ))
 
 
 async def get_llm_client(org_id: str) -> LLMClientAdapter:
     config = await get_llm_configuration(org_id)
+    turn = _TURN_MODEL.get()
+    if turn is not None and config.provider == "openai":
+        model, effort = turn
+        config = replace(
+            config, model=model, reasoning_effort=effort,
+            fallback_model=config.model if model != config.model else None,
+        )
     settings = get_settings()
     if config.provider == "local" and not config.base_url:
         raise LLMProviderError("Local LLM is selected but no base URL is configured.")

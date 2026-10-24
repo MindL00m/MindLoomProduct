@@ -144,6 +144,26 @@ class Settings(BaseSettings):
             "scanned PDFs and images attached to emails."
         ),
     )
+    model_routing_enabled: bool = Field(
+        default=True,
+        description=(
+            "Pick the chat model per Ask/workspace question by difficulty. Applies to "
+            "organizations on OpenAI with the default model; a pinned or local model is kept."
+        ),
+    )
+    model_router_model: str = Field(
+        default="gpt-6-luna",
+        description=(
+            "Cheap model that rates each question's difficulty and checks suspected "
+            "knowledge conflicts during ingestion."
+        ),
+    )
+    model_simple: str = Field(default="gpt-6-luna", description="Model for simple questions.")
+    model_simple_reasoning: str = Field(default="none", description="Reasoning effort for simple questions.")
+    model_moderate: str = Field(default="gpt-6-luna", description="Model for moderate questions.")
+    model_moderate_reasoning: str = Field(default="low", description="Reasoning effort for moderate questions.")
+    model_complex: str = Field(default="gpt-6-sol", description="Model for complex questions.")
+    model_complex_reasoning: str = Field(default="medium", description="Reasoning effort for complex questions.")
     email_attachment_ocr: bool = Field(
         default=True,
         description=(

@@ -3013,6 +3013,49 @@ async def run_ask_agent(
     user_timezone: str | None = None,
     workspace: WorkspaceContext | None = None,
 ) -> QueryResponse:
+    """Answer an Ask or workspace question on a model chosen for its difficulty."""
+
+    from core.llm_provider import use_model_for_turn
+    from core.model_router import choose_model
+
+    choice = None
+    try:
+        choice = await choose_model(
+            await get_llm_client(org_id),
+            question,
+            history,
+            attachments=len(attached_file_names or []) + len(ephemeral_documents or []),
+            in_workspace=workspace is not None,
+        )
+    except Exception:  # noqa: BLE001 - routing never blocks an answer
+        logger.warning("Model routing unavailable; using the organization's model", exc_info=True)
+    kwargs = dict(
+        question=question, retrieval=retrieval, history=history, org_id=org_id,
+        user_id=user_id, ephemeral_documents=ephemeral_documents,
+        attached_file_names=attached_file_names, user_timezone=user_timezone,
+        workspace=workspace,
+    )
+    if choice is None:
+        return await _answer_turn(**kwargs)
+    with use_model_for_turn(choice.model, choice.reasoning_effort):
+        response = await _answer_turn(**kwargs)
+    response.model_used = choice.model
+    response.model_tier = choice.tier
+    return response
+
+
+async def _answer_turn(
+    *,
+    question: str,
+    retrieval: RetrievalResult,
+    history: list[ChatMessage] | None,
+    org_id: str,
+    user_id: str,
+    ephemeral_documents: list[EphemeralDocument] | None = None,
+    attached_file_names: list[str] | None = None,
+    user_timezone: str | None = None,
+    workspace: WorkspaceContext | None = None,
+) -> QueryResponse:
     """Answer via RAG and tools, falling back to a labelled web search when confidence is low."""
 
     from loombot.web_search import (

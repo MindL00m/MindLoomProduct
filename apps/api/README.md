@@ -143,6 +143,22 @@ images (logos, signatures) and legacy `.doc`/`.xls` files are skipped. Ask's
 live `search_emails` returns attachment text too, and `read_email_attachment`
 and `save_email_attachment` read one in full or save it to Files.
 
+## Files: Drive, email attachments, and sharing
+
+The Files tab has three sources. My files are the user's own files. Drive is a
+live view of the user's Google Drive through their own connection (recent files,
+folders, and search); Google Docs, Sheets, and Slides are exported to Word,
+Excel, and PDF for previews, downloads, and "Save to my Files". Email lists the
+attachments MindLoom read from the user's own Gmail and Outlook, with the text
+it extracted; originals are fetched live from the mailbox.
+
+Any file can be shared from its header. "Send by email" attaches it to an email
+from the user's Gmail. "Share in MindLoom" copies it into each recipient's Files
+(signed-in members of the organization, matched by email address) and shows them
+a short "X shared Y" notice and a Files badge until they open it. Copies are
+independent: later edits do not sync. Email drafts in Ask and workspaces can
+carry Files attachments (up to 20 MB), and Ask attaches files the user names.
+
 ## Web search
 
 When `TAVILY_API_KEY` is set, Ask and workspace Loombot fall back to a Tavily web
@@ -151,7 +167,11 @@ decides whether the question is about public information; internal company
 questions are never sent to Tavily, and the query excludes internal details.
 Users can also ask to search the web explicitly. Every answer that used the web
 starts with a "Web search used" notice, sets `web_search_used`, and lists the
-pages in `web_results`; the web app shows a badge and the web sources. Set
+pages in `web_results`; the web app shows a badge and the web sources. Each such
+answer ends with "Who to contact": a companion Tavily search looks for contact
+details, the router model lists who to reach out to, and only emails, phone
+numbers, and links that appear in the results are kept. People inside the
+company linked to the topic in the knowledge graph are listed too. Set
 `WEB_SEARCH_ENABLED=false` to turn it off.
 
 ## WhatsApp exports

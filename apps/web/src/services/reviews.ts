@@ -103,11 +103,13 @@ export async function sendProposedExpertMessage(
   return response.json();
 }
 
+/** Send an approved email from the user's Gmail, optionally with LoomBot Files attached. */
 export async function sendProposedEmail(
   recipientEmail: string,
   subject: string,
   body: string,
-): Promise<{ status: string; provider_message_id?: string }> {
+  attachmentFileIds: string[] = [],
+): Promise<{ status: string; provider_message_id?: string; attachments?: string[] }> {
   const response = await apiFetch("/knowledge/reviews/messages/send-proposed-email", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -115,6 +117,7 @@ export async function sendProposedEmail(
       recipient_email: recipientEmail,
       subject,
       body,
+      attachment_file_ids: attachmentFileIds,
     }),
   });
   if (!response.ok) {

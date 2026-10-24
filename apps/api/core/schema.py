@@ -389,6 +389,14 @@ _LOOMBOT_FILE_KINDS_SQL = [
     "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS blob_key TEXT",
     "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS previous_blob_key TEXT",
     "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS based_on_file_id TEXT",
+    # A copy another member shared in MindLoom, and whether its owner has seen it.
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS shared_by_user_id TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS shared_by_name TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS shared_note TEXT",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS shared_at TIMESTAMPTZ",
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS share_seen_at TIMESTAMPTZ",
+    """CREATE INDEX IF NOT EXISTS idx_loombot_files_unseen_shares
+  ON loombot_files (org_id, owner_user_id) WHERE shared_at IS NOT NULL AND share_seen_at IS NULL""",
 ]
 
 

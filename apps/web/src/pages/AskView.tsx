@@ -31,6 +31,7 @@ import {
   type ChatMessage,
   type EphemeralDocument,
   type FileChange,
+  type EmailAttachmentRef,
   type ProposedEmail,
   type StatusTrackerCard,
   type ProposedExpertMessage,
@@ -46,7 +47,14 @@ import { createMeeting, findMeetingTimes, type MeetingSuggestion } from "@/servi
 import { approveProposedPullRequest } from "@/services/github";
 import { sendProposedEmail, sendProposedExpertMessage } from "@/services/reviews";
 import { createWorkspace } from "@/services/workspaces";
-import { getFile, kindFromName, setFileMonitoring, undoFile, uploadFile } from "@/services/files";
+import {
+  getFile,
+  kindFromName,
+  setFileMonitoring,
+  undoFile,
+  uploadFile,
+  type FileKind,
+} from "@/services/files";
 import {
   createRecurringEmail,
   formatInterval,
@@ -54,6 +62,7 @@ import {
   type IntervalUnit,
 } from "@/services/workflows";
 import { FileKindIcon } from "@/components/FileKindIcon";
+import { FilePickerModal } from "@/components/FilePicker";
 import { ChangeList } from "@/pages/FileViewers";
 import { Markdown, type CitationRenderer } from "@/components/Markdown";
 import { StatusPill } from "@/pages/StatusView";
@@ -632,6 +641,8 @@ function ProposedComposeCard({
   );
   const [subject, setSubject] = useState(email?.subject || "");
   const [body, setBody] = useState(email?.body || expert?.message || "");
+  const [attachments, setAttachments] = useState<EmailAttachmentRef[]>(email?.attachments ?? []);
+  const [picking, setPicking] = useState(false);
   const expertStatus = expertState ?? (expert ? "pending" : undefined);
   const mailStatus = emailState ?? (email ? "pending" : "pending");
   const cancelled = expertStatus === "cancelled" || mailStatus === "cancelled";
@@ -667,7 +678,12 @@ function ProposedComposeCard({
   async function sendEmail() {
     onPatch({ emailProposalState: "sending", emailProposalError: undefined });
     try {
-      const result = await sendProposedEmail(to, subject, body);
+      const result = await sendProposedEmail(
+        to,
+        subject,
+        body,
+        attachments.map((file) => file.file_id),
+      );
       onPatch({
         emailProposalState: "sent",
         emailProposalId: result.provider_message_id,
@@ -753,6 +769,57 @@ function ProposedComposeCard({
         />
       </label>
 
+      <div className="mt-2 flex flex-wrap items-center gap-1.5" data-testid="email-attachments">
+        {attachments.map((file) => (
+          <span
+            key={file.file_id}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs"
+          >
+            <FileKindIcon kind={(file.kind as FileKind) ?? "txt"} className="size-3" />
+            {file.name}
+            {!emailSent && (
+              <button
+                type="button"
+                aria-label={`Remove ${file.name}`}
+                onClick={() => setAttachments((rows) => rows.filter((row) => row.file_id !== file.file_id))}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            )}
+          </span>
+        ))}
+        {!emailSent && (
+          <button
+            type="button"
+            onClick={() => setPicking(true)}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-primary/50 px-2.5 py-1 text-xs font-medium text-primary"
+          >
+            <Paperclip className="size-3" /> Attach file
+          </button>
+        )}
+        {attachments.length > 0 && !emailSent && (
+          <span className="text-[11px] text-muted-foreground">Attachments go with the email, not the Expert Message.</span>
+        )}
+      </div>
+      {picking && (
+        <FilePickerModal
+          selected={attachments.map((file) => file.file_id)}
+          onClose={() => setPicking(false)}
+          onConfirm={(files) => {
+            setAttachments(
+              files.map((file) => ({
+                file_id: file.file_id,
+                name: file.name,
+                kind: file.kind,
+                size_bytes: file.size_bytes,
+              })),
+            );
+            setPicking(false);
+          }}
+        />
+      )}
+
       {(expertError || emailError) && (
         <p className="mt-2 text-xs text-destructive">
           {expertError || emailError}
@@ -771,6 +838,9 @@ function ProposedComposeCard({
       {emailSent && (
         <p className="mt-2 text-xs text-foreground">
           Email sent to {to}
+          {attachments.length
+            ? ` with ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`
+            : ""}
           {emailId ? ` (${emailId.slice(0, 8)}…)` : ""}.
         </p>
       )}

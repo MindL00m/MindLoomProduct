@@ -703,6 +703,20 @@ async def lookup_messageable_people(
     return results
 
 
+def parse_recipients(value: str) -> list[str]:
+    """Addresses from "a@x.com, b@y.com"; raises 400 on any invalid one."""
+
+    recipients = [part.strip().strip("<>") for part in re.split(r"[,;\s]+", value or "") if part.strip()]
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    invalid = [item for item in recipients if not _EMAIL_RE.match(item)]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Not a valid email address: {', '.join(invalid)}.")
+    if len(recipients) > 25:
+        raise HTTPException(status_code=400, detail="Send to at most 25 addresses at once.")
+    return list(dict.fromkeys(recipients))
+
+
 async def send_proposed_email(
     *,
     org_id: str,
@@ -710,12 +724,11 @@ async def send_proposed_email(
     recipient_email: str,
     subject: str,
     body: str,
+    attachment_file_ids: list[str] | None = None,
 ) -> dict:
-    """Send an Ask-confirmed email from the requester's connected Gmail."""
+    """Send an Ask-confirmed email from the requester's Gmail, with Files attached."""
 
-    recipient = recipient_email.strip()
-    if not _EMAIL_RE.match(recipient):
-        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    recipient = ", ".join(parse_recipients(recipient_email))
     cleaned_subject = subject.strip()
     cleaned_body = body.strip()
     if not cleaned_subject or not cleaned_body:
@@ -729,6 +742,11 @@ async def send_proposed_email(
             status_code=400,
             detail="Connect Google Workspace to send email.",
         )
+    attachments = []
+    if attachment_file_ids:
+        from loombot.files import files_as_attachments
+
+        attachments = await files_as_attachments(org_id, requester_user_id, attachment_file_ids)
     try:
         message_id = await send_user_gmail(
             org_id=org_id,
@@ -736,10 +754,14 @@ async def send_proposed_email(
             recipient=recipient,
             subject=cleaned_subject,
             body=cleaned_body,
+            attachments=attachments or None,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "sent", "provider_message_id": message_id}
+    result = {"status": "sent", "provider_message_id": message_id}
+    if attachments:
+        result["attachments"] = [name for name, _data, _mime in attachments]
+    return result
 
 
 async def send_proposed_expert_message(

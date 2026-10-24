@@ -12,6 +12,7 @@ import {
   Trash2,
   Undo2,
   Upload,
+  Users,
   X,
 } from "lucide-react";
 import { parseCsvMatrix, toCsv } from "@/lib/csv";
@@ -30,9 +31,14 @@ import {
   type LoomFile,
   type LoomFileEvent,
   type LoomFileMeta,
+  type UnseenShare,
   type WritableKind,
+  listUnseenShares,
+  markSharesSeen,
 } from "@/services/files";
+import { DriveBrowser, EmailFilesBrowser, SourceTabs, type FileSource } from "@/pages/FileSources";
 import { DocumentFileView, ExcelButton } from "@/pages/FileViewers";
+import { SharedByLine, ShareButton } from "@/pages/FileSharing";
 import { cn } from "@/lib/utils";
 import { plural, timeAgo } from "@/lib/format";
 import { FileKindIcon, fileDetail } from "@/components/FileKindIcon";
@@ -41,9 +47,12 @@ const PAGE_SIZE = 200;
 
 
 
-export default function FilesView() {
+export default function FilesView({ onSharesChange }: { onSharesChange?: (count: number) => void } = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedId = searchParams.get("file");
+  const sourceParam = searchParams.get("source");
+  const source: FileSource = sourceParam === "drive" || sourceParam === "email" ? sourceParam : "mine";
+  const [shares, setShares] = useState<UnseenShare[]>([]);
   const [files, setFiles] = useState<LoomFileMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
@@ -66,6 +75,43 @@ export default function FilesView() {
   useEffect(() => {
     void refreshList();
   }, [refreshList]);
+
+  const refreshShares = useCallback(async () => {
+    try {
+      const unseen = await listUnseenShares();
+      setShares(unseen);
+      onSharesChange?.(unseen.length);
+    } catch {
+      /* notifications are optional */
+    }
+  }, [onSharesChange]);
+
+  useEffect(() => {
+    void refreshShares();
+  }, [refreshShares]);
+
+  function clearShares(fileIds?: string[]) {
+    const remaining = fileIds ? shares.filter((s) => !fileIds.includes(s.file_id)) : [];
+    if (remaining.length === shares.length) return;
+    setShares(remaining);
+    onSharesChange?.(remaining.length);
+    void markSharesSeen(fileIds).then(() => refreshList()).catch(() => undefined);
+  }
+
+  function setSource(next: FileSource) {
+    const params = new URLSearchParams(searchParams);
+    if (next === "mine") params.delete("source");
+    else params.set("source", next);
+    setSearchParams(params, { replace: true });
+  }
+
+  function openInFiles(fileId: string) {
+    const params = new URLSearchParams(searchParams);
+    params.delete("source");
+    params.set("file", fileId);
+    setSearchParams(params, { replace: true });
+    void refreshList();
+  }
 
   const open = useCallback(
     async (fileId: string) => {
@@ -91,6 +137,14 @@ export default function FilesView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, requestedId, files]);
 
+  // Opening a file someone shared clears its "shared with you" notice.
+  useEffect(() => {
+    if (active && shares.some((share) => share.file_id === active.file_id)) {
+      clearShares([active.file_id]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.file_id, shares]);
+
   function select(fileId: string, dirty: boolean) {
     if (dirty && !window.confirm("Discard unsaved changes to this file?")) return;
     setShowNew(false);
@@ -113,10 +167,15 @@ export default function FilesView() {
     void refreshList();
   }
 
+  const sourceTabs = <SourceTabs source={source} onChange={setSource} />;
+  if (source === "drive") return <DriveBrowser sourceTabs={sourceTabs} onOpenInFiles={openInFiles} />;
+  if (source === "email") return <EmailFilesBrowser sourceTabs={sourceTabs} onOpenInFiles={openInFiles} />;
+
   return (
     <div className="flex h-full w-full gap-4">
       <aside className="flex w-64 shrink-0 flex-col rounded-lg border border-border bg-card max-md:hidden">
-        <div className="p-2">
+        <div className="space-y-2 p-2">
+          {sourceTabs}
           <button
             type="button"
             onClick={() => setShowNew(true)}
@@ -129,6 +188,7 @@ export default function FilesView() {
           files={files}
           loading={loading}
           activeId={active?.file_id ?? null}
+          unseen={new Set(shares.map((share) => share.file_id))}
           onSelect={(id) => select(id, dirty)}
         />
       </aside>
@@ -155,6 +215,36 @@ export default function FilesView() {
             <Plus className="size-3.5" /> New
           </button>
         </div>
+
+        <div className="border-b border-border p-2 md:hidden">{sourceTabs}</div>
+
+        {shares.length > 0 && (
+          <div
+            role="status"
+            className="m-3 mb-0 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-primary/30 bg-brand-50 px-3 py-2 text-sm"
+          >
+            <Users className="size-4 shrink-0 text-primary" />
+            {shares.slice(0, 3).map((share) => (
+              <button
+                key={share.file_id}
+                type="button"
+                onClick={() => select(share.file_id, dirty)}
+                className="text-left hover:underline"
+              >
+                <span className="font-medium">{share.shared_by_name}</span> shared {share.name}
+              </button>
+            ))}
+            {shares.length > 3 && <span className="text-muted-foreground">and {shares.length - 3} more</span>}
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => clearShares()}
+              className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-card hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        )}
 
         {listError && (
           <p className="m-3 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -212,11 +302,13 @@ function FileList({
   files,
   loading,
   activeId,
+  unseen,
   onSelect,
 }: {
   files: LoomFileMeta[];
   loading: boolean;
   activeId: string | null;
+  unseen: Set<string>;
   onSelect: (id: string) => void;
 }) {
   if (loading) {
@@ -246,7 +338,15 @@ function FileList({
           >
             <FileKindIcon kind={f.kind} className="mt-0.5" />
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">{f.name}</span>
+              <span className="flex items-center gap-1.5 truncate font-medium">
+                <span className="truncate">{f.name}</span>
+                {unseen.has(f.file_id) && (
+                  <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-label="Newly shared" />
+                )}
+              </span>
+              {f.shared_by_name && (
+                <span className="block truncate text-[11px] text-primary">Shared by {f.shared_by_name}</span>
+              )}
               <span className="flex items-center gap-1 truncate text-xs text-muted-foreground">
                 {fileDetail(f)} · {timeAgo(f.updated_at)}
                 {f.last_edited_by === "loombot" && (
@@ -691,6 +791,7 @@ function FileEditor({
             {plural(Math.max(0, matrix.length - 1), "row")} · {plural(header.length, "column")} ·{" "}
             {lastEdit}
           </p>
+          <SharedByLine file={file} />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="flex rounded-md border border-border p-0.5 text-xs" role="tablist">
@@ -727,6 +828,7 @@ function FileEditor({
             </button>
           )}
           <ExcelButton fileId={file.file_id} name={file.name} />
+          <ShareButton file={file} />
           <button
             type="button"
             onClick={download}

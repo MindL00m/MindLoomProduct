@@ -82,9 +82,12 @@ class SendProposedMessageInput(BaseModel):
 
 
 class SendProposedEmailInput(BaseModel):
+    # One address, or several separated by commas.
     recipient_email: str = Field(min_length=1)
     subject: str = Field(min_length=1)
     body: str = Field(min_length=1)
+    # LoomBot Files to attach (the sender's own files).
+    attachment_file_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 @router.get("")
@@ -154,13 +157,14 @@ async def send_proposed_message(
 async def send_proposed_email_route(
     request: SendProposedEmailInput,
     ctx: tuple[str, str] = Depends(require_user_context),
-) -> dict[str, str]:
+) -> dict:
     return await send_proposed_email(
         org_id=ctx[0],
         requester_user_id=ctx[1],
         recipient_email=request.recipient_email,
         subject=request.subject,
         body=request.body,
+        attachment_file_ids=request.attachment_file_ids,
     )
 
 

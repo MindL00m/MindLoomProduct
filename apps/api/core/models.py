@@ -883,6 +883,15 @@ class ProposedExpertMessage(BaseModel):
     candidates: list[MessageablePerson] = Field(default_factory=list)
 
 
+class EmailAttachmentRef(BaseModel):
+    """A LoomBot Files file attached to an email draft."""
+
+    file_id: str
+    name: str
+    kind: str = "csv"
+    size_bytes: int = 0
+
+
 class ProposedEmail(BaseModel):
     """Draft email awaiting user confirmation in Ask before Gmail send."""
 
@@ -893,6 +902,9 @@ class ProposedEmail(BaseModel):
     body: str
     google_connected: bool = False
     candidates: list[MessageablePerson] = Field(default_factory=list)
+    attachments: list[EmailAttachmentRef] = Field(
+        default_factory=list, description="Files attached to the draft; the user can change them."
+    )
 
 
 class ProposedPullRequest(BaseModel):

@@ -62,7 +62,8 @@ _META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column
     last_edited_by,
     (previous_content IS NOT NULL OR previous_blob_key IS NOT NULL) AS can_undo,
     created_at, updated_at, based_on_file_id,
-    monitor_enabled, monitor_instructions, monitor_started_at"""
+    monitor_enabled, monitor_instructions, monitor_started_at,
+    shared_by_user_id, shared_by_name, shared_note, shared_at, share_seen_at"""
 
 
 # --- Names and kinds ----------------------------------------------------------
@@ -254,6 +255,11 @@ def _meta(row: Any) -> dict[str, Any]:
         "monitor_enabled": bool(row["monitor_enabled"]),
         "monitor_instructions": row["monitor_instructions"],
         "monitor_started_at": row["monitor_started_at"],
+        "shared_by_user_id": row.get("shared_by_user_id"),
+        "shared_by_name": row.get("shared_by_name"),
+        "shared_note": row.get("shared_note"),
+        "shared_at": row.get("shared_at"),
+        "share_seen": row.get("share_seen_at") is not None or row.get("shared_at") is None,
     }
 
 
@@ -656,6 +662,199 @@ def unique_name(existing: set[str], wanted: str) -> str:
         if candidate.lower() not in taken:
             return candidate
     return f"{base} {uuid4().hex[:6]}.{kind}" if kind else f"{base} {uuid4().hex[:6]}"
+
+
+# --- Sharing ------------------------------------------------------------------------
+
+MAX_SHARE_RECIPIENTS = 25
+MAX_EMAIL_ATTACHMENT_BYTES = 20_000_000  # Gmail's 25 MB limit, less MIME overhead
+
+
+async def share_in_mindloom(
+    org_id: str,
+    user_id: str,
+    file_id: str,
+    recipient_user_ids: list[str],
+    *,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Copy a file into colleagues' Files, marked with who shared it.
+
+    Each recipient gets an independent copy (later edits do not sync either way)
+    and a short notification in their Files tab until they see it.
+    """
+
+    wanted = [uid for uid in dict.fromkeys(str(u).strip() for u in recipient_user_ids) if uid]
+    wanted = [uid for uid in wanted if uid != user_id]
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Choose someone other than yourself to share with.")
+    if len(wanted) > MAX_SHARE_RECIPIENTS:
+        raise HTTPException(status_code=400, detail=f"Share with at most {MAX_SHARE_RECIPIENTS} people at once.")
+    data, meta = await get_file_bytes(org_id, user_id, file_id)
+    clean_note = " ".join((note or "").split())[:300] or None
+    factory = get_session_factory()
+    async with factory() as session:
+        people = (await session.execute(text("""
+            SELECT user_id, coalesce(name, email) AS name, email FROM users
+            WHERE org_id=:org AND user_id = ANY(:ids)
+        """), {"org": org_id, "ids": wanted})).mappings().all()
+        sharer = (await session.execute(text("""
+            SELECT coalesce(name, email) FROM users WHERE org_id=:org AND user_id=:user
+        """), {"org": org_id, "user": user_id})).scalar_one_or_none() or "A colleague"
+    found = {str(row["user_id"]): dict(row) for row in people}
+    shared: list[dict[str, Any]] = []
+    for recipient_id in wanted:
+        person = found.get(recipient_id)
+        if person is None:
+            continue
+        existing = {f["name"] for f in await list_files(org_id, recipient_id)}
+        name = unique_name(existing, meta["name"])
+        new_id = str(uuid4())
+        kind = meta["kind"]
+        blob = None
+        if kind in TEXT_KINDS:
+            body, rows, columns = normalize_text(kind, data.decode("utf-8"))
+            content, size = body, len(body.encode("utf-8"))
+        else:
+            blob = await _put_blob(org_id, new_id, kind, data)
+            rows, columns = meta["row_count"], meta["column_count"]
+            content, size = "", len(data)
+        async with factory() as session, session.begin():
+            await session.execute(text("""
+                INSERT INTO loombot_files
+                  (file_id, org_id, owner_user_id, name, kind, mime_type, size_bytes,
+                   content, blob_key, row_count, column_count, last_edited_by,
+                   shared_by_user_id, shared_by_name, shared_note, shared_at,
+                   created_at, updated_at)
+                VALUES (:id, :org, :owner, :name, :kind, :mime, :size, :content, :blob,
+                        :rows, :columns, 'user', :by, :by_name, :note, now(), now(), now())
+            """), {
+                "id": new_id, "org": org_id, "owner": recipient_id, "name": name,
+                "kind": kind, "mime": KINDS[kind], "size": size, "content": content,
+                "blob": blob, "rows": rows, "columns": columns, "by": user_id,
+                "by_name": sharer, "note": clean_note,
+            })
+        shared.append({"user_id": recipient_id, "name": person["name"], "email": person["email"],
+                       "file_name": name})
+    return {"shared": shared, "not_found": [uid for uid in wanted if uid not in found]}
+
+
+async def share_file(
+    org_id: str,
+    user_id: str,
+    file_id: str,
+    recipients: list[str],
+    *,
+    send_email: bool = True,
+    in_mindloom: bool = False,
+    message: str | None = None,
+) -> dict[str, Any]:
+    """Share a file by email (attached, from the sharer's Gmail) and/or in MindLoom.
+
+    "In MindLoom" copies the file into the Files tab of every recipient who is a
+    signed-in member of the organization; others can only receive it by email.
+    """
+
+    from keeper.review_workflows import parse_recipients
+
+    if not send_email and not in_mindloom:
+        raise HTTPException(status_code=400, detail="Choose email, Share in MindLoom, or both.")
+    addresses = parse_recipients(", ".join(recipients))
+    meta = await get_file(org_id, user_id, file_id)
+    factory = get_session_factory()
+    async with factory() as session:
+        members = (await session.execute(text("""
+            SELECT user_id, coalesce(name, email) AS name, lower(email) AS email FROM users
+            WHERE org_id=:org AND lower(email) = ANY(:emails)
+        """), {"org": org_id, "emails": [a.lower() for a in addresses]})).mappings().all()
+        sharer = (await session.execute(text("""
+            SELECT coalesce(name, email) FROM users WHERE org_id=:org AND user_id=:user
+        """), {"org": org_id, "user": user_id})).scalar_one_or_none() or "A colleague"
+    by_email = {str(m["email"]): dict(m) for m in members if str(m["user_id"]) != user_id}
+    result: dict[str, Any] = {"emailed": [], "shared_in_mindloom": [], "not_in_mindloom": []}
+
+    if in_mindloom:
+        result["not_in_mindloom"] = [a for a in addresses if a.lower() not in by_email]
+        if by_email:
+            shared = await share_in_mindloom(
+                org_id, user_id, file_id, [m["user_id"] for m in by_email.values()], note=message,
+            )
+            result["shared_in_mindloom"] = shared["shared"]
+    if send_email:
+        from shuttle.notification_delivery import send_user_gmail
+        from weaver.integrations import has_google_workspace_connection
+
+        if not await has_google_workspace_connection(org_id, user_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Connect Google Workspace to share by email, or use Share in MindLoom.",
+            )
+        attachments = await files_as_attachments(org_id, user_id, [file_id])
+        note = (message or "").strip()
+        body = f"{sharer} shared {meta['name']} with you. It is attached to this email."
+        if note:
+            body += f"\n\n{note}"
+        try:
+            await send_user_gmail(
+                org_id=org_id, user_id=user_id, recipient=", ".join(addresses),
+                subject=f"{sharer} shared {meta['name']} with you", body=body,
+                attachments=attachments,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result["emailed"] = addresses
+    return result
+
+
+async def unseen_shares(org_id: str, user_id: str) -> list[dict[str, Any]]:
+    """Files colleagues shared with this user that they have not seen yet."""
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (await session.execute(text("""
+            SELECT file_id, name, kind, shared_by_name, shared_note, shared_at
+            FROM loombot_files
+            WHERE org_id=:org AND owner_user_id=:user
+              AND shared_at IS NOT NULL AND share_seen_at IS NULL
+            ORDER BY shared_at DESC LIMIT 20
+        """), {"org": org_id, "user": user_id})).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def mark_shares_seen(org_id: str, user_id: str, file_ids: list[str] | None = None) -> int:
+    """Clear share notifications (all of them, or just ``file_ids``)."""
+
+    factory = get_session_factory()
+    params: dict[str, Any] = {"org": org_id, "user": user_id}
+    only = ""
+    if file_ids:
+        only = "AND file_id = ANY(:ids)"
+        params["ids"] = [str(f) for f in file_ids]
+    async with factory() as session, session.begin():
+        result = await session.execute(text(f"""
+            UPDATE loombot_files SET share_seen_at=now()
+            WHERE org_id=:org AND owner_user_id=:user
+              AND shared_at IS NOT NULL AND share_seen_at IS NULL {only}
+        """), params)
+    return int(result.rowcount or 0)
+
+
+async def files_as_attachments(
+    org_id: str, user_id: str, file_ids: list[str]
+) -> list[tuple[str, bytes, str]]:
+    """(file name, bytes, MIME type) for each of the user's files, for an email."""
+
+    attachments: list[tuple[str, bytes, str]] = []
+    total = 0
+    for file_id in dict.fromkeys(str(f) for f in file_ids if str(f).strip()):
+        data, meta = await get_file_bytes(org_id, user_id, file_id)
+        total += len(data)
+        if total > MAX_EMAIL_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=413, detail="Attachments are limited to 20 MB per email."
+            )
+        attachments.append((meta["name"], data, meta["mime_type"]))
+    return attachments
 
 
 # --- Monitoring ---------------------------------------------------------------------

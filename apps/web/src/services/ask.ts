@@ -57,6 +57,14 @@ export interface ProposedExpertMessage {
   candidates?: MessageablePerson[];
 }
 
+/** A LoomBot Files file attached to an email draft. */
+export interface EmailAttachmentRef {
+  file_id: string;
+  name: string;
+  kind?: string;
+  size_bytes?: number;
+}
+
 export interface ProposedEmail {
   recipient_email: string;
   recipient_name?: string;
@@ -65,6 +73,7 @@ export interface ProposedEmail {
   body: string;
   google_connected?: boolean;
   candidates?: MessageablePerson[];
+  attachments?: EmailAttachmentRef[];
 }
 
 export interface ProposedPullRequest {

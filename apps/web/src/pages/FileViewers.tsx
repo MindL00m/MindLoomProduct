@@ -30,6 +30,7 @@ import {
   type UpdatedVersionResult,
 } from "@/services/files";
 import { fileDetail, FileKindIcon } from "@/components/FileKindIcon";
+import { SharedByLine, ShareButton } from "@/pages/FileSharing";
 import { formatBytes, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -226,6 +227,7 @@ export function DocumentFileView({
               </span>
             )}
           </p>
+          <SharedByLine file={file} />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
@@ -279,6 +281,7 @@ export function DocumentFileView({
               e.target.value = "";
             }}
           />
+          <ShareButton file={file} />
           <button
             type="button"
             onClick={() => void run("", () => saveFileToDisk(file.file_id, file.name))}
@@ -481,6 +484,57 @@ export function ChangeList({
   );
 }
 
+/** A PDF or image fetched by ``load`` (e.g. from Google Drive or a mailbox). */
+export function BlobFrame({
+  load,
+  loadKey,
+  type,
+  title,
+}: {
+  load: () => Promise<Blob>;
+  loadKey: string;
+  type: "pdf" | "image";
+  title: string;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    setUrl(null);
+    setError("");
+    void load()
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(type === "pdf" ? new Blob([blob], { type: "application/pdf" }) : blob);
+        setUrl(objectUrl);
+      })
+      .catch((err: Error) => !cancelled && setError(err.message));
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadKey, type]);
+
+  if (error) return <p className="m-4 text-sm text-destructive">{error}</p>;
+  if (!url) {
+    return (
+      <p className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" /> Loading…
+      </p>
+    );
+  }
+  return type === "pdf" ? (
+    <iframe title={title} src={url} className="m-4 min-h-0 flex-1 rounded-md border border-border" />
+  ) : (
+    <div className="min-h-0 flex-1 overflow-auto p-4">
+      <img src={url} alt={title} className="mx-auto max-w-full rounded-md border border-border" />
+    </div>
+  );
+}
+
 function PdfFrame({ fileId, updatedAt }: { fileId: string; updatedAt: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -540,7 +594,7 @@ function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: s
   return null;
 }
 
-function DocPreview({ blocks }: { blocks: DocBlock[] }) {
+export function DocPreview({ blocks }: { blocks: DocBlock[] }) {
   if (blocks.length === 0) {
     return <p className="m-4 text-sm text-muted-foreground">This document has no text.</p>;
   }
@@ -579,7 +633,7 @@ function DocPreview({ blocks }: { blocks: DocBlock[] }) {
   );
 }
 
-function WorkbookPreview({ sheets }: { sheets: SheetPreview[] }) {
+export function WorkbookPreview({ sheets }: { sheets: SheetPreview[] }) {
   const [active, setActive] = useState(0);
   const sheet = sheets[active];
   if (!sheet) return <p className="m-4 text-sm text-muted-foreground">This workbook has no sheets.</p>;

@@ -18,6 +18,7 @@ from core.config import get_settings
 from core.llm_provider import DEFAULT_OPENAI_MODEL, LLMClientAdapter, get_llm_client
 from core.models import (
     ChatMessage,
+    EmailAttachmentRef,
     EphemeralDocument,
     DocumentChange,
     FileChange,
@@ -79,6 +80,8 @@ Messaging rules:
   (e.g. query "CTO" when they say "send a message to the CTO").
 - After lookup, call propose_email with a subject and body. If lookup found an address,
   pass it as recipient_email; if not, leave recipient_email empty so the user can type one.
+- To send one of the user's files with the email ("email Priya the Q3 report"), pass
+  its Files-tab name in attachment_names; the user can add or remove files on the card.
 - If lookup_person returns a signed-in MindLoom user (non-empty user_id), also call
   propose_expert_message for the in-app option.
 - Do NOT write the draft email/message in your reply text. The UI shows a compose card.
@@ -368,6 +371,13 @@ _TOOLS: list[dict[str, Any]] = [
                     "body": {
                         "type": "string",
                         "description": "Email body to propose for approval.",
+                    },
+                    "attachment_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional names of the user's Files to attach, e.g. ['Q3 report.docx']."
+                        ),
                     },
                 },
                 "required": ["subject", "body"],
@@ -1979,6 +1989,32 @@ def _email_from_person(
     )
 
 
+async def _resolve_attachments(
+    names: Any, *, org_id: str, user_id: str
+) -> tuple[list[EmailAttachmentRef], list[str]]:
+    """Files-tab files named for an email draft, and the names not found."""
+
+    if not names:
+        return [], []
+    if not isinstance(names, list):
+        names = [names]
+    attached: list[EmailAttachmentRef] = []
+    missing: list[str] = []
+    for raw in names[:10]:
+        name = " ".join(str(raw or "").split())
+        if not name:
+            continue
+        found = await files_service.find_file_by_name(org_id, user_id, name)
+        if found is None:
+            missing.append(name)
+        elif all(a.file_id != found["file_id"] for a in attached):
+            attached.append(EmailAttachmentRef(
+                file_id=found["file_id"], name=found["name"],
+                kind=found.get("kind") or "csv", size_bytes=int(found.get("size_bytes") or 0),
+            ))
+    return attached, missing
+
+
 async def _ensure_proposals(
     *,
     question: str,
@@ -2298,6 +2334,11 @@ async def _run_tool(
             subject=subject,
             body=body,
         )
+        attached, missing = await _resolve_attachments(
+            arguments.get("attachment_names"), org_id=org_id, user_id=user_id
+        )
+        if attached:
+            email = email.model_copy(update={"attachments": attached})
         expert = None
         uid = str((person or {}).get("user_id") or "").strip()
         if uid:
@@ -2308,12 +2349,20 @@ async def _run_tool(
                 message=body,
                 candidates=candidates or email.candidates,
             )
-        return {
+        result = {
             "status": "proposed",
             "note": "Email draft ready. User must approve in the UI before send.",
             "recipient_email": email.recipient_email,
             "subject": email.subject,
-        }, expert, None, None, email
+            "attachments": [a.name for a in attached],
+        }
+        if missing:
+            result["missing_attachments"] = missing
+            result["attachment_note"] = (
+                "These files were not found in the user's Files; tell the user, or call "
+                "list_files to find the right names."
+            )
+        return result, expert, None, None, email
 
     if name == "github_list_repos":
         from weaver.github_access import (
@@ -2670,9 +2719,9 @@ async def _run_action_tool(
         }
 
     if name == "web_search":
-        from loombot.web_search import search_web
+        from loombot.web_search import search_with_contacts
 
-        found = await search_web(
+        found = await search_with_contacts(
             str(arguments.get("query") or ""),
             topic=str(arguments.get("topic") or "general"),
             days=arguments.get("days"),
@@ -2944,7 +2993,8 @@ Web search rules:
 - Never put confidential company details (internal names, customers, numbers) in a
   query. Cite web facts with [WEB: n], using the n of each result.
 - Say plainly in your reply which parts came from the web. MindLoom also labels every
-  reply that used web search.
+  reply that used web search and adds a "Who to contact" section listing the people,
+  teams, or offices the results name for questions, so do not write your own.
 """
 
 
@@ -3060,6 +3110,8 @@ async def _answer_turn(
 
     from loombot.web_search import (
         WEB_TOOL_NOTICE,
+        contacts_section,
+        extract_contacts,
         web_fallback,
         web_search_enabled,
         with_notice,
@@ -3079,8 +3131,15 @@ async def _answer_turn(
         web_enabled=web_enabled,
     )
     if response.web_search_used:
-        # The model chose web_search: label the reply no matter what it wrote.
-        response.answer = with_notice(response.answer, WEB_TOOL_NOTICE)
+        # The model chose web_search: label the reply no matter what it wrote, and
+        # say who to reach out to.
+        contacts = await extract_contacts(
+            await get_llm_client(org_id), question, response.web_results
+        )
+        response.answer = with_notice(
+            f"{response.answer.rstrip()}\n\n{contacts_section(contacts, retrieval.experts)}",
+            WEB_TOOL_NOTICE,
+        )
         return response
     if not web_enabled:
         if _wants_web(question):
@@ -3105,7 +3164,9 @@ async def _answer_turn(
         return response
     logger.info("Ask answered from web search fallback (query=%r)", found.query)
     return response.model_copy(update={
-        "answer": with_notice(found.answer),
+        "answer": with_notice(
+            f"{found.answer.rstrip()}\n\n{contacts_section(found.contacts, retrieval.experts)}"
+        ),
         "web_search_used": True,
         "web_search_query": found.query,
         "web_results": found.results,

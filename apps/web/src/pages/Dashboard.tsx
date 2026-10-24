@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { resolveView, type ViewId } from "@/lib/navigation";
 import { getOrgSummary, type OrgSummary } from "@/services/auth";
 import { getExpertInboxCount } from "@/services/reviews";
+import { listUnseenShares } from "@/services/files";
 import { isExtensionSkill, listSkillFiles } from "@/services/skillFiles";
 
 type NavItem = { id: ViewId; label: string; icon: typeof Home };
@@ -93,6 +94,7 @@ export default function Dashboard() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [orgSummary, setOrgSummary] = useState<OrgSummary | null>(null);
   const [expertNotifications, setExpertNotifications] = useState(0);
+  const [sharedFileNotifications, setSharedFileNotifications] = useState(0);
   const [workflowNotifications, setWorkflowNotifications] = useState(0);
   const isAdmin = role === "admin";
   const view = resolveView(searchParams.get("tab"));
@@ -110,6 +112,17 @@ export default function Dashboard() {
       .then(setOrgSummary)
       .catch(() => setOrgSummary(onboardingSummary));
   }, [onboardingSummary]);
+
+  useEffect(() => {
+    // Files colleagues shared in MindLoom that this user has not seen yet.
+    const refresh = () =>
+      void listUnseenShares()
+        .then((rows) => setSharedFileNotifications(rows.length))
+        .catch(() => setSharedFileNotifications(0));
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const refresh = () => void getExpertInboxCount().then(setExpertNotifications);
@@ -151,6 +164,7 @@ export default function Dashboard() {
 
   function badgeFor(id: ViewId): number {
     if (id === "messages") return expertNotifications;
+    if (id === "files") return sharedFileNotifications;
     if (id === "shuttle") return workflowNotifications;
     return 0;
   }
@@ -305,7 +319,7 @@ export default function Dashboard() {
 
         {view === "files" && (
           <main className="h-[calc(100dvh-4rem)] p-4 lg:p-6">
-            <FilesView />
+            <FilesView onSharesChange={setSharedFileNotifications} />
           </main>
         )}
 

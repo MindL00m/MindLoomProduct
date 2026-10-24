@@ -69,6 +69,32 @@ def _notification_text(question: str) -> str:
     )
 
 
+def build_email(
+    *,
+    sender: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+) -> EmailMessage:
+    """A plain-text email with optional (file name, bytes, MIME type) attachments."""
+
+    message = EmailMessage()
+    message["To"] = recipient
+    message["From"] = sender
+    message["Subject"] = subject
+    message.set_content(body)
+    for filename, data, mime_type in attachments or []:
+        maintype, _, subtype = (mime_type or "application/octet-stream").partition("/")
+        message.add_attachment(
+            data,
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=filename,
+        )
+    return message
+
+
 async def _gmail_send_raw(
     *,
     org_id: str,
@@ -76,23 +102,32 @@ async def _gmail_send_raw(
     recipient: str,
     subject: str,
     body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> str:
     token, sender = await _workspace_access_token(org_id, user_id)
     if token.startswith("dev:"):
         raise RuntimeError("Gmail delivery is unavailable in development connection mode.")
-    message = EmailMessage()
-    message["To"] = recipient
-    message["From"] = sender
-    message["Subject"] = subject
-    message.set_content(body)
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode().rstrip("=")
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await request_with_backoff(
-            client, "POST",
-            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"raw": raw},
-        )
+    message = build_email(
+        sender=sender, recipient=recipient, subject=subject, body=body, attachments=attachments
+    )
+    async with httpx.AsyncClient(timeout=120 if attachments else 30) as client:
+        if attachments:
+            # The media upload endpoint takes messages up to 35 MB; the JSON body is limited to 5 MB.
+            response = await request_with_backoff(
+                client, "POST",
+                "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send",
+                params={"uploadType": "media"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "message/rfc822"},
+                content=message.as_bytes(),
+            )
+        else:
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode().rstrip("=")
+            response = await request_with_backoff(
+                client, "POST",
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"raw": raw},
+            )
     if response.status_code >= 400:
         raise RuntimeError(f"Gmail send failed ({response.status_code}).")
     return str(response.json().get("id") or "")
@@ -105,8 +140,9 @@ async def send_user_gmail(
     recipient: str,
     subject: str,
     body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
 ) -> str:
-    """Send a user-authored email from this user's connected Gmail account."""
+    """Send a user-authored email (one or more comma-separated recipients) from their Gmail."""
 
     return await _gmail_send_raw(
         org_id=org_id,
@@ -114,6 +150,7 @@ async def send_user_gmail(
         recipient=recipient,
         subject=subject,
         body=body,
+        attachments=attachments,
     )
 
 

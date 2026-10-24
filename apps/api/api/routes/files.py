@@ -85,6 +85,46 @@ async def public_file(
     return _download_response(data, meta, inline=False)
 
 
+class ShareInput(BaseModel):
+    # Email addresses; colleagues who use MindLoom are matched by their address.
+    recipients: list[str] = Field(min_length=1, max_length=25)
+    send_email: bool = True
+    share_in_mindloom: bool = False
+    message: str | None = Field(default=None, max_length=2000)
+
+
+class SharesSeenInput(BaseModel):
+    file_ids: list[str] | None = None
+
+
+@router.get("/shares/unseen")
+async def unseen_shares(ctx: tuple[str, str] = Depends(require_user_context)) -> list[dict]:
+    """Files colleagues shared in MindLoom that this user has not seen yet."""
+
+    return await files_service.unseen_shares(*ctx)
+
+
+@router.post("/shares/seen")
+async def shares_seen(
+    body: SharesSeenInput, ctx: tuple[str, str] = Depends(require_user_context)
+) -> dict:
+    return {"cleared": await files_service.mark_shares_seen(*ctx, body.file_ids)}
+
+
+@router.post("/{file_id}/share")
+async def share_file(
+    file_id: str,
+    body: ShareInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Email the file as an attachment and/or copy it into colleagues' Files."""
+
+    return await files_service.share_file(
+        *ctx, file_id, body.recipients,
+        send_email=body.send_email, in_mindloom=body.share_in_mindloom, message=body.message,
+    )
+
+
 @router.get("/{file_id}")
 async def get_file(
     file_id: str,

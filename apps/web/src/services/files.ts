@@ -34,6 +34,12 @@ export interface LoomFileMeta {
   /** Stored even while off when LoomBot suggested monitoring and is waiting for a yes. */
   monitor_instructions?: string | null;
   monitor_started_at?: string | null;
+  /** Set when a colleague shared this copy in MindLoom. */
+  shared_by_name?: string | null;
+  shared_note?: string | null;
+  shared_at?: string | null;
+  /** False until the owner has seen the "shared with you" notification. */
+  share_seen?: boolean;
 }
 
 export interface LoomFileEvent {
@@ -229,5 +235,53 @@ export function listFileEvents(fileId: string): Promise<LoomFileEvent[]> {
     `/${encodeURIComponent(fileId)}/events`,
     { method: "GET" },
     "Could not load automatic changes.",
+  );
+}
+
+export interface ShareResult {
+  emailed: string[];
+  shared_in_mindloom: { user_id: string; name: string; email: string; file_name: string }[];
+  not_in_mindloom: string[];
+}
+
+/** Email a file as an attachment and/or copy it into colleagues' Files in MindLoom. */
+export function shareFile(
+  fileId: string,
+  input: { recipients: string[]; sendEmail: boolean; shareInMindloom: boolean; message?: string },
+): Promise<ShareResult> {
+  return request(
+    `/${encodeURIComponent(fileId)}/share`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        recipients: input.recipients,
+        send_email: input.sendEmail,
+        share_in_mindloom: input.shareInMindloom,
+        message: input.message?.trim() || null,
+      }),
+    },
+    "Could not share the file.",
+  );
+}
+
+export interface UnseenShare {
+  file_id: string;
+  name: string;
+  kind: FileKind;
+  shared_by_name: string;
+  shared_note?: string | null;
+  shared_at: string;
+}
+
+export function listUnseenShares(): Promise<UnseenShare[]> {
+  return request("/shares/unseen", { method: "GET" }, "Could not load shared files.");
+}
+
+/** Clear "shared with you" notifications (all, or just these files). */
+export function markSharesSeen(fileIds?: string[]): Promise<{ cleared: number }> {
+  return request(
+    "/shares/seen",
+    { method: "POST", body: JSON.stringify({ file_ids: fileIds ?? null }) },
+    "Could not update notifications.",
   );
 }

@@ -1,0 +1,74 @@
+apps/api/.env.example
+  s_e2c06dc675aae3::t_d6d248938659c5 48-59,70-72
+apps/api/api/routes/files.py
+  s_e2c06dc675aae3::t_022cbea9dc30f4 17,19,46,60
+apps/api/api/routes/workspaces.py
+  s_e2c06dc675aae3::t_527922ce27e794 8,15,31-42,88-103,123-142
+apps/api/core/config.py
+  s_e2c06dc675aae3::t_40c6712f85c8db 142-164
+apps/api/core/models.py
+  s_e2c06dc675aae3::t_1f0501bc6b4344 1008-1055,1101-1113
+apps/api/core/schema.py
+  s_e2c06dc675aae3::t_d4352e34df0e76 287-291
+apps/api/loombot/answerer.py
+  s_e2c06dc675aae3::t_8f9cf4471042da 68
+apps/api/loombot/data_tools.py
+  s_e2c06dc675aae3::t_a8eda2ff1e2a87 27-36,49-52,421-426,428-429,491,493,560-576,590-595,615-635,651-735
+apps/api/loombot/web_search.py
+  s_e2c06dc675aae3::t_cf36afcf0beb9d 1-243
+apps/api/main.py
+  s_e2c06dc675aae3::t_d67ffd518fb42f 86,159,458,470-472
+apps/api/shuttle/calendar_meetings.py
+  s_e2c06dc675aae3::t_ea76c4380a6377 1-417
+apps/api/tests/test_ask_data_tools.py
+  s_e2c06dc675aae3::t_858f9ffa6cc1aa 351-352
+apps/api/tests/test_email_attachments.py
+  s_e2c06dc675aae3::t_6332af3200273c 1-337
+apps/api/tests/test_web_search.py
+  s_e2c06dc675aae3::t_53483ebacf3d7c 1-227
+apps/api/tests/test_workspace_context.py
+  s_e2c06dc675aae3::t_fcadc595863739 150-153,155,161-165,168,170,177,179,182-189,194,201
+apps/api/weaver/email_content.py
+  s_e2c06dc675aae3::t_98eff5b69ebc9c 1-557
+apps/api/weaver/google_workspace.py
+  s_e2c06dc675aae3::t_48768dd34227ef 47-51,69-70,478-482,505-506,514-520,653-658,673-833
+apps/web/src/components/Markdown.tsx
+  s_e2c06dc675aae3::t_d6ee7d8b417bb3 11-12,374,475-476
+apps/web/src/pages/AskView.tsx
+  s_e2c06dc675aae3::t_5050d88039abc7 5,7-8,38,43,45,78,81-97,210,579,839-843,845,847,850,852,860-864,867-869,874,879-888,892-894,902,911-916,924-926,934-936,941,943-967,973-1051,1078-1382
+apps/web/src/pages/FileViewers.tsx
+  s_e2c06dc675aae3::t_17ea1a50d8ee19 7,109,125,131-135,175-197,239-249,341-354,361,363-365,369,372,376-377
+apps/web/src/pages/FilesView.tsx
+  s_e2c06dc675aae3::t_e82a7f7fda8868 33,125,274,276-278,285,301,303,347-348,403,411,415-416,454-475
+apps/web/src/services/ask.ts
+  s_e2c06dc675aae3::t_f4c1aee3c1ec14 149-187,203-207
+apps/web/src/services/calendar.ts
+  s_e2c06dc675aae3::t_063b88ce61e966 1-82
+apps/web/src/services/files.ts
+  s_e2c06dc675aae3::t_1b61ce940d4692 1,78-80,84,130,191
+apps/web/src/store/chat.ts
+  s_e2c06dc675aae3::t_0a023962117206 39-42
+docker-compose.yml
+  s_e2c06dc675aae3::t_5bc772b0954093 120-124,163-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ef28a457c5ae764c660e4ac6e1152422070fdbd8",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_e2c06dc675aae3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "62b0f149-3457-42cc-b98c-efad0f17aca5",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

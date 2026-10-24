@@ -1,0 +1,74 @@
+apps/api/README.md
+  s_e2c06dc675aae3::t_b19afe4e3089f7 146-161,170-174
+apps/api/api/routes/file_sources.py
+  s_e2c06dc675aae3::t_59159bb1a4f01a 1-94
+apps/api/api/routes/files.py
+  s_e2c06dc675aae3::t_6ec4cee1b04fac 88-127
+apps/api/api/routes/reviews.py
+  s_e2c06dc675aae3::t_31ce253111e85a 85,89-90,160,167
+apps/api/core/models.py
+  s_e2c06dc675aae3::t_457970126bfae2 886-894,905-907
+apps/api/core/schema.py
+  s_e2c06dc675aae3::t_84850a6d83fd1d 392-399
+apps/api/db/migrations/013_file_sharing.sql
+  s_e2c06dc675aae3::t_9f049ab4605148 1-9
+apps/api/keeper/review_workflows.py
+  s_e2c06dc675aae3::t_a4225bc8bc332e 706-719,727,729,731,745-749,757,761-764
+apps/api/loombot/ask_agent.py
+  s_e2c06dc675aae3::t_efafcd812e10ff 21,83-84,375-381,1992-2017,2337-2341,2352,2357-2365,2722,2724,2996-2997,3113-3114,3134-3142,3167-3169
+apps/api/loombot/files.py
+  s_e2c06dc675aae3::t_97f4c19f5ac025 65-66,258-262,667-859
+apps/api/loombot/web_search.py
+  s_e2c06dc675aae3::t_0ba048bf9414a0 75-99,105-236,381,385-390,393
+apps/api/main.py
+  s_e2c06dc675aae3::t_4c20a515744740 89,163
+apps/api/shuttle/notification_delivery.py
+  s_e2c06dc675aae3::t_58c6d59bf0bb50 72-97,105,110-130,143,145,153
+apps/api/tests/test_file_sharing_and_sources.py
+  s_e2c06dc675aae3::t_5289deaa0b8e1a 1-351
+apps/api/weaver/file_sources.py
+  s_e2c06dc675aae3::t_666bb5486dcdd2 1-537
+apps/web/src/components/FilePicker.tsx
+  s_e2c06dc675aae3::t_168d813c8ed78b 1-159
+apps/web/src/pages/AskView.tsx
+  s_e2c06dc675aae3::t_e5ac0edabbfdc0 34,50-57,65,644-645,681-686,772-822,841-843
+apps/web/src/pages/Dashboard.tsx
+  s_e2c06dc675aae3::t_e2754158273f84 32,97,116-126,167,322
+apps/web/src/pages/FileSharing.tsx
+  s_e2c06dc675aae3::t_2091ee293164a2 1-292
+apps/web/src/pages/FileSources.tsx
+  s_e2c06dc675aae3::t_409e5d761d270a 1-639
+apps/web/src/pages/FileViewers.tsx
+  s_e2c06dc675aae3::t_92946941b9da69 33,230,284,487-537,597,636
+apps/web/src/pages/FilesView.tsx
+  s_e2c06dc675aae3::t_319e5a17b66c1e 15,34,36-37,39,41,50,53-55,79-115,140-147,170-173,177-178,191,219-248,305,311,341-349,794,831
+apps/web/src/services/ask.ts
+  s_e2c06dc675aae3::t_6688789fc666fe 60-67,76
+apps/web/src/services/files.ts
+  s_e2c06dc675aae3::t_22387739b469f9 37-42,240-287
+apps/web/src/services/reviews.ts
+  s_e2c06dc675aae3::t_4a80657382b3ef 106,111-112,120
+apps/web/src/services/sources.ts
+  s_e2c06dc675aae3::t_92be3e6d3b8840 1-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8de00f85c283eefcc414fe5fc2f201aa2dfa7c63",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_e2c06dc675aae3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "62b0f149-3457-42cc-b98c-efad0f17aca5",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

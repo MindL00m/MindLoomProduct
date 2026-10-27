@@ -15,9 +15,21 @@ export interface StepAnchor {
   windowTitle?: string | null;
 }
 
+/** Page control recorded by the Chrome extension; never holds a field value. */
+export interface BrowserAnchor {
+  url: string;
+  role: string;
+  name: string;
+  href?: string | null;
+  selector: string;
+  needsValue?: boolean;
+  needs_value?: boolean;
+}
+
 export interface GuideStep {
   text: string;
   anchor?: StepAnchor | null;
+  browser_anchor?: BrowserAnchor | null;
 }
 
 export interface SkillFile {
@@ -80,6 +92,13 @@ export function guideAutoStepLabel(skill: SkillFile): string | null {
   const auto = steps.filter((step) => step.anchor).length;
   if (!auto) return null;
   return `${auto}/${steps.length} steps auto-detect`;
+}
+
+/** Whether a run performs this step itself (a click, menu, focus, or page change). */
+export function stepRunsAutomatically(step: GuideStep): boolean {
+  if (step.anchor) return !["field_focus", "field_blur"].includes(step.anchor.action);
+  if (step.browser_anchor) return !(step.browser_anchor.needsValue ?? step.browser_anchor.needs_value);
+  return false;
 }
 
 export function skillVisibilityLabel(skill: SkillFile): string {

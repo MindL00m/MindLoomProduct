@@ -163,8 +163,31 @@ Approved Skill Files play back in Loom Capture as floating, step-by-step guides.
 Matching depends on what macOS Accessibility reports. Controls that don't take focus
 when clicked (some buttons, custom-drawn UIs) won't auto-advance; use **Next** for those.
 
-The matcher lives in `Sources/GuideCore` with no AppKit dependency. Command Line Tools
-don't ship XCTest, so its checks run as an executable:
+## Skill runs
+
+**Run** on an approved skill in the web app's **Workflows** page creates a run. Loom
+Capture polls for it, claims it, and walks the steps in order in the guide overlay:
+
+- **Desktop click, menu, focus, navigate anchors:** Loom finds the control with the same
+  matcher guides use, presses it (`AXPress`), sets focus, or raises the window, then
+  waits up to 4 seconds to observe the result before moving on. It only acts in
+  allowlisted apps and never sets a field's value.
+- **Browser anchors:** the MindLoom Chrome extension clicks the recorded control. Loom
+  shows the step and waits; after 30 seconds without the extension it pauses.
+- **Fields, steps without an anchor, and anything that fails:** the run pauses on that
+  step with **Next**. Loom never retries with a different control, and a control that
+  matches more than once counts as a failure, not a guess.
+
+**Stop run** in the overlay or on the web page stops it; nothing more is performed.
+Loom Capture only starts runs created in the last 10 minutes.
+
+If the app doesn't report a pressed button (some native buttons and closed menus
+don't move focus), the step pauses as *action failed* even though the press may have
+happened. The overlay says to check the app before clicking Next.
+
+The matcher and the run decision (`RunDecision.decide`) live in `Sources/GuideCore`
+with no AppKit dependency. Command Line Tools don't ship XCTest, so their checks run
+as an executable:
 
 ```bash
 swift run GuideCoreChecks
@@ -214,5 +237,16 @@ swift run GuideCoreChecks
 ```
 
 `POST /captures/activity-sessions/{sessionId}/analyze` drafts a Skill File from those summaries (text-only LLM; no vision). The drafter links each step to an anchor where it can, which fills the skill's `bundle_ids` and `guide_steps`.
+
+Skill runs (all scoped to the signed-in user):
+
+| Route | Caller | Effect |
+| --- | --- | --- |
+| `POST /captures/skill-runs` `{skill_id}` | Web | `pending` at step 0; approved, viewable skills only |
+| `GET /captures/skill-runs?status=pending` | Loom Capture | Runs to pick up |
+| `POST /captures/skill-runs/{id}/claim` | Loom Capture | `pending` → `running`; a second claim gets 409 |
+| `GET /captures/skill-runs/{id}` | All | Run plus its guide payload |
+| `POST /captures/skill-runs/{id}/advance` `{step_index, outcome, wait_reason?, error?}` | Loom Capture, extension | `done`, `waiting`, or `failed` for the current step only (else 409) |
+| `POST /captures/skill-runs/{id}/stop` | Web, Loom Capture | `stopped` |
 
 `GET /captures/guides[?bundle_id=…]` returns approved Skill Files the caller can see, shaped for playback (`skill_id`, `title`, `bundle_ids`, `steps[{text, anchor}]`, `warnings`, `important_fields`). Skills without anchors, such as older or expert-answer skills, come back as manual-only steps. `GET /captures/guides/{skill_id}` returns a single guide.

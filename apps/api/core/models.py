@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal, Optional, get_args
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 PersonStatus = Literal["active", "inactive"]
 
@@ -24,6 +25,31 @@ IssueStatus = Literal["open", "closed"]
 DocumentStatus = Literal["pending", "processed", "failed"]
 
 
+class BrowserAnchor(BaseModel):
+    """Page control identity the Chrome extension can find again. Never holds a field value."""
+
+    url: str
+    role: str = ""
+    name: str = ""
+    href: Optional[str] = None
+    selector: str = ""
+    needs_value: bool = Field(default=False, alias="needsValue")
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("url")
+    @classmethod
+    def _origin_and_path(cls, value: str) -> str:
+        parts = urlsplit(value.strip())
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+    @field_validator("href")
+    @classmethod
+    def _path_only(cls, value: Optional[str]) -> Optional[str]:
+        path = urlsplit(value.strip()).path if value else ""
+        return path or None
+
+
 class CaptureCreate(BaseModel):
     """Approved browser screenshot uploaded by the MindLoom extension."""
 
@@ -32,6 +58,7 @@ class CaptureCreate(BaseModel):
     data_url: str = Field(alias="dataUrl")
     url: str = ""
     tab_title: str = Field(default="", alias="tabTitle")
+    browser_anchor: Optional[BrowserAnchor] = Field(default=None, alias="browserAnchor")
     window_id: int | None = Field(default=None, alias="windowId")
     session_id: str = Field(default="", alias="sessionId")
     note: str = ""
@@ -45,6 +72,7 @@ class CaptureRecord(BaseModel):
     timestamp: int
     url: str = ""
     tab_title: str = ""
+    browser_anchor: Optional[BrowserAnchor] = None
     window_id: int | None = None
     filepath: str
     session_id: str = ""
@@ -96,10 +124,18 @@ class StepAnchor(BaseModel):
 
 
 class GuideStep(BaseModel):
-    """One walkthrough step; ``anchor`` is None when the step needs a manual Next."""
+    """One walkthrough step: a native ``anchor``, a page ``browser_anchor``, or neither
+    when the step needs a manual Next."""
 
     text: str
     anchor: Optional[StepAnchor] = None
+    browser_anchor: Optional[BrowserAnchor] = None
+
+    @model_validator(mode="after")
+    def _at_most_one_anchor(self) -> "GuideStep":
+        if self.anchor is not None and self.browser_anchor is not None:
+            raise ValueError("A guide step has at most one anchor.")
+        return self
 
 
 class ActivityTaskSummary(BaseModel):
@@ -185,6 +221,52 @@ class GuideSummary(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     important_fields: list[str] = Field(default_factory=list)
     updated_at: datetime
+
+
+SkillRunStatus = Literal["pending", "running", "waiting", "completed", "stopped", "failed"]
+SkillRunWaitReason = Literal["no_anchor", "needs_value", "action_failed", "agent_offline"]
+
+
+class SkillRun(BaseModel):
+    """One execution of an approved Skill File, performed by its user's Mac app and extension."""
+
+    run_id: str
+    org_id: str
+    user_id: str
+    skill_id: str
+    status: SkillRunStatus = "pending"
+    step_index: int = 0
+    wait_reason: Optional[SkillRunWaitReason] = None
+    error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillRunDetail(SkillRun):
+    """A run plus its guide; ``guide`` is None once the skill can no longer run."""
+
+    guide: Optional[GuideSummary] = None
+
+
+class SkillRunCreate(BaseModel):
+    skill_id: str
+
+
+class SkillRunAdvance(BaseModel):
+    """Report on the current step: done, paused for the person, or failed for good."""
+
+    step_index: int = Field(ge=0)
+    outcome: Literal["done", "waiting", "failed"]
+    wait_reason: Optional[SkillRunWaitReason] = None
+    error: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _outcome_fields(self) -> "SkillRunAdvance":
+        if (self.outcome == "waiting") != (self.wait_reason is not None):
+            raise ValueError("wait_reason is required for waiting and only allowed there.")
+        if self.outcome == "failed" and not (self.error or "").strip():
+            raise ValueError("error is required when the outcome is failed.")
+        return self
 
 
 class SkillFileReview(BaseModel):

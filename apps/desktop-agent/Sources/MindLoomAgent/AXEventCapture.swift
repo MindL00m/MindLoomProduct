@@ -23,6 +23,7 @@ final class AXEventCapture {
         if let observer, let element = observedElement {
             AXObserverRemoveNotification(observer, element, kAXFocusedUIElementChangedNotification as CFString)
             AXObserverRemoveNotification(observer, element, kAXTitleChangedNotification as CFString)
+            AXObserverRemoveNotification(observer, element, kAXFocusedWindowChangedNotification as CFString)
             AXObserverRemoveNotification(observer, element, axSelectedMenuItemChangedNotification)
         }
         if let observer {
@@ -60,6 +61,7 @@ final class AXEventCapture {
         let appElement = AXUIElementCreateApplication(pid)
         AXObserverAddNotification(newObserver, appElement, kAXFocusedUIElementChangedNotification as CFString, selfPtr)
         AXObserverAddNotification(newObserver, appElement, kAXTitleChangedNotification as CFString, selfPtr)
+        AXObserverAddNotification(newObserver, appElement, kAXFocusedWindowChangedNotification as CFString, selfPtr)
         AXObserverAddNotification(newObserver, appElement, axSelectedMenuItemChangedNotification, selfPtr)
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(newObserver), .defaultMode)
 
@@ -81,13 +83,14 @@ final class AXEventCapture {
         guard let app = NSRunningApplication(processIdentifier: observedPid) else { return }
         let focusedChanged = kAXFocusedUIElementChangedNotification as String
         let titleChanged = kAXTitleChangedNotification as String
+        let windowChanged = kAXFocusedWindowChangedNotification as String
         let menuChanged = axSelectedMenuItemChangedNotification as String
         if notification == focusedChanged {
             emitFocusedElement(app: app, element: element)
             if let focused = copyFocusedElement(appElement: AXUIElementCreateApplication(observedPid)) {
                 emitFocusedElement(app: app, element: focused)
             }
-        } else if notification == titleChanged {
+        } else if notification == titleChanged || notification == windowChanged {
             let title = Redaction.sanitizeWindowTitle(copyStringAttribute(element, kAXTitleAttribute as String) ?? "")
             if !title.isEmpty, title != lastWindowTitle {
                 lastWindowTitle = title
@@ -126,7 +129,7 @@ final class AXEventCapture {
 
     private func emitMenu(app: NSRunningApplication, element: AXUIElement) {
         let role = copyStringAttribute(element, kAXRoleAttribute as String) ?? "AXMenuItem"
-        let title = Redaction.sanitizeTitle(copyStringAttribute(element, kAXTitleAttribute as String))
+        let title = Self.menuTitle(element)
         if Redaction.isSensitiveRole(role) { return }
         let event = LocalInteractionEvent(
             ts: Date(),
@@ -142,11 +145,7 @@ final class AXEventCapture {
 
     private func emitFocusedElement(app: NSRunningApplication, element: AXUIElement) {
         let role = copyStringAttribute(element, kAXRoleAttribute as String) ?? "AXUnknown"
-        // Never read AXValue — content stays on device / never captured.
-        let rawTitle = copyStringAttribute(element, kAXTitleAttribute as String)
-            ?? copyStringAttribute(element, kAXDescriptionAttribute as String)
-            ?? copyStringAttribute(element, kAXHelpAttribute as String)
-        let title = Redaction.sanitizeTitle(rawTitle)
+        let title = Self.controlTitle(element)
         if Redaction.isSensitiveRole(role) {
             // Record that a secure field was focused, without any label/value.
             let event = LocalInteractionEvent(
@@ -212,10 +211,7 @@ final class AXEventCapture {
     }
 
     private func copyStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
-        var value: AnyObject?
-        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
-        guard status == .success, let value else { return nil }
-        return value as? String
+        Self.stringAttribute(element, attribute)
     }
 
     private func buildPath(_ element: AXUIElement) -> [String] {
@@ -235,5 +231,29 @@ final class AXEventCapture {
             current = (parent as! AXUIElement)
         }
         return path
+    }
+}
+
+// MARK: - Control identity (shared with StepPerformer)
+
+extension AXEventCapture {
+    /// Label recorded for a focused control. Never reads AXValue — content stays on device.
+    static func controlTitle(_ element: AXUIElement) -> String? {
+        Redaction.sanitizeTitle(
+            stringAttribute(element, kAXTitleAttribute as String)
+                ?? stringAttribute(element, kAXDescriptionAttribute as String)
+                ?? stringAttribute(element, kAXHelpAttribute as String)
+        )
+    }
+
+    static func menuTitle(_ element: AXUIElement) -> String? {
+        Redaction.sanitizeTitle(stringAttribute(element, kAXTitleAttribute as String))
+    }
+
+    static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: AnyObject?
+        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        guard status == .success, let value else { return nil }
+        return value as? String
     }
 }

@@ -77,6 +77,78 @@ final class APIClient {
         }
     }
 
+    // MARK: - Skill runs
+
+    enum RunOutcome {
+        case done
+        case waiting(SkillRunWaitReason, detail: String?)
+        case failed(String)
+    }
+
+    func listSkillRuns(status: SkillRunStatus) async throws -> [SkillRun] {
+        try await sendRun("GET", "/captures/skill-runs?status=\(status.rawValue)")
+    }
+
+    func getSkillRun(_ runId: String) async throws -> SkillRun {
+        try await sendRun("GET", "/captures/skill-runs/\(pathComponent(runId))")
+    }
+
+    func claimSkillRun(_ runId: String) async throws -> SkillRun {
+        try await sendRun("POST", "/captures/skill-runs/\(pathComponent(runId))/claim")
+    }
+
+    @discardableResult
+    func advanceSkillRun(_ runId: String, stepIndex: Int, outcome: RunOutcome) async throws -> SkillRun {
+        var body: [String: Any] = ["step_index": stepIndex]
+        switch outcome {
+        case .done:
+            body["outcome"] = "done"
+        case .waiting(let reason, let detail):
+            body["outcome"] = "waiting"
+            body["wait_reason"] = reason.rawValue
+            if let detail { body["error"] = Self.apiText(detail) }
+        case .failed(let error):
+            body["outcome"] = "failed"
+            body["error"] = Self.apiText(error)
+        }
+        return try await sendRun(
+            "POST",
+            "/captures/skill-runs/\(pathComponent(runId))/advance",
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+    }
+
+    @discardableResult
+    func stopSkillRun(_ runId: String) async throws -> SkillRun {
+        try await sendRun("POST", "/captures/skill-runs/\(pathComponent(runId))/stop")
+    }
+
+    private func sendRun<T: Decodable>(_ method: String, _ path: String, body: Data? = nil) async throws -> T {
+        var request = URLRequest(url: try endpoint(path))
+        request.httpMethod = method
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        try applyAuth(&request)
+        let (data, response) = try await session.data(for: request)
+        try validate(response: response, data: data)
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIClientError.decodeFailed
+        }
+    }
+
+    /// The API caps run errors at 500 code points.
+    private static func apiText(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.prefix(500)))
+    }
+
+    private func pathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
+    }
+
     private func applyAuth(_ request: inout URLRequest) throws {
         let token = config.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { throw APIClientError.missingAccessToken }

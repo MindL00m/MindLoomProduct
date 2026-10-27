@@ -23,6 +23,23 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
             refreshObserverAttachment()
         }
     }
+    /// Live events that confirm a skill run's performed step. Never logged or uploaded.
+    var onRunEvent: ((LocalInteractionEvent) -> Void)?
+    /// A skill run confirms each Accessibility action by observing it.
+    var runObservationEnabled = false {
+        didSet {
+            guard runObservationEnabled != oldValue else { return }
+            refreshObserverAttachment()
+        }
+    }
+    /// The app a run acts in, observed even when it isn't frontmost (activating
+    /// another app is only a request).
+    var runTargetApp: NSRunningApplication? {
+        didSet {
+            guard runTargetApp?.processIdentifier != oldValue?.processIdentifier else { return }
+            refreshObserverAttachment()
+        }
+    }
 
     private(set) var config: AgentConfig
     private let axCapture = AXEventCapture()
@@ -184,6 +201,9 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
         if guideObservationEnabled {
             onGuideEvent?(event)
         }
+        if runObservationEnabled {
+            onRunEvent?(event)
+        }
         guard sessionId != nil, !isPaused, status == .capturing else { return }
         AgentConfigStore.appendLocalEvent(event)
         aggregator.ingest(event)
@@ -208,10 +228,11 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
         }
     }
 
-    /// Attach to the frontmost allowlisted app while capture or a guide needs events.
+    /// Attach to the frontmost allowlisted app while capture, a guide, or a run needs events.
     private func refreshObserverAttachment() {
         let capturing = sessionId != nil && !isPaused
-        guard AccessibilityPermission.isTrusted, capturing || guideObservationEnabled else {
+        guard AccessibilityPermission.isTrusted,
+              capturing || guideObservationEnabled || runObservationEnabled else {
             axCapture.stop()
             return
         }
@@ -280,6 +301,7 @@ final class CaptureEngine: NSObject, AXEventCaptureDelegate {
     private func attachToFrontmostAllowlistedApp() {
         let selfPid = ProcessInfo.processInfo.processIdentifier
         let candidates: [NSRunningApplication] = [
+            runObservationEnabled ? runTargetApp : nil,
             NSWorkspace.shared.frontmostApplication,
             lastUserFacingApp,
         ].compactMap { $0 }

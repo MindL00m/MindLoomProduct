@@ -7,6 +7,8 @@ const API_BASE_KEY = "apiBase";
 const ACCESS_TOKEN_KEY = "accessToken";
 const CAPTURE_INTERVAL_MS = 10_000;
 const TAB_CAPTURE_DEBOUNCE_MS = 3_000;
+const NAVIGATION_SETTLE_MS = 1_200;
+const CAPTURE_RETRY_MS = 600;
 const MAX_CAPTURES = 50;
 const DEFAULT_API_BASE = "http://localhost:8000";
 
@@ -27,6 +29,11 @@ let approvedCaptures = [];
 let captureIntervalId = null;
 let captureInProgress = false;
 let lastTabChangeCaptureTime = 0;
+/** An anchored capture that arrived mid-capture; anchors are not dropped. */
+let deferredAnchorCapture = null;
+/** Last origin+path seen per tab, so only real page changes count as navigation. */
+const lastPageByTab = new Map();
+let navigationTimer = null;
 
 async function persistQueues() {
   await chrome.storage.local.set({
@@ -63,6 +70,16 @@ function logTabEvent(event, state) {
     title: state.title,
     windowId: state.windowId,
   });
+}
+
+/** Origin and path only: what a BrowserAnchor stores for a page. */
+function originAndPath(url) {
+  try {
+    const { origin, pathname } = new URL(url);
+    return `${origin}${pathname}`;
+  } catch {
+    return "";
+  }
 }
 
 function isCapturableUrl(url) {
@@ -136,6 +153,7 @@ async function postCaptureToBackend(capture) {
       dataUrl: capture.dataUrl,
       url: capture.url,
       tabTitle: capture.tabTitle,
+      browserAnchor: capture.browserAnchor || null,
       windowId: capture.windowId,
       sessionId: capture.sessionId,
       note: capture.note || "",
@@ -247,10 +265,18 @@ async function syncCaptureSchedule() {
   takeCapture("enabled");
 }
 
-async function takeCapture(reason) {
+/**
+ * Screenshot the active tab. `browserAnchor` is the control a click activated, or the
+ * page a navigation landed on; it travels with the screenshot to the API.
+ */
+async function takeCapture(reason, browserAnchor = null) {
   if (!(await getCaptureEnabled())) return;
 
   if (captureInProgress) {
+    if (browserAnchor) {
+      deferredAnchorCapture = { reason, browserAnchor };
+      return;
+    }
     console.log("[MindLoom Capture] Capture skipped (in progress):", reason);
     return;
   }
@@ -286,14 +312,21 @@ async function takeCapture(reason) {
     if (!(await getCaptureEnabled())) return;
 
     let dataUrl;
-    try {
-      dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-        format: "png",
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.warn("[MindLoom Capture] Capture failed (skipped):", reason, message);
-      return;
+    for (let attempt = 0; !dataUrl; attempt += 1) {
+      try {
+        dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: "png",
+        });
+      } catch (err) {
+        // Chrome allows ~2 captures a second; an anchored capture waits once and retries.
+        if (browserAnchor && attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, CAPTURE_RETRY_MS));
+          continue;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("[MindLoom Capture] Capture failed (skipped):", reason, message);
+        return;
+      }
     }
 
     if (!(await getCaptureEnabled())) return;
@@ -304,6 +337,7 @@ async function takeCapture(reason) {
       dataUrl,
       url: tab.url || "",
       tabTitle: tab.title || "",
+      browserAnchor,
       windowId: tab.windowId,
       sessionId: await getSessionId(),
       note: "",
@@ -319,7 +353,24 @@ async function takeCapture(reason) {
     });
   } finally {
     captureInProgress = false;
+    if (deferredAnchorCapture) {
+      const next = deferredAnchorCapture;
+      deferredAnchorCapture = null;
+      void takeCapture(next.reason, next.browserAnchor);
+    }
   }
+}
+
+/** A top-frame page change in the active tab; captured once the page settles. */
+function noteNavigation(tab) {
+  if (!tab.active || !isCapturableUrl(tab.url)) return;
+  const page = originAndPath(tab.url);
+  if (!page || lastPageByTab.get(tab.id) === page) return;
+  lastPageByTab.set(tab.id, page);
+  clearTimeout(navigationTimer);
+  navigationTimer = setTimeout(() => {
+    void takeCapture("navigation", { url: page, role: "document", name: "", selector: "", needsValue: false });
+  }, NAVIGATION_SETTLE_MS);
 }
 
 async function maybeCaptureOnTabChange() {
@@ -400,6 +451,13 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.title || changeInfo.status === "complete") {
     updateActiveTab(tab);
   }
+  if (changeInfo.url || changeInfo.status === "complete") {
+    noteNavigation(tab);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  lastPageByTab.delete(tabId);
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -425,7 +483,15 @@ chrome.runtime.onInstalled.addListener(() => {
   updatePendingBadge();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "BROWSER_ANCHOR") {
+    // Only the top frame of the tab being captured records anchors.
+    if (sender.tab?.active && sender.frameId === 0 && message.anchor) {
+      void takeCapture("click", message.anchor);
+    }
+    return false;
+  }
+
   if (message.type === "GET_ACTIVE_TAB") {
     sendResponse({ ...activeTabState });
     return false;
@@ -506,3 +572,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 syncCaptureSchedule();
 refreshActiveTab();
 restoreQueues();
+
+importScripts("run-client.js");

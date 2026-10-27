@@ -32,6 +32,7 @@ from keeper.visibility_acl import (
 from core.models import (
     ActivitySessionCreate,
     ActivitySessionRecord,
+    BrowserAnchor,
     CaptureCreate,
     CaptureRecord,
     CaptureSummary,
@@ -60,7 +61,11 @@ goal, ordered steps, important fields or warning indicators, decision guidance,
 and links to visible projects/processes/customers/systems. Ask only concise
 follow-up questions needed to resolve material uncertainty. Return JSON with:
 title, purpose, application, context, steps, important_fields, warnings,
-decision_guidance, follow_up_questions. Every list value must be a list of strings.
+decision_guidance, follow_up_questions, step_anchor_ids.
+Every list value must be a list of strings, except step_anchor_ids: a list the
+same length as steps where each entry is the id of the recorded anchor (for
+example "b3") for the control the step activates, or null if no anchor fits.
+Only use anchor ids that appear next to a step candidate.
 Never invent confidential values that are blurred or absent."""
 
 ACTIVITY_WORKFLOW_PROMPT = """Analyze this ordered sequence of on-device desktop activity
@@ -130,6 +135,7 @@ def _record_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "timestamp": int(row["timestamp"]),
         "url": row.get("url") or "",
         "tab_title": row.get("tab_title") or "",
+        "browser_anchor": row.get("browser_anchor"),
         "window_id": row.get("window_id"),
         "filepath": row.get("filepath") or row.get("blob_key") or "",
         "session_id": row.get("session_id") or "",
@@ -173,6 +179,7 @@ async def save_capture(
         timestamp=payload.timestamp,
         url=payload.url,
         tab_title=payload.tab_title,
+        browser_anchor=payload.browser_anchor,
         window_id=payload.window_id,
         filepath=storage_path,
         session_id=payload.session_id,
@@ -194,10 +201,12 @@ async def save_capture(
                     """
                     INSERT INTO captures (
                         capture_id, org_id, user_id, timestamp_ms, url, tab_title,
-                        window_id, blob_key, session_id, note, redactions_json
+                        browser_anchor_json, window_id, blob_key, session_id, note,
+                        redactions_json
                     ) VALUES (
                         :capture_id, :org_id, :user_id, :timestamp_ms, :url, :tab_title,
-                        :window_id, :blob_key, :session_id, :note, :redactions_json
+                        :browser_anchor_json, :window_id, :blob_key, :session_id, :note,
+                        :redactions_json
                     )
                     ON CONFLICT (capture_id) DO UPDATE SET
                         org_id = EXCLUDED.org_id,
@@ -205,6 +214,7 @@ async def save_capture(
                         timestamp_ms = EXCLUDED.timestamp_ms,
                         url = EXCLUDED.url,
                         tab_title = EXCLUDED.tab_title,
+                        browser_anchor_json = EXCLUDED.browser_anchor_json,
                         window_id = EXCLUDED.window_id,
                         blob_key = EXCLUDED.blob_key,
                         session_id = EXCLUDED.session_id,
@@ -219,6 +229,11 @@ async def save_capture(
                     "timestamp_ms": record.timestamp,
                     "url": record.url,
                     "tab_title": record.tab_title,
+                    "browser_anchor_json": (
+                        record.browser_anchor.model_dump_json()
+                        if record.browser_anchor
+                        else None
+                    ),
                     "window_id": record.window_id,
                     "blob_key": storage_path,
                     "session_id": record.session_id,
@@ -243,8 +258,8 @@ async def list_captures(*, org_id: str | None = None) -> list[dict[str, Any]]:
                 text(
                     """
                     SELECT capture_id AS id, timestamp_ms AS timestamp, url, tab_title,
-                           window_id, blob_key AS filepath, session_id, note,
-                           redactions_json, org_id, user_id
+                           browser_anchor_json, window_id, blob_key AS filepath,
+                           session_id, note, redactions_json, org_id, user_id
                     FROM captures
                     ORDER BY timestamp_ms
                     """
@@ -255,8 +270,8 @@ async def list_captures(*, org_id: str | None = None) -> list[dict[str, Any]]:
                 text(
                     """
                     SELECT capture_id AS id, timestamp_ms AS timestamp, url, tab_title,
-                           window_id, blob_key AS filepath, session_id, note,
-                           redactions_json, org_id, user_id
+                           browser_anchor_json, window_id, blob_key AS filepath,
+                           session_id, note, redactions_json, org_id, user_id
                     FROM captures
                     WHERE org_id = :org_id
                     ORDER BY timestamp_ms
@@ -268,6 +283,8 @@ async def list_captures(*, org_id: str | None = None) -> list[dict[str, Any]]:
         for mapping in result.mappings().all():
             row = dict(mapping)
             row["redactions"] = json.loads(row.pop("redactions_json") or "[]")
+            anchor_json = row.pop("browser_anchor_json", None)
+            row["browser_anchor"] = json.loads(anchor_json) if anchor_json else None
             rows.append(_record_from_row(row))
 
     _, captures_path, _, _, _ = _legacy_paths()
@@ -531,6 +548,20 @@ def describe_anchor(anchor: StepAnchor) -> str:
     return f'Focus "{label}"'
 
 
+def _anchor_position(anchor_ids: list[Any], index: int, prefix: str, count: int) -> int | None:
+    """Index into the anchor list for ``<prefix><N>`` at ``anchor_ids[index]``, else None."""
+
+    raw = anchor_ids[index] if index < len(anchor_ids) else None
+    if not isinstance(raw, str):
+        return None
+    token = raw.strip().strip("[]").lower()
+    if token.startswith(prefix) and token[1:].isdigit():
+        position = int(token[1:]) - 1
+        if 0 <= position < count:
+            return position
+    return None
+
+
 def resolve_guide_steps(
     steps: list[str],
     anchor_ids: list[Any],
@@ -540,29 +571,53 @@ def resolve_guide_steps(
 
     guide: list[GuideStep] = []
     for index, step in enumerate(steps):
-        raw = anchor_ids[index] if index < len(anchor_ids) else None
-        anchor: StepAnchor | None = None
-        if isinstance(raw, str):
-            token = raw.strip().strip("[]").lower()
-            if token.startswith("a") and token[1:].isdigit():
-                position = int(token[1:]) - 1
-                if 0 <= position < len(anchors):
-                    anchor = anchors[position]
+        position = _anchor_position(anchor_ids, index, "a", len(anchors))
+        anchor = anchors[position] if position is not None else None
         guide.append(GuideStep(text=step, anchor=anchor))
     return guide
+
+
+def resolve_browser_guide_steps(
+    steps: list[str],
+    anchor_ids: list[Any],
+    anchors: list[BrowserAnchor],
+) -> list[GuideStep]:
+    """Attach recorded page anchors by ``b<N>`` id; anything else stays a manual step."""
+
+    guide: list[GuideStep] = []
+    for index, step in enumerate(steps):
+        position = _anchor_position(anchor_ids, index, "b", len(anchors))
+        anchor = anchors[position] if position is not None else None
+        guide.append(GuideStep(text=step, browser_anchor=anchor))
+    return guide
+
+
+def describe_browser_anchor(anchor: BrowserAnchor) -> str:
+    label = f'"{anchor.name}"' if anchor.name else (anchor.selector or "control")
+    if not anchor.name and not anchor.selector:
+        return f"Open page {anchor.url}"
+    if anchor.needs_value:
+        return f"Fill in {anchor.role or 'field'} {label} on {anchor.url}"
+    return f"Click {anchor.role or 'control'} {label} on {anchor.url}"
 
 
 def realign_guide_steps(previous: list[GuideStep], steps: list[str]) -> list[GuideStep]:
     """Rebuild guide steps after a reviewer edit, keeping anchors only for unchanged text."""
 
-    pool: dict[str, list[StepAnchor | None]] = {}
+    pool: dict[str, list[GuideStep]] = {}
     for item in previous:
-        pool.setdefault(item.text, []).append(item.anchor)
+        pool.setdefault(item.text, []).append(item)
     guide: list[GuideStep] = []
     for step in steps:
         candidates = pool.get(step)
-        anchor = candidates.pop(0) if candidates else None
-        guide.append(GuideStep(text=step, anchor=anchor))
+        kept = candidates.pop(0) if candidates else None
+        guide.append(
+            GuideStep(
+                text=step,
+                anchor=kept.anchor if kept else None,
+                browser_anchor=kept.browser_anchor if kept else None,
+            )
+        )
     return guide
 
 
@@ -784,9 +839,16 @@ async def analyze_capture_session(session_id: str, *, org_id: str) -> SkillFileD
             + "\n".join(item.note for item in captures if item.note)
         ),
     }]
+    anchors: list[BrowserAnchor] = []
     for index, capture in enumerate(captures, 1):
+        candidate = f"Step candidate {index}: {capture.tab_title} ({capture.url})"
+        if capture.browser_anchor is not None:
+            anchors.append(capture.browser_anchor)
+            candidate += (
+                f"\nAnchor [b{len(anchors)}]: {describe_browser_anchor(capture.browser_anchor)}"
+            )
         content.extend([
-            {"type": "text", "text": f"Step candidate {index}: {capture.tab_title} ({capture.url})"},
+            {"type": "text", "text": candidate},
             {
                 "type": "image_url",
                 "image_url": {
@@ -811,6 +873,17 @@ async def analyze_capture_session(session_id: str, *, org_id: str) -> SkillFileD
     )
     payload = json.loads(response.choices[0].message.content or "{}")
     now = datetime.now(timezone.utc)
+    steps = [str(item) for item in payload.get("steps") or []]
+    raw_anchor_ids = payload.get("step_anchor_ids")
+    guide_steps = (
+        resolve_browser_guide_steps(
+            steps,
+            raw_anchor_ids if isinstance(raw_anchor_ids, list) else [],
+            anchors,
+        )
+        if anchors
+        else []
+    )
     draft = SkillFileDraft(
         skill_id=str(uuid4()),
         session_id=session_id,
@@ -818,7 +891,8 @@ async def analyze_capture_session(session_id: str, *, org_id: str) -> SkillFileD
         purpose=str(payload.get("purpose") or ""),
         application=str(payload.get("application") or ""),
         context=[str(item) for item in payload.get("context") or []],
-        steps=[str(item) for item in payload.get("steps") or []],
+        steps=steps,
+        guide_steps=guide_steps,
         important_fields=[str(item) for item in payload.get("important_fields") or []],
         warnings=[str(item) for item in payload.get("warnings") or []],
         decision_guidance=[str(item) for item in payload.get("decision_guidance") or []],
@@ -1275,6 +1349,17 @@ async def list_guides(
         if guide.steps:
             guides.append(guide)
     return guides
+
+
+async def get_visible_skill(
+    skill_id: str, *, org_id: str, viewer_user_id: str
+) -> SkillFileDraft | None:
+    """The skill when it exists in the org and the viewer may see it."""
+
+    row = await _get_skill_row(skill_id, org_id=org_id)
+    if row is None or not can_view_skill(row, viewer_user_id):
+        return None
+    return SkillFileDraft.model_validate(row)
 
 
 async def get_guide(skill_id: str, *, org_id: str, viewer_user_id: str) -> GuideSummary:

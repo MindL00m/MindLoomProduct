@@ -59,7 +59,7 @@ public enum GuideHints {
     }
 
     static func searchText(_ step: GuideStep) -> String {
-        [step.text, step.anchor?.title, step.anchor?.windowTitle]
+        [step.text, step.anchor?.title, step.anchor?.windowTitle, step.browserAnchor?.name]
             .compactMap { $0?.lowercased() }
             .joined(separator: " ")
     }

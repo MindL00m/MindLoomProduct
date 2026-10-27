@@ -523,6 +523,29 @@ _RECURRING_EMAILS_SQL = [
 ]
 
 
+# Skill-file execution: page anchors on browser captures, and runs walked by the
+# Mac app and Chrome extension (weaver/skill_runs.py).
+_SKILL_RUNS_SQL = [
+    "ALTER TABLE captures ADD COLUMN IF NOT EXISTS browser_anchor_json TEXT",
+    """CREATE TABLE IF NOT EXISTS skill_runs (
+    run_id       TEXT PRIMARY KEY,
+    org_id       TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id      TEXT NOT NULL,
+    skill_id     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'running', 'waiting', 'completed', 'stopped', 'failed')),
+    step_index   INTEGER NOT NULL DEFAULT 0 CHECK (step_index >= 0),
+    wait_reason  TEXT
+        CHECK (wait_reason IN ('no_anchor', 'needs_value', 'action_failed', 'agent_offline')),
+    error        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_skill_runs_user_status
+  ON skill_runs (org_id, user_id, status, created_at DESC)""",
+]
+
+
 async def ensure_schema() -> None:
     """Create the base schema on an empty database, then apply additive upgrades."""
 
@@ -554,5 +577,7 @@ async def ensure_schema() -> None:
             for statement in _STATUS_TRACKERS_SQL:
                 await session.execute(text(statement))
             for statement in _RECURRING_EMAILS_SQL:
+                await session.execute(text(statement))
+            for statement in _SKILL_RUNS_SQL:
                 await session.execute(text(statement))
     logger.info("Schema check complete (base tables, connections, captures, policies)")

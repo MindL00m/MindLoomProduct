@@ -22,6 +22,16 @@ from weaver.capture_service import (
     summarize_capture,
     update_skill_file,
 )
+from weaver.skill_runs import (
+    SkillRunConflict,
+    SkillRunNotFound,
+    advance_skill_run,
+    claim_skill_run,
+    create_skill_run,
+    get_skill_run,
+    list_skill_runs,
+    stop_skill_run,
+)
 from core.models import (
     ActivitySessionCreate,
     ActivitySessionRecord,
@@ -31,6 +41,11 @@ from core.models import (
     SkillFileDraft,
     SkillFileReview,
     SkillFileUpdate,
+    SkillRun,
+    SkillRunAdvance,
+    SkillRunCreate,
+    SkillRunDetail,
+    SkillRunStatus,
 )
 from core.rate_limit import captures_limit, limit
 
@@ -43,6 +58,14 @@ def _skill_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=403, detail=detail)
     status = 404 if "not found" in detail.lower() else 400
     return HTTPException(status_code=status, detail=detail)
+
+
+def _run_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, SkillRunNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, SkillRunConflict):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("", response_model=CaptureRecord, status_code=201)
@@ -200,3 +223,88 @@ async def review_skill(
         )
     except (ValueError, SkillAccessError) as exc:
         raise _skill_http_error(exc) from exc
+
+
+# --- Skill runs ----------------------------------------------------------------
+# The API only stores the run. The Mac app claims and walks it; the Chrome extension
+# performs browser steps. Every route acts as, and only sees runs of, the caller.
+
+_RUN_ERRORS = (SkillRunNotFound, SkillRunConflict, ValueError)
+
+
+@router.post("/skill-runs", response_model=SkillRun, status_code=201)
+async def start_skill_run(
+    body: Annotated[SkillRunCreate, Body()],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> SkillRun:
+    """Queue a run of an approved skill the caller can view, at step 0."""
+
+    org_id, user_id = ctx
+    try:
+        return await create_skill_run(body.skill_id, org_id=org_id, user_id=user_id)
+    except _RUN_ERRORS as exc:
+        raise _run_http_error(exc) from exc
+
+
+@router.get("/skill-runs", response_model=list[SkillRun])
+async def skill_runs(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    status: Annotated[SkillRunStatus | None, Query()] = None,
+) -> list[SkillRun]:
+    """The caller's runs, newest first; the Mac app polls ``?status=pending``."""
+
+    org_id, user_id = ctx
+    return await list_skill_runs(org_id=org_id, user_id=user_id, status=status)
+
+
+@router.get("/skill-runs/{run_id}", response_model=SkillRunDetail)
+async def skill_run(
+    run_id: str,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> SkillRunDetail:
+    org_id, user_id = ctx
+    try:
+        return await get_skill_run(run_id, org_id=org_id, user_id=user_id)
+    except _RUN_ERRORS as exc:
+        raise _run_http_error(exc) from exc
+
+
+@router.post("/skill-runs/{run_id}/claim", response_model=SkillRun)
+async def claim_run(
+    run_id: str,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> SkillRun:
+    """Mac app takes a pending run. A second claim gets 409."""
+
+    org_id, user_id = ctx
+    try:
+        return await claim_skill_run(run_id, org_id=org_id, user_id=user_id)
+    except _RUN_ERRORS as exc:
+        raise _run_http_error(exc) from exc
+
+
+@router.post("/skill-runs/{run_id}/advance", response_model=SkillRun)
+async def advance_run(
+    run_id: str,
+    body: Annotated[SkillRunAdvance, Body()],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> SkillRun:
+    """Report the current step as done, waiting, or failed. Other steps get 409."""
+
+    org_id, user_id = ctx
+    try:
+        return await advance_skill_run(run_id, body, org_id=org_id, user_id=user_id)
+    except _RUN_ERRORS as exc:
+        raise _run_http_error(exc) from exc
+
+
+@router.post("/skill-runs/{run_id}/stop", response_model=SkillRun)
+async def stop_run(
+    run_id: str,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> SkillRun:
+    org_id, user_id = ctx
+    try:
+        return await stop_skill_run(run_id, org_id=org_id, user_id=user_id)
+    except _RUN_ERRORS as exc:
+        raise _run_http_error(exc) from exc

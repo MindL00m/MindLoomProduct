@@ -36,13 +36,61 @@ public struct StepAnchor: Codable, Equatable, Hashable {
     }
 }
 
+/// Page control identity recorded by the Chrome extension. The extension performs these;
+/// Accessibility anchors are for native controls only.
+public struct BrowserAnchor: Codable, Equatable, Hashable {
+    /// Origin and path only.
+    public var url: String
+    public var role: String
+    /// Accessible name or link text; never an input's value.
+    public var name: String
+    public var href: String?
+    public var selector: String
+    /// The control takes typed or chosen input, which a run never provides.
+    public var needsValue: Bool
+
+    public init(
+        url: String,
+        role: String = "",
+        name: String = "",
+        href: String? = nil,
+        selector: String = "",
+        needsValue: Bool = false
+    ) {
+        self.url = url
+        self.role = role
+        self.name = name
+        self.href = href
+        self.selector = selector
+        self.needsValue = needsValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        url = try container.decode(String.self, forKey: .url)
+        role = try container.decodeIfPresent(String.self, forKey: .role) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        href = try container.decodeIfPresent(String.self, forKey: .href)
+        selector = try container.decodeIfPresent(String.self, forKey: .selector) ?? ""
+        needsValue = try container.decodeIfPresent(Bool.self, forKey: .needsValue) ?? false
+    }
+}
+
+/// One step: a native `anchor`, a page `browserAnchor`, or neither (manual Next).
 public struct GuideStep: Codable, Equatable {
     public var text: String
     public var anchor: StepAnchor?
+    public var browserAnchor: BrowserAnchor?
 
-    public init(text: String, anchor: StepAnchor? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case text, anchor
+        case browserAnchor = "browser_anchor"
+    }
+
+    public init(text: String, anchor: StepAnchor? = nil, browserAnchor: BrowserAnchor? = nil) {
         self.text = text
         self.anchor = anchor
+        self.browserAnchor = browserAnchor
     }
 }
 

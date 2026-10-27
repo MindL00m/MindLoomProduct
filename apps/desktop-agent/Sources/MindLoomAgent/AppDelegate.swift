@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controlPanel: ControlPanel?
     private var engine: CaptureEngine?
     private var guideController: GuideController?
+    private var runWalker: SkillRunWalker?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Regular policy so the control window is a normal visible app window.
@@ -18,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let library = GuideLibrary(config: config)
         let guides = GuideController(engine: engine, library: library)
+        let runs = SkillRunWalker(engine: engine, guides: guides, config: config)
         let panel = ControlPanel(engine: engine, guides: guides, config: config)
         let status = StatusItemController(engine: engine, config: config)
         engine.onStatusChange = { _ in
@@ -27,12 +29,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.onConfigChange = { updated in
             status.reloadConfig(updated)
             library.reloadConfig(updated)
+            runs.reloadConfig(updated)
         }
         library.onChange = {
             panel.refreshGuides()
         }
 
         self.guideController = guides
+        self.runWalker = runs
         self.controlPanel = panel
         self.statusController = status
         panel.show()

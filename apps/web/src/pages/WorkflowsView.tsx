@@ -21,10 +21,12 @@ import {
   type ContentVisibility,
   type SkillFile,
 } from "@/services/skillFiles";
+import { isActiveRun, listSkillRuns, type SkillRun } from "@/services/skillRuns";
 import { Link } from "react-router-dom";
 import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
 import { RecurringWorkflows } from "@/components/RecurringWorkflows";
+import { SkillRunControls } from "@/components/SkillRunControls";
 import { dashboardHref } from "@/lib/navigation";
 
 function statusStyles(status: SkillFile["status"]): string {
@@ -103,15 +105,25 @@ export default function WorkflowsView() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [draftNames, setDraftNames] = useState<Record<string, string>>({});
   const [viewing, setViewing] = useState<SkillFile | null>(null);
+  const [activeRuns, setActiveRuns] = useState<Record<string, SkillRun>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [rows, sessions] = await Promise.all([
+      const [rows, sessions, runs] = await Promise.all([
         listSkillFiles(),
         listActivitySessions().catch(() => [] as ActivitySession[]),
+        listSkillRuns().catch(() => [] as SkillRun[]),
       ]);
+      // Newest first: keep each skill's latest run if it is still going.
+      const latest: Record<string, SkillRun> = {};
+      for (const run of runs) {
+        if (!(run.skill_id in latest)) latest[run.skill_id] = run;
+      }
+      setActiveRuns(
+        Object.fromEntries(Object.entries(latest).filter(([, run]) => isActiveRun(run))),
+      );
       const extensionSkills = rows.filter(isExtensionSkill);
       setSkills(extensionSkills);
       setDraftNames(
@@ -459,6 +471,10 @@ export default function WorkflowsView() {
                     View full skill file
                   </button>
                 </div>
+
+                {skill.status === "approved" && (
+                  <SkillRunControls skill={skill} initialRun={activeRuns[skill.skill_id]} />
+                )}
 
                 {skill.status === "proposed" && (
                   <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">

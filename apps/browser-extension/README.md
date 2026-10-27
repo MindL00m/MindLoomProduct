@@ -54,12 +54,43 @@ With **Capture ON**, the background service worker:
 3. Stay on one tab and navigate to a different URL (e.g. click a link or change the address bar).
    - You should see: `[MindLoom Capture] Active tab URL changed: { tabId, url, title }`
 
+## Page anchors
+
+While capture is on, each click and each top-frame page change also records a page
+anchor with the screenshot: the page's origin and path, the control's role and
+accessible name (or link text), the link path, and a CSS selector built only from
+`id`, `name`, `role`, and `aria-label`. It never reads a field's value. A click in a
+text field, select, or file input records only its label and `needsValue: true`.
+`anchor.js` runs on every page but does nothing until capture is on. When a Skill File
+is drafted, steps the model ties to a recorded anchor keep it; the rest stay manual.
+
+## Skill runs
+
+When you run an approved skill (web app → Workflows → **Run**), Loom Capture on the Mac
+walks it. For each browser step the extension:
+
+1. Finds a tab on the step's origin and path, or opens it in the current window.
+2. Finds the control by selector, then by role and accessible name. No match, or more
+   than one, pauses the run.
+3. Clicks it with `chrome.debugger` (Chrome shows a "started debugging" bar while this
+   is attached) and reports back. It detaches when the run leaves browser steps.
+
+It never types. A step that needs a value pauses with Next in the Loom Capture overlay.
+The run client polls every 10 seconds while idle and every 1.5 seconds during a run,
+using the access token from the popup.
+
+Version 1.5.0 adds the `debugger` and `alarms` permissions. Chrome disables the
+extension after an update that adds permissions until you re-enable it on
+`chrome://extensions`.
+
 ## Files
 
 | File            | Purpose                                      |
 |-----------------|----------------------------------------------|
 | `manifest.json` | Extension manifest (MV3)                     |
-| `background.js` | Service worker — tracks active tab           |
+| `background.js` | Service worker — tracks active tab, captures  |
+| `anchor.js`     | Content script — records and finds page anchors |
+| `run-client.js` | Performs browser steps of skill runs          |
 | `popup.html`    | Popup UI                                     |
 | `popup.js`      | Popup logic — reads tab state, capture toggle |
 | `captures.html` | Gallery page for queued screenshots           |

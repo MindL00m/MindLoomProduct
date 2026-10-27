@@ -2,7 +2,8 @@ import AppKit
 import GuideCore
 
 /// Offers guides when an allowlisted app with approved skills comes forward, and runs
-/// one walkthrough at a time. Auto-advance only applies to allowlisted apps.
+/// one walkthrough at a time. Auto-advance only applies to allowlisted apps. While a
+/// skill run is active the overlay belongs to the run.
 final class GuideController {
     static let snoozeInterval: TimeInterval = 30 * 60
 
@@ -13,8 +14,12 @@ final class GuideController {
     private var snoozedUntil: [String: Date] = [:]
     private var suggestedBundleId: String?
     private var activationObserver: NSObjectProtocol?
+    private(set) var isRunActive = false
 
     var onChange: (() -> Void)?
+    var onRunNext: (() -> Void)?
+    var onRunStop: (() -> Void)?
+    var onRunClose: (() -> Void)?
 
     init(engine: CaptureEngine, library: GuideLibrary) {
         self.engine = engine
@@ -25,6 +30,9 @@ final class GuideController {
         overlay.onNext = { [weak self] in self?.next() }
         overlay.onBack = { [weak self] in self?.back() }
         overlay.onExit = { [weak self] in self?.exit() }
+        overlay.onRunNext = { [weak self] in self?.onRunNext?() }
+        overlay.onRunStop = { [weak self] in self?.onRunStop?() }
+        overlay.onRunClose = { [weak self] in self?.onRunClose?() }
 
         engine.onGuideEvent = { [weak self] event in self?.handle(event) }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -52,7 +60,7 @@ final class GuideController {
     }
 
     func start(_ guide: Guide) {
-        guard !guide.steps.isEmpty else { return }
+        guard !guide.steps.isEmpty, !isRunActive else { return }
         let auto = canAutoAdvance(guide)
         session = GuideSession(guide: guide, autoAdvance: auto)
         suggestedBundleId = nil
@@ -71,6 +79,27 @@ final class GuideController {
     func signedOut() {
         exit()
         snoozedUntil.removeAll()
+    }
+
+    // MARK: - Skill runs
+
+    func beginRun() {
+        if session != nil { exit() }
+        isRunActive = true
+        suggestedBundleId = nil
+    }
+
+    func showRunStep(_ guide: Guide, index: Int, phase: RunStepPhase) {
+        overlay.showRunStep(guide, index: index, phase: phase)
+    }
+
+    func showRunFinished(title: String, status: SkillRunStatus, message: String?) {
+        overlay.showRunFinished(title: title, status: status, message: message)
+    }
+
+    func endRun(hideOverlay: Bool) {
+        isRunActive = false
+        if hideOverlay { overlay.hide() }
     }
 
     private func next() {
@@ -118,7 +147,7 @@ final class GuideController {
     // MARK: - Suggestions
 
     private func appActivated(_ app: NSRunningApplication) {
-        guard session == nil, engine.config.isSignedIn else { return }
+        guard session == nil, !isRunActive, engine.config.isSignedIn else { return }
         guard let bundleId = app.bundleIdentifier,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
         guard engine.allowlistBundleIds.contains(bundleId) else {
@@ -144,7 +173,7 @@ final class GuideController {
     }
 
     private func hideSuggestionIfShowing() {
-        guard session == nil, suggestedBundleId != nil else { return }
+        guard session == nil, !isRunActive, suggestedBundleId != nil else { return }
         suggestedBundleId = nil
         overlay.hide()
     }

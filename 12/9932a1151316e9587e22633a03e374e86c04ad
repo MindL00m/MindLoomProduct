@@ -1,0 +1,36 @@
+apps/api/api/routes/captures.py
+  s_67342ba91635f1::t_c33434ef6fb420 25-34,44-48,63-70,226-310
+apps/api/core/models.py
+  s_67342ba91635f1::t_596d943e2180d3 7,9,28-52,61,75,127-128,132-138,226-271
+apps/api/core/schema.py
+  s_67342ba91635f1::t_8d5d3bfed0b60a 526-548,581-582
+apps/api/db/migrations/014_skill_runs.sql
+  s_67342ba91635f1::t_21db87b7d79570 1-21
+apps/api/tests/test_skill_runs.py
+  s_67342ba91635f1::t_77571e0d414cae 1-360
+apps/api/weaver/capture_service.py
+  s_67342ba91635f1::t_0fe586ed3df8e8 35,64-68,138,182,204-205,208-209,217,232-236,261-262,273-274,286-287,551-564,574-575,580-603,607,609,613-620,842,844-849,851,876-886,894-895,1354-1364
+apps/api/weaver/skill_runs.py
+  s_67342ba91635f1::t_26c7a58698d182 1-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "129932a1151316e9587e22633a03e374e86c04ad",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_67342ba91635f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "379faf74-18ba-4011-a053-245f3ea49c0d",
+        "model": "unknown"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

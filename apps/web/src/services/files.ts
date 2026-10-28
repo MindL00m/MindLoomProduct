@@ -399,3 +399,38 @@ export function makeTemplate(
     "Could not make a template.",
   );
 }
+
+// --- Shipment documents -------------------------------------------------------------
+
+export type ShipmentDocumentType =
+  | "commercial_invoice"
+  | "packing_list"
+  | "certificate_of_origin"
+  | "certificate_of_analysis";
+
+export interface ShipmentDocumentsResult {
+  documents: {
+    document_type: ShipmentDocumentType;
+    label: string;
+    file: LoomFileMeta;
+    used_template: boolean;
+    unfilled: string[];
+  }[];
+  shipment: Record<string, unknown>;
+  missing: string[];
+  warnings: string[];
+}
+
+/** Make invoices, packing lists and certificates from the shipment's own documents. */
+export function createShipmentDocuments(input: {
+  document_types: ShipmentDocumentType[];
+  source_file_ids: string[];
+  template_file_ids?: Partial<Record<ShipmentDocumentType, string>>;
+  instructions?: string;
+}): Promise<ShipmentDocumentsResult> {
+  return request(
+    "/shipment-documents",
+    { method: "POST", body: JSON.stringify(input) },
+    "Could not make the shipment documents.",
+  );
+}

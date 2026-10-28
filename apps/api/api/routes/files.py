@@ -82,6 +82,32 @@ async def list_templates(ctx: tuple[str, str] = Depends(require_user_context)) -
     return [f for f in await files_service.list_files(*ctx) if f.get("is_template")]
 
 
+class ShipmentDocumentsInput(BaseModel):
+    document_types: list[
+        Literal["commercial_invoice", "packing_list", "certificate_of_origin", "certificate_of_analysis"]
+    ] = Field(min_length=1, max_length=4)
+    # The shipment's paperwork: bill of lading, sales contract, lab report, ...
+    source_file_ids: list[str] = Field(default_factory=list, max_length=8)
+    # The company's own layout per document type (a template in Files), optional.
+    template_file_ids: dict[str, str] = Field(default_factory=dict)
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/shipment-documents", status_code=201)
+async def shipment_documents(
+    body: ShipmentDocumentsInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Make invoices, packing lists and certificates from the shipment's documents."""
+
+    from loombot.shipment_docs import create_shipment_documents
+
+    return await create_shipment_documents(
+        *ctx, document_types=list(body.document_types), source_file_ids=body.source_file_ids,
+        template_file_ids=body.template_file_ids, instructions=body.instructions,
+    )
+
+
 @router.post("", status_code=201)
 async def create_file(
     body: CreateFileInput,

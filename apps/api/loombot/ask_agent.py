@@ -246,6 +246,13 @@ PowerPoint, pictures and other files; not GitHub):
   and the names of any files that hold the facts as source_files (for example a
   bill of lading and a sales contract). Report the new file, what was filled and
   anything left unfilled; never guess missing values.
+- Shipment paperwork (commercial invoice, packing list, certificate of origin,
+  certificate of analysis): call create_shipment_documents with the document types,
+  the Files that hold the facts (bill of lading, sales contract, lab report) as
+  source_files, and the user's company template for a type when they have one
+  (see list_templates). Amounts and totals are calculated, not guessed. Report each
+  new file, anything missing, and every warning (e.g. an amount that does not match
+  quantity × price).
 - When the user gives a sample document and wants it reused, call make_template
   with that file's name; it saves a copy with the deal-specific values as fields.
 - You cannot delete files. Tell the user to delete them in the Files tab.
@@ -855,6 +862,46 @@ _FILE_TOOLS_SPEC.extend([
     {
         "type": "function",
         "function": {
+            "name": "create_shipment_documents",
+            "description": (
+                "Make shipment documents from the shipment's paperwork in Files: reads the "
+                "bill of lading, sales contract and lab report, calculates amounts and "
+                "totals, and writes each document in the company's template (when given) "
+                "or a standard layout. Saves new Word/Excel files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "document_types": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": [
+                            "commercial_invoice", "packing_list",
+                            "certificate_of_origin", "certificate_of_analysis",
+                        ]},
+                    },
+                    "source_files": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Names of the Files with the facts, e.g. 'BL 4471.pdf'.",
+                    },
+                    "templates": {
+                        "type": "object",
+                        "description": (
+                            "Optional company template file name per document type, e.g. "
+                            "{\"commercial_invoice\": \"Invoice (template).docx\"}."
+                        ),
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "The user's request, with any values they stated.",
+                    },
+                },
+                "required": ["document_types"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "make_template",
             "description": (
                 "Turn a sample document (Word, Excel, CSV or text) into a reusable template: "
@@ -1202,7 +1249,7 @@ _DATA_TOOLS = {
 _FILE_TOOLS = {
     "list_files", "read_file", "write_csv_file", "write_document", "set_file_monitoring",
     "create_updated_document", "save_email_attachment", "list_templates", "fill_template",
-    "make_template",
+    "make_template", "create_shipment_documents",
 }
 _MEETING_TOOLS = {"find_meeting_times", "propose_meeting"}
 # Earlier tool names, still accepted so older conversations and tests keep working.
@@ -1452,6 +1499,72 @@ async def _run_file_tool(
         ))
         return {"saved": True, "name": saved["name"], "type": kind, "from_email": meta}
 
+    if name == "list_templates":
+        from loombot import templates
+
+        out = []
+        for f in await files_service.list_files(org_id, user_id):
+            if not f.get("is_template"):
+                continue
+            try:
+                described = await templates.describe_template(org_id, user_id, f["file_id"])
+            except HTTPException:
+                continue
+            out.append({
+                "name": f["name"], "type": f["kind"],
+                "fields": described["fields"], "line_items": described["lists"],
+            })
+        return {"templates": out} if out else {
+            "templates": [],
+            "note": (
+                "No templates yet. A sample document can become one with make_template, "
+                "or the user can mark a file with {{placeholders}} as a template in Files."
+            ),
+        }
+
+    if name == "create_shipment_documents":
+        from loombot.shipment_docs import DOCUMENT_TYPES, create_shipment_documents
+
+        source_ids: list[str] = []
+        not_found: list[str] = []
+        for source in arguments.get("source_files") or []:
+            hit = await files_service.find_file_by_name(org_id, user_id, str(source))
+            (source_ids.append(hit["file_id"]) if hit else not_found.append(str(source)))
+        template_ids: dict[str, str] = {}
+        for doc_type, template_name in (arguments.get("templates") or {}).items():
+            hit = await files_service.find_file_by_name(org_id, user_id, str(template_name))
+            if hit and doc_type in DOCUMENT_TYPES:
+                template_ids[doc_type] = hit["file_id"]
+        made = await create_shipment_documents(
+            org_id, user_id,
+            document_types=[str(t) for t in arguments.get("document_types") or []],
+            source_file_ids=source_ids, template_file_ids=template_ids,
+            instructions=str(arguments.get("instructions") or "") or None,
+        )
+        for document in made["documents"]:
+            saved = document["file"]
+            _record_change(state, FileChange(
+                file_id=saved["file_id"], name=saved["name"], action="created",
+                kind=saved.get("kind") or "docx",
+                summary=f"{document['label']} from the shipment documents.",
+                warnings=made["warnings"],
+            ))
+        result = {
+            "documents": [
+                {"type": d["label"], "file": d["file"]["name"], "company_template": d["used_template"],
+                 "unfilled": d["unfilled"]}
+                for d in made["documents"]
+            ],
+            "totals": {k: made["shipment"].get(k) for k in (
+                "total_amount", "currency", "total_quantity", "total_gross_weight", "amount_in_words",
+            ) if made["shipment"].get(k)},
+            "missing": made["missing"],
+            "warnings": made["warnings"],
+        }
+        if not_found:
+            result["missing_source_files"] = not_found
+        return result
+
     file_name = str(arguments.get("name") or "").strip()
     if not file_name:
         return {"error": "name is required."}
@@ -1625,29 +1738,6 @@ async def _run_file_tool(
         if ask_user:
             result["ask_user"] = ask_user
         return result
-
-    if name == "list_templates":
-        from loombot import templates
-
-        out = []
-        for f in await files_service.list_files(org_id, user_id):
-            if not f.get("is_template"):
-                continue
-            try:
-                described = await templates.describe_template(org_id, user_id, f["file_id"])
-            except HTTPException:
-                continue
-            out.append({
-                "name": f["name"], "type": f["kind"],
-                "fields": described["fields"], "line_items": described["lists"],
-            })
-        return {"templates": out} if out else {
-            "templates": [],
-            "note": (
-                "No templates yet. A sample document can become one with make_template, "
-                "or the user can mark a file with {{placeholders}} as a template in Files."
-            ),
-        }
 
     if name in {"fill_template", "make_template"}:
         from loombot import templates

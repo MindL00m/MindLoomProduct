@@ -9,6 +9,7 @@ import {
   Plus,
   Radar,
   Save,
+  Ship,
   Trash2,
   Undo2,
   Upload,
@@ -40,6 +41,7 @@ import {
 import { DriveBrowser, EmailFilesBrowser, SourceTabs, type FileSource } from "@/pages/FileSources";
 import { DocumentFileView, ExcelButton } from "@/pages/FileViewers";
 import { UploadManyButton } from "@/components/UploadManyButton";
+import { ShipmentDocumentsDialog } from "@/components/ShipmentDocumentsDialog";
 import { SharedByLine, ShareButton } from "@/pages/FileSharing";
 import { cn } from "@/lib/utils";
 import { plural, timeAgo } from "@/lib/format";
@@ -62,6 +64,7 @@ export default function FilesView({ onSharesChange }: { onSharesChange?: (count:
   const [opening, setOpening] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [showShipment, setShowShipment] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const refreshList = useCallback(async () => {
@@ -202,6 +205,22 @@ export default function FilesView({ onSharesChange }: { onSharesChange?: (count:
               void refreshList();
             }}
           />
+          <button
+            type="button"
+            onClick={() => setShowShipment(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+          >
+            <Ship className="size-3.5" /> Shipment documents
+          </button>
+          {showShipment && (
+            <ShipmentDocumentsDialog
+              onClose={() => setShowShipment(false)}
+              onOpen={(file) => {
+                setShowShipment(false);
+                void refreshList().then(() => openInFiles(file.file_id));
+              }}
+            />
+          )}
           {uploadNote && (
             <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
               <span className="flex-1">{uploadNote}</span>

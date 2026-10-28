@@ -124,7 +124,7 @@ function removeFromApprovedQueue(id) {
 
 async function getApiConfig() {
   const stored = await chrome.storage.local.get([API_BASE_KEY, ACCESS_TOKEN_KEY]);
-  const apiBase = String(stored[API_BASE_KEY] || DEFAULT_API_BASE).replace(/\/$/, "");
+  const apiBase = safeApiBase(String(stored[API_BASE_KEY] || DEFAULT_API_BASE).replace(/\/$/, ""));
   const accessToken = String(stored[ACCESS_TOKEN_KEY] || "").trim();
   return { apiBase, accessToken };
 }
@@ -483,7 +483,31 @@ chrome.runtime.onInstalled.addListener(() => {
   updatePendingBadge();
 });
 
+// The token and captures in storage are for the extension's own pages, not for
+// content scripts running inside web pages.
+chrome.storage.local.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
+
+/** Messages from the extension's own pages (popup, captures page), not from web pages. */
+function fromExtensionPage(sender) {
+  return sender.id === chrome.runtime.id && (sender.url || "").startsWith(chrome.runtime.getURL(""));
+}
+
+/** An API base the token may be sent to: https, or http on this computer. */
+function safeApiBase(value) {
+  try {
+    const url = new URL(value);
+    const local = ["localhost", "127.0.0.1"].includes(url.hostname);
+    if (url.protocol === "https:" || (url.protocol === "http:" && local)) return value;
+  } catch {
+    /* fall through */
+  }
+  return DEFAULT_API_BASE;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type !== "BROWSER_ANCHOR" && message.type !== "LOCATE_ANCHOR" && !fromExtensionPage(sender)) {
+    return false;  // web pages may not read, approve, upload or analyze captures
+  }
   if (message.type === "BROWSER_ANCHOR") {
     // Only the top frame of the tab being captured records anchors.
     if (sender.tab?.active && sender.frameId === 0 && message.anchor) {

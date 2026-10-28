@@ -69,6 +69,15 @@ captureToggle.addEventListener("change", async () => {
 saveAuthBtn.addEventListener("click", async () => {
   const apiBase = apiBaseInput.value.trim().replace(/\/$/, "") || DEFAULT_API_BASE;
   const accessToken = accessTokenInput.value.trim();
+  try {
+    const url = new URL(apiBase);
+    const local = ["localhost", "127.0.0.1"].includes(url.hostname);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) throw new Error();
+  } catch {
+    authStatus.textContent = "The API base must be an https:// address (or localhost).";
+    authStatus.classList.remove("on");
+    return;
+  }
   await chrome.storage.local.set({
     [API_BASE_KEY]: apiBase,
     [ACCESS_TOKEN_KEY]: accessToken,
@@ -83,6 +92,61 @@ viewCapturesBtn.addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("captures.html") });
 });
 
+// --- Sites MindLoom may click on when running a Skill File -------------------------
+
+const RUN_SITES_KEY = "runSites";
+const RUN_SITE_REQUESTS_KEY = "runSiteRequests";
+const sitesList = document.getElementById("run-sites");
+
+async function renderSites() {
+  const stored = await chrome.storage.local.get([RUN_SITES_KEY, RUN_SITE_REQUESTS_KEY]);
+  const allowed = stored[RUN_SITES_KEY] || [];
+  const requests = (stored[RUN_SITE_REQUESTS_KEY] || []).filter((o) => !allowed.includes(o));
+  let current = "";
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const origin = new URL(tab?.url || "").origin;
+    if (origin.startsWith("https://") && !allowed.includes(origin)) current = origin;
+  } catch {
+    /* no usable tab */
+  }
+  sitesList.replaceChildren();
+  const row = (text, buttonText, onClick) => {
+    const item = document.createElement("div");
+    item.className = "site-row";
+    const label = document.createElement("span");
+    label.textContent = text;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = buttonText;
+    button.addEventListener("click", onClick);
+    item.append(label, button);
+    sitesList.append(item);
+  };
+  for (const origin of allowed) {
+    row(origin, "Remove", async () => {
+      await chrome.storage.local.set({ [RUN_SITES_KEY]: allowed.filter((o) => o !== origin) });
+      void renderSites();
+    });
+  }
+  for (const origin of [...new Set([...requests, ...(current ? [current] : [])])]) {
+    row(`${origin} (not allowed)`, "Allow", async () => {
+      await chrome.storage.local.set({
+        [RUN_SITES_KEY]: [...allowed, origin],
+        [RUN_SITE_REQUESTS_KEY]: requests.filter((o) => o !== origin),
+      });
+      void renderSites();
+    });
+  }
+  if (!sitesList.childElementCount) {
+    const empty = document.createElement("p");
+    empty.className = "site-empty";
+    empty.textContent = "No sites yet. Open a site and allow it here before running a skill on it.";
+    sitesList.append(empty);
+  }
+}
+
 loadActiveTab();
 loadCaptureState();
 loadAuthSettings();
+void renderSites();

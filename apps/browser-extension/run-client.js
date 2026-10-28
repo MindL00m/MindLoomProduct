@@ -101,8 +101,41 @@ function actionFailed(detail) {
   return { outcome: "waiting", wait_reason: "action_failed", error: String(detail).slice(0, 500) };
 }
 
+const RUN_SITES_KEY = "runSites";
+const RUN_SITE_REQUESTS_KEY = "runSiteRequests";
+
+/**
+ * Skill Files come from the server and can be written by other people, so the
+ * extension only opens and clicks on sites this person has allowed in the popup
+ * ("Sites MindLoom may click on"), and only on https pages (or localhost).
+ */
+async function siteAllowed(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "This step has no valid web address." };
+  }
+  const local = ["localhost", "127.0.0.1"].includes(parsed.hostname);
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+    return { ok: false, error: "MindLoom only runs steps on https:// pages." };
+  }
+  const stored = await chrome.storage.local.get([RUN_SITES_KEY, RUN_SITE_REQUESTS_KEY]);
+  const allowed = new Set(stored[RUN_SITES_KEY] || []);
+  if (allowed.has(parsed.origin)) return { ok: true };
+  const requests = new Set(stored[RUN_SITE_REQUESTS_KEY] || []);
+  requests.add(parsed.origin);
+  await chrome.storage.local.set({ [RUN_SITE_REQUESTS_KEY]: [...requests].slice(-20) });
+  return {
+    ok: false,
+    error: `MindLoom may not click on ${parsed.origin} yet. Open the MindLoom extension and allow this site, then continue.`,
+  };
+}
+
 async function browserStepReport(run, anchor, step) {
   if (anchor.needsValue) return { outcome: "waiting", wait_reason: "needs_value" };
+  const permitted = await siteAllowed(anchor.url);
+  if (!permitted.ok) return actionFailed(permitted.error);
   let tab;
   try {
     tab = await tabForPage(anchor.url);

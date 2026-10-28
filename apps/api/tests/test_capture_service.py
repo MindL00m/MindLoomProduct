@@ -362,11 +362,18 @@ async def test_skill_visibility_list_and_acl(monkeypatch):
         capture_service, "publish_skill_to_knowledge_graph", fake_publish
     )
 
+    # Another member cannot approve someone else's skill (it would become
+    # runnable on colleagues' machines); the creator can.
+    with pytest.raises(capture_service.SkillAccessError):
+        await capture_service.review_skill_file(
+            draft.skill_id, SkillFileReview(status="approved"),
+            org_id="org-a", actor_user_id="user-b",
+        )
     approved = await capture_service.review_skill_file(
         draft.skill_id,
         SkillFileReview(status="approved"),
         org_id="org-a",
-        actor_user_id="user-b",
+        actor_user_id=draft.created_by,
     )
     assert approved.status == "approved"
     assert published["tokens"] == ["org:org-a"]

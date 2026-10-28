@@ -31,11 +31,15 @@ def test_permissions_for_upload_prefers_visibility_over_raw_permissions():
         uploaded_by="u-1",
         visibility="private",
     ) == ["user:u-1"]
+    # A member cannot aim an upload at other people's access tokens.
     assert permissions_for_upload(
         org_id="org-1",
         uploaded_by="u-1",
-        permissions=["eng@example.com"],
-    ) == ["eng@example.com"]
+        permissions=["eng@example.com", "user:u-2"],
+    ) == ["user:u-1"]
+    assert permissions_for_upload(
+        org_id="org-1", uploaded_by="u-1", permissions=["org:org-1"],
+    ) == ["org:org-1"]
     assert permissions_for_upload(org_id="org-1", uploaded_by="u-1") == [
         "user:u-1"
     ]
@@ -64,8 +68,10 @@ def test_only_creator_can_change_visibility():
         "visibility": "organization",
         "org_id": "org-1",
     }
-    assert can_mutate_skill(row, "u-b", changing_visibility=False)
-    assert not can_mutate_skill(row, "u-b", changing_visibility=True)
+    # Only the creator (or an admin, except for visibility) may edit or approve.
+    assert not can_mutate_skill(row, "u-b", changing_visibility=False)
+    assert can_mutate_skill(row, "u-b", changing_visibility=False, is_admin=True)
+    assert not can_mutate_skill(row, "u-b", changing_visibility=True, is_admin=True)
     assert can_mutate_skill(row, "u-a", changing_visibility=True)
     private = {**row, "visibility": "private"}
     assert not can_mutate_skill(private, "u-b", changing_visibility=False)

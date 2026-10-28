@@ -42,7 +42,11 @@ def test_visibility_supports_org_and_selected_audiences():
         _policy("selected", users=["u1"], departments=["Engineering"]),
         org_id="org-1",
         source_account="admin@example.com",
-    ) == ["user:u1", "department:engineering"]
+    ) == ["admin@example.com", "user:u1", "department:engineering"]
+    # Nobody chosen stays with the connected account; [] would mean the whole org.
+    assert visibility_for_policy(
+        _policy("selected"), org_id="org-1", source_account="Admin@example.com"
+    ) == ["admin@example.com"]
 
 
 def test_gmail_is_polled_every_few_minutes_only_without_push() -> None:

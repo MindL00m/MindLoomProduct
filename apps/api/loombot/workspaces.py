@@ -844,8 +844,11 @@ async def add_members_by_query(
         and q.strip().lower() not in {str(m.get("email") or "").lower() for m in matched}
     ]
     if invite_emails:
+        # No invite email from Loombot: a request planted in content Loombot read
+        # must not send mail from the person's mailbox. The invite still waits.
         invited = await invite_members_by_email(
             org_id=org_id, user_id=user_id, workspace_id=workspace_id, emails=invite_emails,
+            send_email=False,
         )
         done = set(invited["invited"]) | set(invited["already_invited"])
         result["invited"] = invited["invited"]

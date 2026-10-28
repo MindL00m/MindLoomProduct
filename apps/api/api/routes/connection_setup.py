@@ -1,6 +1,6 @@
 """Controlled setup routes shared by Google and Microsoft connections."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from weaver.connection_setup import (
     discover_resources,
@@ -61,6 +61,24 @@ async def preview(
     return await preview_policy(*ctx, provider, request)
 
 
+async def _require_admin_for_sharing(org_id: str, user_id: str, request: ConnectionPolicyInput) -> None:
+    """Only an admin may make a connected mailbox or drive searchable by other people."""
+
+    if request.access_mode == "respect_source_permissions":
+        return
+    from keeper.auth import get_user_by_id
+
+    user = await get_user_by_id(org_id, user_id)
+    if user is None or user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only an admin can share a connection with the organization or chosen "
+                "people. Keep 'Only me (respect source permissions)'."
+            ),
+        )
+
+
 @router.post("/confirm", response_model=ConnectionPolicyResponse)
 async def confirm(
     provider: str,
@@ -68,6 +86,7 @@ async def confirm(
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> ConnectionPolicyResponse:
     org_id, user_id = ctx
+    await _require_admin_for_sharing(org_id, user_id, request)
     row = await save_policy(org_id, user_id, provider, request, status="importing")
     job_id = await enqueue(
         "initialize_connection",

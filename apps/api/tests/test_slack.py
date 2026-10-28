@@ -186,7 +186,7 @@ async def test_mention_answers_as_the_matching_mindloom_user(monkeypatch: pytest
         assert slack_user_id == "U1"
         return {"user_id": "u-ada", "email": "ada@acme.com"}
 
-    async def history(*_args: object) -> list[ChatMessage]:
+    async def history(*_args: object, **_kwargs: object) -> list[ChatMessage]:
         return [ChatMessage(role="user", content="Ada: earlier note")]
 
     async def tokens(org_id: str, user_id: str) -> list[str]:

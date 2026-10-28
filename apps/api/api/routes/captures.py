@@ -91,16 +91,20 @@ async def create_capture(
 async def get_captures(
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> list[dict[str, object]]:
-    org_id, _ = ctx
-    return await list_captures(org_id=org_id)
+    org_id, user_id = ctx
+    return await list_captures(org_id=org_id, user_id=user_id)
 
 
 @router.get("/summaries")
 async def get_capture_summaries(
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> list[dict[str, object]]:
-    org_id, _ = ctx
-    return await list_summaries(org_id=org_id)
+    org_id, user_id = ctx
+    mine = {str(row.get("id")) for row in await list_captures(org_id=org_id, user_id=user_id)}
+    return [
+        row for row in await list_summaries(org_id=org_id)
+        if str(row.get("capture_id") or row.get("id") or "") in mine
+    ]
 
 
 @router.post("/activity-sessions", response_model=ActivitySessionRecord, status_code=201)
@@ -130,8 +134,8 @@ async def create_activity_session(
 async def get_activity_sessions(
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> list[dict[str, object]]:
-    org_id, _ = ctx
-    return await list_activity_sessions(org_id=org_id)
+    org_id, user_id = ctx
+    return await list_activity_sessions(org_id=org_id, user_id=user_id)
 
 
 @router.post("/activity-sessions/{session_id}/analyze", response_model=SkillFileDraft)
@@ -143,9 +147,9 @@ async def analyze_activity(
 ) -> SkillFileDraft:
     """Draft a Skill File from desktop activity aggregates (text-only)."""
 
-    org_id, _ = ctx
+    org_id, user_id = ctx
     try:
-        return await analyze_activity_session(session_id, org_id=org_id)
+        return await analyze_activity_session(session_id, org_id=org_id, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -157,9 +161,9 @@ async def analyze_session(
     session_id: str,
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> SkillFileDraft:
-    org_id, _ = ctx
+    org_id, user_id = ctx
     try:
-        return await analyze_capture_session(session_id, org_id=org_id)
+        return await analyze_capture_session(session_id, org_id=org_id, user_id=user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

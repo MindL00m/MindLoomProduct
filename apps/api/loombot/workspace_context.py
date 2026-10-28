@@ -35,6 +35,12 @@ Under Sources, list chunk_id values that support the facts.
 """
 
 
+
+def shared_access_tokens(org_id: str) -> list[str]:
+    """Tokens that match only organization-wide knowledge."""
+
+    return [f"org:{org_id}"]
+
 async def resolve_members_from_experts(
     org_id: str,
     experts: list[ExpertResult] | list[dict[str, Any]],
@@ -189,14 +195,15 @@ async def generate_workspace_context(
 ) -> str:
     """Scrape org knowledge for ``purpose`` and synthesize CONTEXT.md."""
 
-    from keeper.auth import get_user_access_tokens
     from brain.retrieval import retrieve
 
     cleaned_purpose = " ".join(purpose.strip().split())
     if not cleaned_purpose:
         return "# Purpose\n\n(No purpose provided.)\n"
 
-    access_tokens = await get_user_access_tokens(org_id, user_id)
+    # CONTEXT.md is shown to every member, so it is built only from knowledge the
+    # whole organization can see, never from the requester's private mail or files.
+    access_tokens = shared_access_tokens(org_id)
     retrieval = await retrieve(cleaned_purpose, [], org_id, access_tokens)
 
     chunk_blocks: list[str] = []
@@ -284,7 +291,6 @@ async def propose_workspace_draft(
 ) -> dict[str, Any]:
     """Build a propose-only workspace draft with members and CONTEXT.md."""
 
-    from keeper.auth import get_user_access_tokens
     from brain.retrieval import retrieve
 
     cleaned_name = " ".join(name.strip().split())
@@ -292,7 +298,9 @@ async def propose_workspace_draft(
     if not cleaned_name:
         return {"error": "name is required."}
 
-    access_tokens = await get_user_access_tokens(org_id, user_id)
+    # CONTEXT.md is shown to every member, so it is built only from knowledge the
+    # whole organization can see, never from the requester's private mail or files.
+    access_tokens = shared_access_tokens(org_id)
     retrieval = await retrieve(cleaned_purpose, [], org_id, access_tokens)
 
     members, unmatched = await resolve_members_from_experts(

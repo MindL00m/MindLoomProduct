@@ -143,10 +143,12 @@ def _visible_to(org_id: str, user_id: str, policy: object) -> list[str]:
     if getattr(policy, "access_mode", "") == "selected":
         users = json.loads(getattr(policy, "allowed_user_ids"))
         departments = json.loads(getattr(policy, "allowed_departments"))
-        return [
+        tokens = [
             *[f"user:{item}" for item in users],
             *[f"department:{item}" for item in departments],
         ]
+        # Nobody chosen must not widen to the org (an empty list is org-wide).
+        return [f"user:{user_id}", *tokens]
     if getattr(policy, "access_mode", "") == "organization":
         return [f"org:{org_id}"]
     # Zoom recording APIs do not expose a complete per-viewer ACL. Respecting

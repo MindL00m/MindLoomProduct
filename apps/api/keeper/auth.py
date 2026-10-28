@@ -145,11 +145,25 @@ async def get_user_access_tokens(org_id: str, user_id: str) -> list[str]:
     try:
         factory = get_session_factory()
         async with factory() as session:
+            # A provider can report any address for an account (an Entra admin sets
+            # a user's "mail" freely), so a connected account's address never counts
+            # when it is another member's login email or another member's connected
+            # account: that would hand over their mail-scoped access.
             rows = await session.execute(
-                text(
-                    "SELECT DISTINCT lower(account_email) FROM app_connections "
-                    "WHERE org_id=:org AND user_id=:user AND account_email IS NOT NULL"
-                ),
+                text("""
+                    SELECT DISTINCT lower(c.account_email)
+                    FROM app_connections c
+                    WHERE c.org_id=:org AND c.user_id=:user AND c.account_email IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM users u
+                        WHERE lower(u.email)=lower(c.account_email) AND u.user_id<>:user
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM app_connections o
+                        WHERE lower(o.account_email)=lower(c.account_email)
+                          AND o.user_id<>:user AND o.org_id=:org
+                      )
+                """),
                 {"org": org_id, "user": user_id},
             )
             for (account_email,) in rows:
@@ -215,6 +229,15 @@ async def upsert_user(
     return user
 
 
+# Anyone can sign up on these, so they can never be a company's MindLoom domain.
+PUBLIC_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "ymail.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me",
+    "protonmail.com", "gmx.com", "gmx.de", "mail.com", "zoho.com", "yandex.com",
+    "rediffmail.com", "qq.com", "163.com",
+})
+
+
 async def create_org(
     *,
     name: str,
@@ -225,6 +248,11 @@ async def create_org(
     if not _DOMAIN_RE.match(domain_norm):
         raise ValueError("Invalid domain format.")
 
+    if domain_norm in PUBLIC_EMAIL_DOMAINS:
+        raise ValueError(
+            "Use your company's own email domain; organizations cannot be created for "
+            f"{domain_norm}."
+        )
     admin_domain = email_domain(identity.email)
     if admin_domain != domain_norm:
         raise ValueError("Admin email domain must match the organization domain.")

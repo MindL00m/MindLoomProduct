@@ -41,6 +41,13 @@ class BrowserAnchor(BaseModel):
     @classmethod
     def _origin_and_path(cls, value: str) -> str:
         parts = urlsplit(value.strip())
+        host = (parts.hostname or "").lower()
+        local = host in {"localhost", "127.0.0.1"} or host.endswith(".localhost")
+        # The extension opens this URL and clicks on it, so only real web pages.
+        if parts.scheme != "https" and not (parts.scheme == "http" and local):
+            raise ValueError("Browser steps must be on an https:// page.")
+        if not host or parts.username or parts.password:
+            raise ValueError("Browser steps need a plain web address.")
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
     @field_validator("href")

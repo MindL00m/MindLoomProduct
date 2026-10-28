@@ -48,7 +48,11 @@ def permissions_for_upload(
             visibility=visibility, org_id=org_id, user_id=uploaded_by
         )
     if permissions:
-        return list(permissions)
+        # A member can share their upload with the org or keep it, but cannot aim it
+        # at other people's access tokens (that would plant content in their answers).
+        allowed = {f"user:{uploaded_by}", f"org:{org_id}"}
+        kept = [token for token in permissions if token in allowed]
+        return kept or [f"user:{uploaded_by}"]
     return [f"user:{uploaded_by}"]
 
 
@@ -88,10 +92,16 @@ def can_mutate_skill(
     actor_user_id: str,
     *,
     changing_visibility: bool = False,
+    is_admin: bool = False,
 ) -> bool:
+    """Who may edit, approve or reject a Skill File.
+
+    Only its creator, or an org admin for anything but visibility. Approving makes a
+    skill runnable on colleagues' machines and publishes it to Ask, so other members
+    of the org must not be able to approve (or quietly rewrite) someone's skill.
+    """
+
     created_by = str(row.get("created_by") or "")
-    if changing_visibility:
-        return created_by == actor_user_id
-    if skill_visibility_from_row(row) == "private":
-        return created_by == actor_user_id
-    return True
+    if created_by == actor_user_id:
+        return True
+    return is_admin and not changing_visibility

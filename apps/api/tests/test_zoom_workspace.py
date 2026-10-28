@@ -33,6 +33,7 @@ def test_zoom_selected_access_policy():
         allowed_departments='["Operations"]',
     )
     assert zoom_workspace._visible_to("org-1", "admin-1", policy) == [
+        "user:admin-1",
         "user:expert-1",
         "department:Operations",
     ]

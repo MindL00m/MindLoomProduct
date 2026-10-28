@@ -132,9 +132,15 @@ ORDER BY coalesce(a.last_signal_at, a.created_at, datetime('1970-01-01T00:00:00Z
 LIMIT 100
 """
 
+# A project can be closed only by someone who can see evidence about it.
 _FINISH_PROJECT_CYPHER = """
 MATCH (e:Entity {org_id: $org_id, entity_id: $item_id, type: 'project'})
 WHERE coalesce(e.work_status, 'open') = 'open'
+  AND EXISTS {
+    MATCH (c:Chunk {org_id: $org_id})-[:RELATES_TO]->(e)
+    WHERE size(coalesce(c.visible_to, [])) = 0
+       OR any(token IN coalesce(c.visible_to, []) WHERE token IN $access_tokens)
+  }
 SET e.work_status = 'closed',
     e.closed_at = $ts,
     e.last_signal_at = $ts
@@ -386,7 +392,9 @@ async def mark_status_item_finished(
 
     if kind == "project":
         cypher = _FINISH_PROJECT_CYPHER
-        params: dict = {"org_id": org_id, "item_id": cleaned_id, "ts": ts}
+        params: dict = {
+            "org_id": org_id, "item_id": cleaned_id, "ts": ts, "access_tokens": access_tokens,
+        }
     elif kind == "issue":
         cypher = _FINISH_ISSUE_CYPHER
         params = {

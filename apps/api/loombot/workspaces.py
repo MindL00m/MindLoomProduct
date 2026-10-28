@@ -778,7 +778,9 @@ async def add_members_by_query(
     matched, unmatched = await resolve_members_from_queries(
         org_id, queries, exclude_user_id=user_id
     )
-    result: dict[str, Any] = {"added": [], "already_members": [], "unmatched": unmatched}
+    result: dict[str, Any] = {
+        "added": [], "already_members": [], "invited": [], "unmatched": unmatched,
+    }
     if matched:
         added = await add_members(
             org_id=org_id, user_id=user_id, workspace_id=workspace_id,
@@ -786,4 +788,323 @@ async def add_members_by_query(
         )
         result["added"] = added["added"]
         result["already_members"] = added["already_members"]
+    # Directory people (or raw addresses) who have not signed in yet get an invite.
+    invite_emails = [str(u["email"]) for u in unmatched if u.get("email")]
+    invite_emails += [
+        q.strip() for q in queries
+        if _EMAIL_ADDRESS.match(q.strip().lower())
+        and q.strip().lower() not in {str(u.get("email") or "").lower() for u in unmatched}
+        and q.strip().lower() not in {str(m.get("email") or "").lower() for m in matched}
+    ]
+    if invite_emails:
+        invited = await invite_members_by_email(
+            org_id=org_id, user_id=user_id, workspace_id=workspace_id, emails=invite_emails,
+        )
+        done = set(invited["invited"]) | set(invited["already_invited"])
+        result["invited"] = invited["invited"]
+        result["unmatched"] = [
+            u for u in unmatched if str(u.get("email") or "").lower() not in done
+        ] + [
+            {"name": e, "email": e, "reason": "Outside the organization's email domain."}
+            for e in invited["outside_organization"]
+        ]
     return result
+
+
+# --- Members by email, invites and removal ------------------------------------------
+
+_EMAIL_ADDRESS = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$")
+MAX_INVITES_PER_REQUEST = 50
+
+
+def split_invite_emails(
+    emails: list[str], org_domain: str
+) -> tuple[list[str], list[str], list[str]]:
+    """Split raw addresses into (in the org's domain, other domains, not an address).
+
+    Membership is domain-scoped: only addresses on the organization's domain can
+    sign in and join, so invites to other domains are reported back instead.
+    """
+
+    domain = (org_domain or "").strip().lower()
+    inside: list[str] = []
+    outside: list[str] = []
+    invalid: list[str] = []
+    for raw in emails:
+        for part in re.split(r"[,;\s]+", str(raw or "")):
+            address = part.strip().strip("<>").lower()
+            if not address:
+                continue
+            if not _EMAIL_ADDRESS.match(address):
+                invalid.append(part.strip())
+            elif address.rsplit("@", 1)[1] == domain:
+                inside.append(address)
+            else:
+                outside.append(address)
+    dedupe = lambda items: list(dict.fromkeys(items))  # noqa: E731
+    return dedupe(inside), dedupe(outside), dedupe(invalid)
+
+
+def _invite_email_body(inviter: str, workspace: str, link: str) -> str:
+    return (
+        f"{inviter} invited you to the \"{workspace}\" workspace in MindLoom.\n\n"
+        f"Sign in with your work Google account to join:\n{link}\n\n"
+        "You will be added to the workspace automatically when you sign in."
+    )
+
+
+async def invite_members_by_email(
+    *,
+    org_id: str,
+    user_id: str,
+    workspace_id: str,
+    emails: list[str],
+    send_email: bool = True,
+) -> dict:
+    """Add people by email address.
+
+    Signed-in colleagues are added straight away. Colleagues on the org's domain who
+    have not signed in yet get a pending invite (and an invite email from the
+    inviter's Gmail when it is connected); they join on first sign-in.
+    """
+
+    workspace = await _require_member(org_id, user_id, workspace_id)
+    if workspace["kind"] == "org_wide":
+        raise HTTPException(
+            status_code=400, detail="Everyone in the organization is already in this workspace."
+        )
+    factory = get_session_factory()
+    async with factory() as session:
+        org_domain = (
+            await session.execute(text(
+                "SELECT domain FROM organizations WHERE org_id=:org"
+            ), {"org": org_id})
+        ).scalar_one_or_none() or ""
+    inside, outside, invalid = split_invite_emails(emails, org_domain)
+    if not inside and not outside and not invalid:
+        raise HTTPException(status_code=400, detail="Enter at least one email address.")
+    if len(inside) > MAX_INVITES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invite at most {MAX_INVITES_PER_REQUEST} people at a time.",
+        )
+
+    async with factory() as session:
+        users = (
+            await session.execute(text("""
+                SELECT user_id, lower(email) AS email FROM users
+                WHERE org_id=:org AND lower(email) = ANY(:emails)
+            """), {"org": org_id, "emails": inside})
+        ).mappings().all()
+    by_email = {row["email"]: str(row["user_id"]) for row in users}
+    signed_in_ids = [by_email[e] for e in inside if e in by_email]
+    to_invite = [e for e in inside if e not in by_email]
+
+    result: dict[str, Any] = {
+        "added": [],
+        "already_members": [],
+        "invited": [],
+        "already_invited": [],
+        "outside_organization": outside,
+        "invalid": invalid,
+        "invite_emails_sent": 0,
+    }
+    if signed_in_ids:
+        added = await add_members(
+            org_id=org_id, user_id=user_id, workspace_id=workspace_id,
+            member_user_ids=signed_in_ids,
+        )
+        result["added"] = added["added"]
+        result["already_members"] = added["already_members"]
+
+    invited: list[str] = []
+    async with factory() as session:
+        for email in to_invite:
+            inserted = (
+                await session.execute(text("""
+                    INSERT INTO workspace_invites
+                      (invite_id, workspace_id, org_id, email, invited_by, created_at)
+                    VALUES (:id, :workspace, :org, :email, :user, now())
+                    ON CONFLICT (workspace_id, email) DO NOTHING
+                    RETURNING invite_id
+                """), {
+                    "id": str(uuid4()), "workspace": workspace_id, "org": org_id,
+                    "email": email, "user": user_id,
+                })
+            ).scalar_one_or_none()
+            if inserted:
+                invited.append(email)
+            else:
+                result["already_invited"].append(email)
+        inviter = (
+            await session.execute(text("""
+                SELECT coalesce(name, email) FROM users WHERE org_id=:org AND user_id=:user
+            """), {"org": org_id, "user": user_id})
+        ).scalar_one_or_none() or "A colleague"
+        await session.commit()
+    result["invited"] = invited
+
+    if invited:
+        listed = invited[0] if len(invited) == 1 else ", ".join(invited[:-1]) + f" and {invited[-1]}"
+        await _insert_message(
+            org_id=org_id,
+            workspace_id=workspace_id,
+            sender_user_id=None,
+            sender_type="system",
+            sender_name="MindLoom",
+            body=f"{inviter} invited {listed}. They join when they first sign in to MindLoom.",
+        )
+        if send_email:
+            result["invite_emails_sent"] = await _send_invite_emails(
+                org_id=org_id, user_id=user_id, inviter=inviter,
+                workspace_name=workspace["name"], emails=invited,
+            )
+    result["members"] = await list_workspace_members(org_id, user_id, workspace_id)
+    result["invites"] = await list_workspace_invites(org_id, user_id, workspace_id)
+    return result
+
+
+async def _send_invite_emails(
+    *, org_id: str, user_id: str, inviter: str, workspace_name: str, emails: list[str]
+) -> int:
+    """Email each invitee separately from the inviter's Gmail. Best effort."""
+
+    from core.config import get_settings
+    from shuttle.notification_delivery import send_user_gmail
+    from weaver.integrations import has_google_workspace_connection
+
+    try:
+        if not await has_google_workspace_connection(org_id, user_id):
+            return 0
+    except Exception:  # noqa: BLE001 - invites still work without the email
+        return 0
+    link = f"{get_settings().frontend_url.rstrip('/')}/setup/signin"
+    sent = 0
+    for email in emails:
+        try:
+            await send_user_gmail(
+                org_id=org_id,
+                user_id=user_id,
+                recipient=email,
+                subject=f"{inviter} invited you to {workspace_name} on MindLoom",
+                body=_invite_email_body(inviter, workspace_name, link),
+            )
+            sent += 1
+        except Exception:  # noqa: BLE001
+            logger.warning("Workspace invite email to %s failed", email, exc_info=True)
+    return sent
+
+
+async def list_workspace_invites(
+    org_id: str, user_id: str, workspace_id: str
+) -> list[dict]:
+    await _require_member(org_id, user_id, workspace_id)
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (
+            await session.execute(text("""
+                SELECT i.invite_id, i.email, i.created_at,
+                       coalesce(u.name, u.email) AS invited_by
+                FROM workspace_invites i
+                LEFT JOIN users u ON u.user_id=i.invited_by
+                WHERE i.org_id=:org AND i.workspace_id=:workspace AND i.accepted_at IS NULL
+                ORDER BY i.created_at
+            """), {"org": org_id, "workspace": workspace_id})
+        ).mappings().all()
+    return [
+        {**dict(row), "created_at": row["created_at"].isoformat() if row["created_at"] else None}
+        for row in rows
+    ]
+
+
+async def cancel_workspace_invite(
+    *, org_id: str, user_id: str, workspace_id: str, invite_id: str
+) -> dict:
+    await _require_member(org_id, user_id, workspace_id)
+    factory = get_session_factory()
+    async with factory() as session:
+        deleted = (
+            await session.execute(text("""
+                DELETE FROM workspace_invites
+                WHERE org_id=:org AND workspace_id=:workspace AND invite_id=:invite
+                  AND accepted_at IS NULL
+                RETURNING invite_id
+            """), {"org": org_id, "workspace": workspace_id, "invite": invite_id})
+        ).scalar_one_or_none()
+        await session.commit()
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    return {"invites": await list_workspace_invites(org_id, user_id, workspace_id)}
+
+
+async def remove_member(
+    *, org_id: str, user_id: str, workspace_id: str, member_user_id: str
+) -> dict:
+    """Leave a workspace, or remove someone else (only the workspace's creator can)."""
+
+    workspace = await _require_member(org_id, user_id, workspace_id)
+    if workspace["kind"] == "org_wide":
+        raise HTTPException(
+            status_code=400, detail="No one can be removed from the Everyone workspace."
+        )
+    leaving = member_user_id == user_id
+    if not leaving and str(workspace.get("created_by") or "") != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the person who created this workspace can remove other members.",
+        )
+    factory = get_session_factory()
+    async with factory() as session:
+        removed = (
+            await session.execute(text("""
+                DELETE FROM workspace_members m
+                USING users u
+                WHERE m.workspace_id=:workspace AND m.user_id=:member
+                  AND u.user_id=m.user_id AND u.org_id=:org
+                RETURNING coalesce(u.name, u.email)
+            """), {"workspace": workspace_id, "member": member_user_id, "org": org_id})
+        ).scalar_one_or_none()
+        remover = (
+            await session.execute(text("""
+                SELECT coalesce(name, email) FROM users WHERE org_id=:org AND user_id=:user
+            """), {"org": org_id, "user": user_id})
+        ).scalar_one_or_none() or "Someone"
+        await session.commit()
+    if removed is None:
+        raise HTTPException(status_code=404, detail="That person is not in this workspace.")
+    await _insert_message(
+        org_id=org_id,
+        workspace_id=workspace_id,
+        sender_user_id=None,
+        sender_type="system",
+        sender_name="MindLoom",
+        body=f"{removed} left the workspace." if leaving else f"{remover} removed {removed}.",
+    )
+    if leaving:
+        return {"left": True, "members": []}
+    return {"left": False, "members": await list_workspace_members(org_id, user_id, workspace_id)}
+
+
+async def accept_workspace_invites(org_id: str, user_id: str, email: str) -> int:
+    """Turn pending invites for this email into memberships. Called on sign-in."""
+
+    address = (email or "").strip().lower()
+    if not address:
+        return 0
+    factory = get_session_factory()
+    async with factory() as session:
+        accepted = (
+            await session.execute(text("""
+                UPDATE workspace_invites SET accepted_at=now()
+                WHERE org_id=:org AND email=:email AND accepted_at IS NULL
+                RETURNING workspace_id
+            """), {"org": org_id, "email": address})
+        ).scalars().all()
+        for workspace_id in accepted:
+            await session.execute(text("""
+                INSERT INTO workspace_members (workspace_id, user_id, joined_at)
+                VALUES (:workspace, :user, now())
+                ON CONFLICT DO NOTHING
+            """), {"workspace": workspace_id, "user": user_id})
+        await session.commit()
+    return len(accepted)

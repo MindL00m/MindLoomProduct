@@ -174,6 +174,74 @@ export async function addWorkspaceMembers(
   return response.json();
 }
 
+export interface WorkspaceInvite {
+  invite_id: string;
+  email: string;
+  created_at: string | null;
+  invited_by?: string | null;
+}
+
+export interface InviteByEmailResult {
+  added: WorkspaceMember[];
+  already_members: string[];
+  invited: string[];
+  already_invited: string[];
+  outside_organization: string[];
+  invalid: string[];
+  invite_emails_sent: number;
+  members: WorkspaceMember[];
+  invites: WorkspaceInvite[];
+}
+
+/**
+ * Add people by email. Signed-in colleagues join now; colleagues on the company
+ * domain who have not signed in yet get an invite and join on first sign-in.
+ */
+export async function addWorkspaceMembersByEmail(
+  workspaceId: string,
+  emails: string[],
+  sendEmail = true,
+): Promise<InviteByEmailResult> {
+  const response = await apiFetch(`/workspaces/${workspaceId}/members/by-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emails, send_email: sendEmail }),
+  });
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not add people."));
+  return response.json();
+}
+
+export async function listWorkspaceInvites(workspaceId: string): Promise<WorkspaceInvite[]> {
+  const response = await apiFetch(`/workspaces/${workspaceId}/invites`);
+  if (!response.ok) throw new Error("Could not load invites.");
+  return response.json();
+}
+
+export async function cancelWorkspaceInvite(
+  workspaceId: string,
+  inviteId: string,
+): Promise<{ invites: WorkspaceInvite[] }> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/invites/${encodeURIComponent(inviteId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not cancel the invite."));
+  return response.json();
+}
+
+/** Leave the workspace (your own id) or, as its creator, remove someone. */
+export async function removeWorkspaceMember(
+  workspaceId: string,
+  memberUserId: string,
+): Promise<{ left: boolean; members: WorkspaceMember[] }> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/members/${encodeURIComponent(memberUserId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not remove the member."));
+  return response.json();
+}
+
 /** Save what the asker did on a Loombot reply's cards, so every member sees it. */
 export async function saveCardState(
   workspaceId: string,

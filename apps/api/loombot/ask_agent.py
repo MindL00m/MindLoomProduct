@@ -1077,8 +1077,9 @@ _WORKSPACE_MEMBERS_TOOL: dict[str, Any] = {
     "function": {
         "name": "add_workspace_members",
         "description": (
-            "Add people to the current workspace by name, email, or title. Only signed-in "
-            "MindLoom users can be added."
+            "Add people to the current workspace by name, email, or title. Signed-in "
+            "MindLoom users join straight away; colleagues on the company domain who have "
+            "not signed in yet are invited by email and join on first sign-in."
         ),
         "parameters": {
             "type": "object",

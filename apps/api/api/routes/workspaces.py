@@ -6,10 +6,14 @@ from pydantic import BaseModel, Field
 from weaver.integrations import require_user_context
 from loombot.workspaces import (
     add_members,
+    cancel_workspace_invite,
     create_workspace,
+    invite_members_by_email,
+    list_workspace_invites,
     list_workspace_members,
     list_workspace_messages,
     list_workspaces,
+    remove_member,
     resync_workspace_context,
     send_workspace_message,
     update_card_state,
@@ -36,6 +40,11 @@ class SendWorkspaceMessageInput(BaseModel):
 
 class AddMembersInput(BaseModel):
     member_user_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class InviteByEmailInput(BaseModel):
+    emails: list[str] = Field(min_length=1, max_length=50)
+    send_email: bool = True
 
 
 class CardStateInput(BaseModel):
@@ -98,6 +107,55 @@ async def add_workspace_members(
         user_id=ctx[1],
         workspace_id=workspace_id,
         member_user_ids=request.member_user_ids,
+    )
+
+
+@router.post("/{workspace_id}/members/by-email")
+async def add_members_by_email(
+    workspace_id: str,
+    request: InviteByEmailInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Add colleagues by email; those who have not signed in yet are invited."""
+
+    return await invite_members_by_email(
+        org_id=ctx[0],
+        user_id=ctx[1],
+        workspace_id=workspace_id,
+        emails=request.emails,
+        send_email=request.send_email,
+    )
+
+
+@router.delete("/{workspace_id}/members/{member_user_id}")
+async def remove_workspace_member(
+    workspace_id: str,
+    member_user_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Leave the workspace, or (as its creator) remove someone."""
+
+    return await remove_member(
+        org_id=ctx[0], user_id=ctx[1], workspace_id=workspace_id, member_user_id=member_user_id
+    )
+
+
+@router.get("/{workspace_id}/invites")
+async def invites(
+    workspace_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    return await list_workspace_invites(*ctx, workspace_id)
+
+
+@router.delete("/{workspace_id}/invites/{invite_id}")
+async def cancel_invite(
+    workspace_id: str,
+    invite_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    return await cancel_workspace_invite(
+        org_id=ctx[0], user_id=ctx[1], workspace_id=workspace_id, invite_id=invite_id
     )
 
 

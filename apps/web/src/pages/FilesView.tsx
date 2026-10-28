@@ -475,7 +475,7 @@ function NewFileForm({
     return trimmed.toLowerCase().endsWith(`.${finalKind}`) ? trimmed : `${trimmed}.${finalKind}`;
   })();
   const duplicate = finalName !== "" && existingNames.includes(finalName.toLowerCase());
-  const canMonitor = finalKind === "csv";
+  const canMonitor = finalKind === "csv" || finalKind === "xlsx";
 
   function pick(list: FileList | null) {
     const file = list?.[0];
@@ -1084,7 +1084,7 @@ function FileEditor({
 }
 
 
-function MonitoringPanel({
+export function MonitoringPanel({
   file,
   dirty,
   onSaved,

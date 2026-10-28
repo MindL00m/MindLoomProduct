@@ -249,7 +249,9 @@ PowerPoint, pictures and other files; not GitHub):
 - When the user gives a sample document and wants it reused, call make_template
   with that file's name; it saves a copy with the deal-specific values as fields.
 - You cannot delete files. Tell the user to delete them in the Files tab.
-- Automatic updates (monitoring) apply to CSV files only.
+- Automatic updates (monitoring) work for CSV files and Excel workbooks (first sheet;
+  formulas are kept and totals recalculate in Excel). Use set_file_monitoring for an
+  existing .xlsx price sheet.
 
 File monitoring rules (a monitored file keeps itself updated from new information):
 - Every write_csv_file that creates a file must set monitor:

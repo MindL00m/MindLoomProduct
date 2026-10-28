@@ -69,6 +69,8 @@ KINDS: dict[str, str] = {
     "file": "application/octet-stream",
 }
 OTHER_KIND = "file"
+# Kinds that can keep themselves updated from new knowledge (see file_monitor).
+MONITORABLE_KINDS = frozenset({"csv", "xlsx"})
 TEXT_KINDS = frozenset({"csv", "txt", "md", "json"})
 IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx", OTHER_KIND}) | IMAGE_KINDS
@@ -987,13 +989,15 @@ async def set_monitoring(
     """Turn monitoring on or off, or store suggested instructions while off.
 
     Enabling needs instructions (given here or stored earlier). Only knowledge
-    that arrives after monitoring starts is applied. CSV files only.
+    that arrives after monitoring starts is applied. CSV files and Excel workbooks
+    (their first sheet) can be monitored.
     """
 
     current = await get_file(org_id, user_id, file_id)
-    if current["kind"] != "csv" and (enabled or instructions):
+    if current["kind"] not in MONITORABLE_KINDS and (enabled or instructions):
         raise HTTPException(
-            status_code=422, detail="Automatic updates are available for CSV files only."
+            status_code=422,
+            detail="Automatic updates are available for CSV files and Excel workbooks.",
         )
     cleaned = " ".join((instructions or "").split())[:MAX_MONITOR_INSTRUCTIONS] or None
     final = cleaned or current.get("monitor_instructions")
@@ -1010,7 +1014,19 @@ async def set_monitoring(
     if enabled:
         from lens.status_trackers import extract_keywords
 
-        headers = " ".join(_headers(current["content"]))
+        if current["kind"] == "xlsx":
+            from loombot.file_monitor import xlsx_matrix
+
+            data, _ = await get_file_bytes(org_id, user_id, file_id)
+            table = xlsx_matrix(data)
+            headers = " ".join(table[0]) if table else ""
+            if not table:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Add a header row to the first sheet before turning on automatic updates.",
+                )
+        else:
+            headers = " ".join(_headers(current["content"]))
         base = stem(current["name"])
         params["keywords"] = json.dumps(extract_keywords(final, base.replace("-", " ").replace("_", " ")))
         try:

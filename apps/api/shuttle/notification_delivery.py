@@ -76,11 +76,22 @@ def build_email(
     subject: str,
     body: str,
     attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
 ) -> EmailMessage:
-    """A plain-text email with optional (file name, bytes, MIME type) attachments."""
+    """A plain-text email with optional (file name, bytes, MIME type) attachments.
+
+    Gmail delivers to Bcc addresses and strips the Bcc header from what recipients
+    receive, so Bcc recipients stay hidden from everyone else.
+    """
 
     message = EmailMessage()
-    message["To"] = recipient
+    if recipient:
+        message["To"] = recipient
+    if cc:
+        message["Cc"] = cc
+    if bcc:
+        message["Bcc"] = bcc
     message["From"] = sender
     message["Subject"] = subject
     message.set_content(body)
@@ -103,12 +114,15 @@ async def _gmail_send_raw(
     subject: str,
     body: str,
     attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
 ) -> str:
     token, sender = await _workspace_access_token(org_id, user_id)
     if token.startswith("dev:"):
         raise RuntimeError("Gmail delivery is unavailable in development connection mode.")
     message = build_email(
-        sender=sender, recipient=recipient, subject=subject, body=body, attachments=attachments
+        sender=sender, recipient=recipient, subject=subject, body=body,
+        attachments=attachments, cc=cc, bcc=bcc,
     )
     async with httpx.AsyncClient(timeout=120 if attachments else 30) as client:
         if attachments:
@@ -141,6 +155,8 @@ async def send_user_gmail(
     subject: str,
     body: str,
     attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
 ) -> str:
     """Send a user-authored email (one or more comma-separated recipients) from their Gmail."""
 
@@ -151,7 +167,138 @@ async def send_user_gmail(
         subject=subject,
         body=body,
         attachments=attachments,
+        cc=cc,
+        bcc=bcc,
     )
+
+
+# Graph sendMail takes inline attachments up to about 3 MB each (4 MB request limit).
+OUTLOOK_MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024
+
+
+def _graph_recipients(value: str | None) -> list[dict]:
+    return [
+        {"emailAddress": {"address": address.strip()}}
+        for address in (value or "").split(",")
+        if address.strip()
+    ]
+
+
+def outlook_message(
+    *,
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> dict:
+    """The Graph sendMail payload for a plain-text message."""
+
+    message: dict[str, Any] = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": _graph_recipients(recipient),
+    }
+    if cc:
+        message["ccRecipients"] = _graph_recipients(cc)
+    if bcc:
+        message["bccRecipients"] = _graph_recipients(bcc)
+    if attachments:
+        for filename, data, _mime in attachments:
+            if len(data) > OUTLOOK_MAX_ATTACHMENT_BYTES:
+                raise RuntimeError(
+                    f"{filename} is too large to send from Outlook (3 MB per attachment)."
+                )
+        message["attachments"] = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": filename,
+                "contentType": mime or "application/octet-stream",
+                "contentBytes": base64.b64encode(data).decode(),
+            }
+            for filename, data, mime in attachments
+        ]
+    return {"message": message, "saveToSentItems": True}
+
+
+async def send_user_outlook(
+    *,
+    org_id: str,
+    user_id: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+) -> str:
+    """Send a user-authored email from their own Outlook mailbox (Graph Mail.Send)."""
+
+    token, _ = await _teams_token(org_id, user_id)
+    if token.startswith("dev:"):
+        raise RuntimeError("Outlook delivery is unavailable in development connection mode.")
+    payload = outlook_message(
+        recipient=recipient, subject=subject, body=body,
+        attachments=attachments, cc=cc, bcc=bcc,
+    )
+    async with httpx.AsyncClient(timeout=120 if attachments else 30) as client:
+        response = await request_with_backoff(
+            client, "POST", "https://graph.microsoft.com/v1.0/me/sendMail",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+        )
+    if response.status_code != 202:
+        raise RuntimeError(f"Outlook send failed ({response.status_code}).")
+    return "accepted"
+
+
+async def email_send_provider(org_id: str, user_id: str) -> str | None:
+    """Which of the user's own mailboxes can send: "gmail", "outlook", or None.
+
+    Gmail is preferred when both are connected. Outlook needs the Mail.Send scope.
+    """
+
+    from weaver.integrations import (
+        PROVIDER_MICROSOFT_TEAMS,
+        _get_connection,
+        has_google_workspace_connection,
+    )
+
+    if await has_google_workspace_connection(org_id, user_id):
+        return "gmail"
+    row = await _get_connection(org_id, user_id, PROVIDER_MICROSOFT_TEAMS)
+    if row is not None:
+        scopes = str(getattr(row, "scopes", "") or "")
+        if not scopes or "mail.send" in scopes.lower() or scopes == "dev":
+            return "outlook"
+    return None
+
+
+async def send_user_email(
+    *,
+    org_id: str,
+    user_id: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments: list[tuple[str, bytes, str]] | None = None,
+    cc: str | None = None,
+    bcc: str | None = None,
+    provider: str | None = None,
+) -> tuple[str, str]:
+    """Send from the user's own connected mailbox. Returns (provider, message id)."""
+
+    provider = provider or await email_send_provider(org_id, user_id)
+    kwargs = dict(
+        org_id=org_id, user_id=user_id, recipient=recipient, subject=subject,
+        body=body, attachments=attachments, cc=cc, bcc=bcc,
+    )
+    if provider == "gmail":
+        return provider, await send_user_gmail(**kwargs)
+    if provider == "outlook":
+        return provider, await send_user_outlook(**kwargs)
+    raise RuntimeError("Connect Google Workspace or Microsoft 365 to send email.")
 
 
 async def _send_gmail(org_id: str, recipient: str, question: str) -> str:

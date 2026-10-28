@@ -88,6 +88,10 @@ class SendProposedEmailInput(BaseModel):
     body: str = Field(min_length=1)
     # LoomBot Files to attach (the sender's own files).
     attachment_file_ids: list[str] = Field(default_factory=list, max_length=10)
+    cc_email: str | None = None
+    bcc_email: str | None = None
+    # One email per To address, so recipients never see each other.
+    send_separately: bool = False
 
 
 @router.get("")
@@ -165,6 +169,9 @@ async def send_proposed_email_route(
         subject=request.subject,
         body=request.body,
         attachment_file_ids=request.attachment_file_ids,
+        cc_email=request.cc_email,
+        bcc_email=request.bcc_email,
+        send_separately=request.send_separately,
     )
 
 

@@ -703,17 +703,25 @@ async def lookup_messageable_people(
     return results
 
 
-def parse_recipients(value: str) -> list[str]:
+MAX_EMAIL_RECIPIENTS = 25
+MAX_SEPARATE_RECIPIENTS = 100
+
+
+def parse_recipients(
+    value: str, *, required: bool = True, limit: int = MAX_EMAIL_RECIPIENTS
+) -> list[str]:
     """Addresses from "a@x.com, b@y.com"; raises 400 on any invalid one."""
 
     recipients = [part.strip().strip("<>") for part in re.split(r"[,;\s]+", value or "") if part.strip()]
     if not recipients:
+        if not required:
+            return []
         raise HTTPException(status_code=400, detail="Enter a valid email address.")
     invalid = [item for item in recipients if not _EMAIL_RE.match(item)]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Not a valid email address: {', '.join(invalid)}.")
-    if len(recipients) > 25:
-        raise HTTPException(status_code=400, detail="Send to at most 25 addresses at once.")
+    if len(recipients) > limit:
+        raise HTTPException(status_code=400, detail=f"Send to at most {limit} addresses at once.")
     return list(dict.fromkeys(recipients))
 
 
@@ -725,40 +733,96 @@ async def send_proposed_email(
     subject: str,
     body: str,
     attachment_file_ids: list[str] | None = None,
+    cc_email: str | None = None,
+    bcc_email: str | None = None,
+    send_separately: bool = False,
 ) -> dict:
-    """Send an Ask-confirmed email from the requester's Gmail, with Files attached."""
+    """Send an Ask-confirmed email from the requester's Gmail or Outlook, with Files attached.
 
-    recipient = ", ".join(parse_recipients(recipient_email))
+    ``send_separately`` sends one email per To address, so no recipient sees who else
+    was contacted (outreach to several suppliers or buyers). Otherwise Cc and Bcc work
+    as usual; Bcc addresses are hidden from everyone else.
+    """
+
+    to = parse_recipients(
+        recipient_email,
+        limit=MAX_SEPARATE_RECIPIENTS if send_separately else MAX_EMAIL_RECIPIENTS,
+    )
+    cc = parse_recipients(cc_email or "", required=False)
+    bcc = parse_recipients(bcc_email or "", required=False)
+    if send_separately and (cc or bcc):
+        raise HTTPException(
+            status_code=400,
+            detail="Cc and Bcc are not used when sending a separate email to each recipient.",
+        )
+    if not send_separately and len(to) + len(cc) + len(bcc) > MAX_EMAIL_RECIPIENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Send to at most {MAX_EMAIL_RECIPIENTS} addresses at once (To, Cc and Bcc).",
+        )
     cleaned_subject = subject.strip()
     cleaned_body = body.strip()
     if not cleaned_subject or not cleaned_body:
         raise HTTPException(status_code=400, detail="Subject and body are required.")
 
-    from weaver.integrations import has_google_workspace_connection
-    from shuttle.notification_delivery import send_user_gmail
+    from shuttle.notification_delivery import email_send_provider, send_user_email
 
-    if not await has_google_workspace_connection(org_id, requester_user_id):
+    provider = await email_send_provider(org_id, requester_user_id)
+    if provider is None:
         raise HTTPException(
             status_code=400,
-            detail="Connect Google Workspace to send email.",
+            detail="Connect Google Workspace or Microsoft 365 to send email.",
         )
     attachments = []
     if attachment_file_ids:
         from loombot.files import files_as_attachments
 
         attachments = await files_as_attachments(org_id, requester_user_id, attachment_file_ids)
-    try:
-        message_id = await send_user_gmail(
-            org_id=org_id,
-            user_id=requester_user_id,
-            recipient=recipient,
-            subject=cleaned_subject,
-            body=cleaned_body,
-            attachments=attachments or None,
+
+    batches = (
+        [(address, None, None) for address in to]
+        if send_separately
+        else [(", ".join(to), ", ".join(cc) or None, ", ".join(bcc) or None)]
+    )
+    sent: list[str] = []
+    failed: list[dict] = []
+    message_id = ""
+    for recipient, cc_value, bcc_value in batches:
+        try:
+            _, message_id = await send_user_email(
+                org_id=org_id,
+                user_id=requester_user_id,
+                recipient=recipient,
+                subject=cleaned_subject,
+                body=cleaned_body,
+                attachments=attachments or None,
+                cc=cc_value,
+                bcc=bcc_value,
+                provider=provider,
+            )
+            sent.append(recipient)
+        except RuntimeError as exc:
+            if not send_separately:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            failed.append({"recipient": recipient, "error": str(exc)})
+    if not sent:
+        raise HTTPException(
+            status_code=400,
+            detail=failed[0]["error"] if failed else "The email could not be sent.",
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = {"status": "sent", "provider_message_id": message_id}
+    result: dict = {
+        "status": "sent" if not failed else "partially_sent",
+        "provider": provider,
+        "provider_message_id": message_id,
+        "sent_to": sent if send_separately else to,
+        "separately": send_separately,
+    }
+    if cc:
+        result["cc"] = cc
+    if bcc:
+        result["bcc"] = bcc
+    if failed:
+        result["failed"] = failed
     if attachments:
         result["attachments"] = [name for name, _data, _mime in attachments]
     return result

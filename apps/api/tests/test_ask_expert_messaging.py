@@ -449,7 +449,7 @@ async def test_send_proposed_email_requires_google(monkeypatch):
         return False
 
     monkeypatch.setattr(
-        "weaver.integrations.has_google_workspace_connection", not_connected
+        "shuttle.notification_delivery.email_send_provider", not_connected
     )
     with pytest.raises(HTTPException) as exc:
         await review_workflows.send_proposed_email(
@@ -485,7 +485,10 @@ async def test_send_proposed_email_uses_caller_gmail(monkeypatch):
         subject="Launch delay",
         body="The launch is delayed.",
     )
-    assert out == {"status": "sent", "provider_message_id": "gmail-99"}
+    assert out["status"] == "sent"
+    assert out["provider"] == "gmail"
+    assert out["provider_message_id"] == "gmail-99"
+    assert out["sent_to"] == ["jane@vendor.com"]
     assert captured["user_id"] == "u-me"
     assert captured["recipient"] == "jane@vendor.com"
     assert captured["subject"] == "Launch delay"
@@ -557,3 +560,108 @@ def test_recipient_hint_prefers_an_email_address() -> None:
     assert ask_agent._extract_recipient_query(
         "sohamraychaudhuri@mindloomai.org send to this email tiramisu project is done 90 percent"
     ) == "sohamraychaudhuri@mindloomai.org"
+
+
+# --- Cc, Bcc, separate sends and Outlook ---------------------------------------------
+
+
+def test_build_email_sets_cc_and_bcc_headers() -> None:
+    from shuttle.notification_delivery import build_email
+
+    message = build_email(
+        sender="me@acme.com", recipient="a@x.com", subject="Offer", body="Hi",
+        cc="b@x.com", bcc="c@y.com, d@z.com",
+    )
+    assert message["To"] == "a@x.com"
+    assert message["Cc"] == "b@x.com"
+    assert message["Bcc"] == "c@y.com, d@z.com"
+
+
+def test_outlook_payload_has_cc_bcc_and_attachments() -> None:
+    from shuttle.notification_delivery import outlook_message
+
+    payload = outlook_message(
+        recipient="a@x.com, b@x.com", subject="S", body="B", cc="c@x.com", bcc="d@x.com",
+        attachments=[("prices.csv", b"a,b", "text/csv")],
+    )
+    message = payload["message"]
+    assert [r["emailAddress"]["address"] for r in message["toRecipients"]] == ["a@x.com", "b@x.com"]
+    assert message["ccRecipients"][0]["emailAddress"]["address"] == "c@x.com"
+    assert message["bccRecipients"][0]["emailAddress"]["address"] == "d@x.com"
+    assert message["attachments"][0]["name"] == "prices.csv"
+
+
+async def _provider(provider):
+    async def fake(*_args, **_kwargs):
+        return provider
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_send_separately_sends_one_email_per_recipient(monkeypatch):
+    sent: list = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return kwargs["provider"], f"id-{len(sent)}"
+
+    monkeypatch.setattr("shuttle.notification_delivery.email_send_provider", await _provider("gmail"))
+    monkeypatch.setattr("shuttle.notification_delivery.send_user_email", fake_send)
+    out = await review_workflows.send_proposed_email(
+        org_id="o", requester_user_id="u", recipient_email="a@s1.com, b@s2.com, c@s3.com",
+        subject="Current offer for SOPs?", body="Please send your best offer.",
+        send_separately=True,
+    )
+    assert [c["recipient"] for c in sent] == ["a@s1.com", "b@s2.com", "c@s3.com"]
+    assert all(c["cc"] is None and c["bcc"] is None for c in sent)
+    assert out["sent_to"] == ["a@s1.com", "b@s2.com", "c@s3.com"]
+    assert out["separately"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_separately_reports_partial_failures(monkeypatch):
+    async def fake_send(**kwargs):
+        if kwargs["recipient"] == "bad@s2.com":
+            raise RuntimeError("Gmail send failed (400).")
+        return "gmail", "ok"
+
+    monkeypatch.setattr("shuttle.notification_delivery.email_send_provider", await _provider("gmail"))
+    monkeypatch.setattr("shuttle.notification_delivery.send_user_email", fake_send)
+    out = await review_workflows.send_proposed_email(
+        org_id="o", requester_user_id="u", recipient_email="a@s1.com, bad@s2.com",
+        subject="S", body="B", send_separately=True,
+    )
+    assert out["status"] == "partially_sent"
+    assert out["sent_to"] == ["a@s1.com"]
+    assert out["failed"][0]["recipient"] == "bad@s2.com"
+
+
+@pytest.mark.asyncio
+async def test_cc_bcc_rejected_with_separate_sends(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("shuttle.notification_delivery.email_send_provider", await _provider("gmail"))
+    with pytest.raises(HTTPException):
+        await review_workflows.send_proposed_email(
+            org_id="o", requester_user_id="u", recipient_email="a@x.com",
+            subject="S", body="B", bcc_email="b@x.com", send_separately=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_bcc_and_cc_go_with_a_single_send_from_outlook(monkeypatch):
+    sent: list = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return kwargs["provider"], "accepted"
+
+    monkeypatch.setattr("shuttle.notification_delivery.email_send_provider", await _provider("outlook"))
+    monkeypatch.setattr("shuttle.notification_delivery.send_user_email", fake_send)
+    out = await review_workflows.send_proposed_email(
+        org_id="o", requester_user_id="u", recipient_email="a@x.com",
+        subject="S", body="B", cc_email="b@x.com", bcc_email="c@y.com; d@z.com",
+    )
+    assert len(sent) == 1
+    assert sent[0]["cc"] == "b@x.com" and sent[0]["bcc"] == "c@y.com, d@z.com"
+    assert out["provider"] == "outlook" and out["bcc"] == ["c@y.com", "d@z.com"]

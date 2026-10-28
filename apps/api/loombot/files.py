@@ -781,13 +781,16 @@ async def share_file(
             )
             result["shared_in_mindloom"] = shared["shared"]
     if send_email:
-        from shuttle.notification_delivery import send_user_gmail
-        from weaver.integrations import has_google_workspace_connection
+        from shuttle.notification_delivery import email_send_provider, send_user_email
 
-        if not await has_google_workspace_connection(org_id, user_id):
+        provider = await email_send_provider(org_id, user_id)
+        if provider is None:
             raise HTTPException(
                 status_code=400,
-                detail="Connect Google Workspace to share by email, or use Share in MindLoom.",
+                detail=(
+                    "Connect Google Workspace or Microsoft 365 to share by email, "
+                    "or use Share in MindLoom."
+                ),
             )
         attachments = await files_as_attachments(org_id, user_id, [file_id])
         note = (message or "").strip()
@@ -795,11 +798,13 @@ async def share_file(
         if note:
             body += f"\n\n{note}"
         try:
-            await send_user_gmail(
-                org_id=org_id, user_id=user_id, recipient=", ".join(addresses),
-                subject=f"{sharer} shared {meta['name']} with you", body=body,
-                attachments=attachments,
-            )
+            # One email per person, so recipients do not see who else got the file.
+            for address in addresses:
+                await send_user_email(
+                    org_id=org_id, user_id=user_id, recipient=address,
+                    subject=f"{sharer} shared {meta['name']} with you", body=body,
+                    attachments=attachments, provider=provider,
+                )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         result["emailed"] = addresses

@@ -91,7 +91,13 @@ Messaging rules:
 - propose_email and propose_expert_message do NOT send anything. Never say a message
   or email was sent.
 - Expert Messages require a signed-in MindLoom user. Email can go to any address.
-- Google Workspace email sending is {gmail_status}.
+- Several recipients go in recipient_email, comma-separated. Put copies in cc_email,
+  and hidden copies in bcc_email.
+- When writing to several outside parties who must not see each other (for example
+  asking every supplier for an offer, or offering stock to several buyers), set
+  send_separately=true: each address gets its own email and nobody sees who else
+  was contacted.
+- Email sending from the user's mailbox is {gmail_status}.
 
 Recurring email rules:
 - When the user wants an email sent repeatedly at a fixed interval ("every 2
@@ -354,7 +360,25 @@ _TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "recipient_email": {
                         "type": "string",
-                        "description": "To address. Empty if the user must enter one.",
+                        "description": (
+                            "To address, or several separated by commas. Empty if the "
+                            "user must enter one."
+                        ),
+                    },
+                    "cc_email": {
+                        "type": "string",
+                        "description": "Optional Cc addresses, comma-separated.",
+                    },
+                    "bcc_email": {
+                        "type": "string",
+                        "description": "Optional Bcc addresses (hidden from everyone), comma-separated.",
+                    },
+                    "send_separately": {
+                        "type": "boolean",
+                        "description": (
+                            "True to send one email per To address so recipients never see "
+                            "each other (outreach to several suppliers or buyers)."
+                        ),
                     },
                     "recipient_name": {
                         "type": "string",
@@ -2340,6 +2364,14 @@ async def _run_tool(
         )
         if attached:
             email = email.model_copy(update={"attachments": attached})
+        if "," in recipient_email or ";" in recipient_email:
+            # Several To addresses: keep them all rather than the one matched person.
+            email = email.model_copy(update={"recipient_email": recipient_email})
+        email = email.model_copy(update={
+            "cc_email": str(arguments.get("cc_email") or "").strip(),
+            "bcc_email": str(arguments.get("bcc_email") or "").strip(),
+            "send_separately": bool(arguments.get("send_separately")),
+        })
         expert = None
         uid = str((person or {}).get("user_id") or "").strip()
         if uid:
@@ -3087,11 +3119,39 @@ async def run_ask_agent(
         workspace=workspace,
     )
     if choice is None:
-        return await _answer_turn(**kwargs)
+        return await _with_mail_provider(await _answer_turn(**kwargs), org_id, user_id)
     with use_model_for_turn(choice.model, choice.reasoning_effort):
         response = await _answer_turn(**kwargs)
     response.model_used = choice.model
     response.model_tier = choice.tier
+    return await _with_mail_provider(response, org_id, user_id)
+
+
+async def _mail_provider(org_id: str, user_id: str, google_connected: bool) -> str | None:
+    """The user's sending mailbox ("gmail" or "outlook"), or None."""
+
+    if google_connected:
+        return "gmail"
+    try:
+        from shuttle.notification_delivery import email_send_provider
+
+        return await email_send_provider(org_id, user_id)
+    except Exception:  # noqa: BLE001 - a lookup failure only hides the send button
+        logger.warning("Could not check the user's mailbox connections", exc_info=True)
+        return None
+
+
+async def _with_mail_provider(response: QueryResponse, org_id: str, user_id: str) -> QueryResponse:
+    """Mark an email draft sendable when the user has Gmail or Outlook connected."""
+
+    email = response.proposed_email
+    if email is None:
+        return response
+    provider = "gmail" if email.google_connected else await _mail_provider(org_id, user_id, False)
+    response.proposed_email = email.model_copy(update={
+        "google_connected": bool(provider),
+        "email_provider": provider or "",
+    })
     return response
 
 
@@ -3251,9 +3311,10 @@ async def _run_agent(
     from weaver.integrations import has_google_workspace_connection
 
     google_connected = await has_google_workspace_connection(org_id, user_id)
+    mail_provider = await _mail_provider(org_id, user_id, google_connected)
     gmail_status = (
-        "available for this user"
-        if google_connected
+        f"available for this user ({'Gmail' if mail_provider == 'gmail' else 'Outlook'})"
+        if mail_provider
         else "not connected for this user — still draft the email so they can connect or copy it"
     )
 

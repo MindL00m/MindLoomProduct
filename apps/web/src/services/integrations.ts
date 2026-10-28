@@ -265,3 +265,22 @@ export async function disconnectConnection(provider: ConnectionProvider): Promis
   const res = await apiFetch(`/integrations/${provider}/setup`, { method: "DELETE" });
   if (!res.ok) throw new Error(await parseError(res, "Could not disconnect this workspace."));
 }
+
+
+/**
+ * Finish a connection the signed-in person just authorized. The OAuth callback
+ * never saves tokens itself, so someone who opens another person's consent link
+ * cannot attach their account to that person.
+ */
+export async function completeOAuthConnection(code: string): Promise<{ provider: string }> {
+  const response = await apiFetch("/integrations/oauth/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(typeof body.detail === "string" ? body.detail : "Could not finish connecting.");
+  }
+  return response.json();
+}

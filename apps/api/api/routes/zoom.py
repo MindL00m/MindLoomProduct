@@ -47,7 +47,11 @@ async def connect_dev(
 
 @router.get("/integrations/zoom/callback")
 async def callback(code: str, state: str) -> RedirectResponse:
-    return RedirectResponse(await handle_zoom_callback(code, state))
+    from weaver.integrations import deferred_oauth_save
+
+    with deferred_oauth_save() as parked:
+        url = await handle_zoom_callback(code, state)
+    return RedirectResponse(f"{url}&oauth_code={parked['code']}" if parked.get("code") else url)
 
 
 @router.post("/integrations/zoom/sync")

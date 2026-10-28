@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import contextvars
+from contextlib import contextmanager
+from typing import Any
 import logging
 import os
 import secrets
@@ -71,6 +74,95 @@ class AppConnectionRow(Base):
     scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --- Binding an OAuth result to the signed-in person ----------------------------------
+#
+# The provider redirects to a public callback, which anyone can be tricked into
+# opening (an attacker can send a victim their own consent link). So the callback
+# never saves tokens: it parks them under a one-time code and redirects to the web
+# app, which finishes the connection with the signed-in person's own session. The
+# connection is saved only when that person is the one who started the flow.
+
+_OAUTH_PENDING_KEY = "loom:oauth_pending:{code}"
+_OAUTH_PENDING_TTL_SECONDS = 600
+_oauth_pending: dict[str, tuple[str, datetime]] = {}
+_defer_save: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "defer_oauth_save", default=None
+)
+
+
+@contextmanager
+def deferred_oauth_save():
+    """Inside this block ``_save_connection`` parks the tokens and yields a code."""
+
+    holder: dict[str, str] = {}
+    token = _defer_save.set(holder)
+    try:
+        yield holder
+    finally:
+        _defer_save.reset(token)
+
+
+def _park_connection(kwargs: dict[str, Any]) -> str:
+    from core.token_crypto import encrypt_token
+
+    code = secrets.token_urlsafe(32)
+    payload = {
+        **kwargs,
+        "access_token": encrypt_token(kwargs["access_token"]),
+        "refresh_token": encrypt_token(kwargs["refresh_token"]) if kwargs.get("refresh_token") else None,
+        "token_expiry": kwargs["token_expiry"].isoformat() if kwargs.get("token_expiry") else None,
+    }
+    raw = json.dumps(payload)
+    try:
+        from core.redis_client import get_redis_sync
+
+        get_redis_sync().setex(_OAUTH_PENDING_KEY.format(code=code), _OAUTH_PENDING_TTL_SECONDS, raw)
+    except Exception as exc:  # noqa: BLE001 - Redis optional in development only
+        if get_settings().app_env == "production":
+            raise HTTPException(status_code=503, detail="OAuth storage unavailable.") from exc
+        _oauth_pending[code] = (raw, datetime.now(timezone.utc) + timedelta(seconds=_OAUTH_PENDING_TTL_SECONDS))
+    return code
+
+
+async def complete_oauth_connection(code: str, org_id: str, user_id: str) -> dict[str, str]:
+    """Save a parked connection for the signed-in person who started it."""
+
+    from core.token_crypto import decrypt_token
+
+    raw: str | None = None
+    try:
+        from core.redis_client import get_redis_sync
+
+        raw = get_redis_sync().getdel(_OAUTH_PENDING_KEY.format(code=code))
+    except Exception:  # noqa: BLE001
+        if get_settings().app_env == "production":
+            raise HTTPException(status_code=503, detail="OAuth storage unavailable.") from None
+    if raw is None:
+        entry = _oauth_pending.pop(code, None)
+        if entry and entry[1] > datetime.now(timezone.utc):
+            raw = entry[0]
+    if raw is None:
+        raise HTTPException(status_code=400, detail="This connection link expired. Connect again.")
+    data = json.loads(raw)
+    if data["org_id"] != org_id or data["user_id"] != user_id:
+        logger.warning("OAuth completion by a different user than started it (provider %s)", data.get("provider"))
+        raise HTTPException(
+            status_code=403,
+            detail="This connection was started by someone else. Start it from your own account.",
+        )
+    await _save_connection(
+        org_id=org_id,
+        user_id=user_id,
+        provider=data["provider"],
+        account_email=data.get("account_email"),
+        access_token=decrypt_token(data["access_token"]),
+        refresh_token=decrypt_token(data["refresh_token"]) if data.get("refresh_token") else None,
+        token_expiry=datetime.fromisoformat(data["token_expiry"]) if data.get("token_expiry") else None,
+        scopes=data.get("scopes"),
+    )
+    return {"provider": data["provider"]}
 
 
 def _store_oauth_state(org_id: str, user_id: str) -> str:
@@ -184,7 +276,15 @@ async def _save_connection(
     refresh_token: str | None,
     token_expiry: datetime | None,
     scopes: str | None,
-) -> AppConnectionRow:
+) -> AppConnectionRow | None:
+    holder = _defer_save.get()
+    if holder is not None:
+        holder["code"] = _park_connection({
+            "org_id": org_id, "user_id": user_id, "provider": provider,
+            "account_email": account_email, "access_token": access_token,
+            "refresh_token": refresh_token, "token_expiry": token_expiry, "scopes": scopes,
+        })
+        return None
     from core.token_crypto import encrypt_token
 
     now = datetime.now(timezone.utc)

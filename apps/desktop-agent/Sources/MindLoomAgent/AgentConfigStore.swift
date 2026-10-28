@@ -81,19 +81,43 @@ enum AgentConfigStore {
     static func save(_ config: AgentConfig) {
         do {
             let dir = configURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(config)
             try data.write(to: configURL, options: .atomic)
+            // The config holds the sign-in token: readable by this user only.
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
         } catch {
             NSLog("MindLoomAgent: failed to save config: %@", "\(error)")
         }
     }
 
+    /// Local event logs are kept this many days, then deleted.
+    static let eventRetentionDays = 14
+
+    static func pruneOldEvents() {
+        let cutoff = Date().addingTimeInterval(-Double(eventRetentionDays) * 86_400)
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: eventsDirectoryURL, includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? []
+        for file in files where file.lastPathComponent.hasPrefix("events-") {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? Date()
+            if modified < cutoff { try? FileManager.default.removeItem(at: file) }
+        }
+    }
+
     static func appendLocalEvent(_ event: LocalInteractionEvent) {
         do {
-            try FileManager.default.createDirectory(at: eventsDirectoryURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: eventsDirectoryURL, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
             let day = ISO8601DateFormatter().string(from: Date()).prefix(10)
             let url = eventsDirectoryURL.appendingPathComponent("events-\(day).jsonl")
             let encoder = JSONEncoder()
@@ -107,6 +131,8 @@ enum AgentConfigStore {
                 try handle.write(contentsOf: data)
             } else {
                 try data.write(to: url, options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                pruneOldEvents()  // once a day, when the day's file is created
             }
         } catch {
             NSLog("MindLoomAgent: failed to append local event: %@", "\(error)")

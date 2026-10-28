@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -56,7 +57,11 @@ from weaver.microsoft_teams import (
     setup_teams_channel_watch,
     start_microsoft_teams_oauth,
 )
-from weaver.integrations import assert_dev_integrations_allowed, list_integrations
+from weaver.integrations import (
+    assert_dev_integrations_allowed,
+    deferred_oauth_save,
+    list_integrations,
+)
 from core.models import (
     AuthSessionResponse,
     Conversation,
@@ -645,6 +650,29 @@ async def dev_connect_microsoft_teams(
     return await list_integrations(org_id, user_id)
 
 
+def _with_oauth_code(url: str, parked: dict[str, str]) -> str:
+    """The web app finishes the connection with this one-time code (see weaver.integrations)."""
+
+    code = parked.get("code")
+    return f"{url}&oauth_code={code}" if code else url
+
+
+class OAuthCompleteInput(BaseModel):
+    code: str = Field(min_length=10, max_length=200)
+
+
+@app.post("/integrations/oauth/complete")
+async def complete_oauth(
+    body: OAuthCompleteInput,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict[str, str]:
+    """Save a connection the signed-in person just authorized (and only theirs)."""
+
+    from weaver.integrations import complete_oauth_connection
+
+    return await complete_oauth_connection(body.code, *ctx)
+
+
 @app.get("/integrations/google/workspace/callback")
 async def google_workspace_callback(
     code: str = Query(...),
@@ -653,8 +681,9 @@ async def google_workspace_callback(
     """OAuth callback for Gmail/Drive sync consent."""
 
     try:
-        redirect_url = await handle_google_workspace_callback(code, state)
-        return RedirectResponse(url=redirect_url, status_code=302)
+        with deferred_oauth_save() as parked:
+            redirect_url = await handle_google_workspace_callback(code, state)
+        return RedirectResponse(url=_with_oauth_code(redirect_url, parked), status_code=302)
     except HTTPException as exc:
         settings = get_settings()
         detail = exc.detail if isinstance(exc.detail, str) else "oauth_failed"
@@ -670,8 +699,9 @@ async def microsoft_teams_callback(
     """OAuth callback for Microsoft Teams sync consent."""
 
     try:
-        redirect_url = await handle_microsoft_teams_callback(code, state)
-        return RedirectResponse(url=redirect_url, status_code=302)
+        with deferred_oauth_save() as parked:
+            redirect_url = await handle_microsoft_teams_callback(code, state)
+        return RedirectResponse(url=_with_oauth_code(redirect_url, parked), status_code=302)
     except HTTPException as exc:
         settings = get_settings()
         detail = exc.detail if isinstance(exc.detail, str) else "oauth_failed"

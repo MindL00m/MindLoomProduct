@@ -551,6 +551,50 @@ _RECURRING_EMAILS_SQL = [
 
 # Skill-file execution: page anchors on browser captures, and runs walked by the
 # Mac app and Chrome extension (weaver/skill_runs.py).
+# Skill Files that MindLoom performs with tools (shuttle/skill_automation.py).
+_SKILL_AUTOMATION_SQL = [
+    """CREATE TABLE IF NOT EXISTS skill_automations (
+    automation_id  TEXT PRIMARY KEY,
+    org_id         TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id        TEXT NOT NULL,
+    skill_id       TEXT NOT NULL,
+    plan           TEXT NOT NULL DEFAULT '{}',
+    auto_approve   BOOLEAN NOT NULL DEFAULT FALSE,
+    interval_value INTEGER,
+    interval_unit  TEXT,
+    next_run_at    TIMESTAMPTZ,
+    default_inputs TEXT NOT NULL DEFAULT '{}',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, user_id, skill_id)
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_skill_automations_due
+  ON skill_automations (next_run_at) WHERE next_run_at IS NOT NULL""",
+    """CREATE TABLE IF NOT EXISTS skill_automation_runs (
+    run_id        TEXT PRIMARY KEY,
+    automation_id TEXT NOT NULL REFERENCES skill_automations (automation_id) ON DELETE CASCADE,
+    org_id        TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id       TEXT NOT NULL,
+    skill_id      TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'running', 'needs_approval', 'needs_input',
+                          'waiting_device', 'completed', 'failed', 'stopped')),
+    inputs        TEXT NOT NULL DEFAULT '{}',
+    messages      TEXT NOT NULL DEFAULT '[]',
+    log           TEXT NOT NULL DEFAULT '[]',
+    pending       TEXT,
+    summary       TEXT,
+    error         TEXT,
+    trigger       TEXT NOT NULL DEFAULT 'manual',
+    timezone      TEXT,
+    rounds        INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_skill_automation_runs_user
+  ON skill_automation_runs (org_id, user_id, skill_id, created_at DESC)""",
+]
+
 _SKILL_RUNS_SQL = [
     "ALTER TABLE captures ADD COLUMN IF NOT EXISTS browser_anchor_json TEXT",
     """CREATE TABLE IF NOT EXISTS skill_runs (
@@ -605,5 +649,7 @@ async def ensure_schema() -> None:
             for statement in _RECURRING_EMAILS_SQL:
                 await session.execute(text(statement))
             for statement in _SKILL_RUNS_SQL:
+                await session.execute(text(statement))
+            for statement in _SKILL_AUTOMATION_SQL:
                 await session.execute(text(statement))
     logger.info("Schema check complete (base tables, connections, captures, policies)")

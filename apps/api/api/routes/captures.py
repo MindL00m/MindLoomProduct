@@ -308,3 +308,101 @@ async def stop_run(
         return await stop_skill_run(run_id, org_id=org_id, user_id=user_id)
     except _RUN_ERRORS as exc:
         raise _run_http_error(exc) from exc
+
+
+# --- Automations: MindLoom performs a Skill File with tools ---------------------------
+
+from pydantic import BaseModel, Field  # noqa: E402
+
+from shuttle import skill_automation  # noqa: E402
+
+
+class AutomationSettingsInput(BaseModel):
+    auto_approve: bool | None = None
+    schedule: bool | None = None
+    interval_value: int | None = Field(default=None, ge=1, le=100_000)
+    interval_unit: str | None = None
+    default_inputs: dict[str, str] | None = None
+
+
+class AutomationRunInput(BaseModel):
+    inputs: dict[str, str] = Field(default_factory=dict)
+    timezone: str | None = Field(default=None, max_length=64)
+
+
+class AutomationReplyInput(BaseModel):
+    action: str = Field(pattern="^(approve|reject|answer|continue)$")
+    arguments: dict | None = None
+    answer: str | None = Field(default=None, max_length=4000)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@router.get("/skill-files/{skill_id}/automation")
+async def skill_automation_plan(
+    skill_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """The caller's automation plan for a skill, or null when not prepared yet."""
+
+    await skill_automation._skill(*ctx, skill_id)
+    return {"automation": await skill_automation.get_automation(*ctx, skill_id),
+            "runs": await skill_automation.list_runs(*ctx, skill_id, limit=10)}
+
+
+@router.post("/skill-files/{skill_id}/automation")
+@limit(captures_limit)
+async def prepare_skill_automation(
+    request: Request, skill_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """Write (or rewrite) the plan: which tool does each step, which inputs a run needs."""
+
+    return await skill_automation.prepare_automation(*ctx, skill_id)
+
+
+@router.patch("/skill-files/{skill_id}/automation")
+async def skill_automation_settings(
+    skill_id: str, body: AutomationSettingsInput,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    return await skill_automation.update_automation_settings(
+        *ctx, skill_id, auto_approve=body.auto_approve, schedule=body.schedule,
+        interval_value=body.interval_value, interval_unit=body.interval_unit,
+        default_inputs=body.default_inputs,
+    )
+
+
+@router.post("/skill-files/{skill_id}/automation/runs", status_code=201)
+@limit(captures_limit)
+async def run_skill_automation(
+    request: Request, skill_id: str, body: AutomationRunInput,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """Start MindLoom doing the skill now; the run pauses for approvals and questions."""
+
+    return await skill_automation.start_run(*ctx, skill_id, inputs=body.inputs, timezone_name=body.timezone)
+
+
+@router.get("/automation-runs/{run_id}")
+async def automation_run(
+    run_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    return await skill_automation.get_run(*ctx, run_id)
+
+
+@router.post("/automation-runs/{run_id}/reply")
+async def reply_to_automation_run(
+    run_id: str, body: AutomationReplyInput,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """Approve (optionally with edited details), reject, answer a question, or continue."""
+
+    return await skill_automation.respond(
+        *ctx, run_id, action=body.action, arguments=body.arguments, answer=body.answer,
+        reason=body.reason,
+    )
+
+
+@router.post("/automation-runs/{run_id}/stop")
+async def stop_automation_run(
+    run_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    return await skill_automation.stop_run(*ctx, run_id)

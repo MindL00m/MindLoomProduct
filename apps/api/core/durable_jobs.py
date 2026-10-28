@@ -283,6 +283,12 @@ async def execute(message: dict[str, Any]) -> None:
             count = await backfill_install(str(payload["install_id"]), int(payload.get("days") or 7))
             local[job_id].status = "complete"
             local[job_id].progress = f"Slack backfill complete: {count} thread(s)"
+        elif kind == "skill_automation":
+            from shuttle.skill_automation import advance
+
+            await advance(org_id, str(payload["user_id"]), str(payload["run_id"]))
+            local[job_id].status = "complete"
+            local[job_id].progress = "Automation step finished"
         elif kind == "expert_thread_ingest":
             from keeper.review_workflows import ingest_expert_thread
 

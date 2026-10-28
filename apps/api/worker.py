@@ -27,6 +27,9 @@ async def main() -> None:
     scheduler = asyncio.create_task(run_periodic_connection_checks())
     slack_flush = asyncio.create_task(run_periodic_slack_flush())
     recurring = asyncio.create_task(run_recurring_email_scheduler())
+    from shuttle.skill_automation import run_automation_scheduler
+
+    automations = asyncio.create_task(run_automation_scheduler())
     try:
         # Recover work reserved by this single worker before a process crash.
         while True:
@@ -45,6 +48,7 @@ async def main() -> None:
         scheduler.cancel()
         slack_flush.cancel()
         recurring.cancel()
+        automations.cancel()
         await redis.aclose()
         await close_pools()
 

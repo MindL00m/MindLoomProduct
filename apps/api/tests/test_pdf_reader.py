@@ -180,3 +180,26 @@ async def test_failed_ocr_is_reported(monkeypatch) -> None:
     read = await pdf_reader.read_pdf(_scan_pages(1, 1), ocr=True)
     assert "Typed cover page" in read.text()
     assert "page(s) 2 could not be read" in read.notes[0]
+
+
+def test_office_bombs_are_refused() -> None:
+    import io
+    import zipfile
+
+    from brain.archives import ArchiveError, check_ooxml
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<x/>")
+        archive.writestr("word/document.xml", "<a>" + "A" * 50_000_000 + "</a>")
+    with pytest.raises(ArchiveError):
+        check_ooxml(buffer.getvalue())
+
+
+def test_huge_pdf_page_renders_within_pixel_budget() -> None:
+    doc = fitz.open()
+    page = doc.new_page(width=14_000, height=14_000)
+    page.insert_text((50, 60), "big", fontsize=11)
+    png = pdf_reader.render_page(doc.tobytes(), 1)
+    pix = fitz.Pixmap(png)
+    assert pix.width * pix.height <= pdf_reader.MAX_RENDER_PIXELS

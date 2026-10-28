@@ -215,6 +215,12 @@ def validate_binary(kind: str, data: bytes) -> None:
         "docx": "word/document.xml", "xlsx": "xl/workbook.xml", "pptx": "ppt/presentation.xml",
     }[kind]
     try:
+        from brain.archives import ArchiveError, check_ooxml
+
+        try:
+            check_ooxml(data)
+        except ArchiveError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if required not in archive.namelist():
                 raise HTTPException(status_code=422, detail=f"That file is not a valid .{kind} file.")
@@ -1095,6 +1101,10 @@ def _cell_text(value: Any) -> str:
 def docx_blocks(data: bytes) -> list[dict[str, Any]]:
     """Headings, paragraphs, and tables of a Word document, in order."""
 
+    from brain.archives import check_ooxml
+
+    check_ooxml(data)
+
     import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -1137,6 +1147,10 @@ def docx_blocks(data: bytes) -> list[dict[str, Any]]:
 
 def xlsx_sheets(data: bytes, *, max_rows: int = 500, max_cols: int = 50) -> list[dict[str, Any]]:
     """Each sheet's cell values (computed values where Excel saved them)."""
+
+    from brain.archives import check_ooxml
+
+    check_ooxml(data)
 
     import openpyxl
 

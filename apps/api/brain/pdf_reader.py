@@ -227,6 +227,8 @@ def _build_table(run: list) -> tuple[tuple[float, float, float, float], str] | N
 
 
 def _tables(page: "fitz.Page") -> list[tuple[tuple[float, float, float, float], str]]:
+    if page.rect.width * page.rect.height > MAX_TABLE_PAGE_AREA:
+        return []
     ruled = _ruled_tables(page)
     try:
         borderless = _borderless_tables(page, [area for area, _ in ruled])
@@ -358,11 +360,22 @@ def open_pdf(data: bytes) -> "fitz.Document":
     return doc
 
 
+# Pages read per PDF; a crafted file with thousands of pages must not tie up a worker.
+MAX_PAGES = 500
+# Table detection is skipped on huge pages (posters, drawings), where it is slow.
+MAX_TABLE_PAGE_AREA = 3_000 * 3_000
+# A rendered page for OCR may not exceed this many pixels.
+MAX_RENDER_PIXELS = 25_000_000
+
+
 def read_pdf_text(data: bytes) -> PdfRead:
-    """Text of every page, with tables and reading order, without OCR."""
+    """Text of every page (up to ``MAX_PAGES``), with tables and reading order, without OCR."""
 
     with open_pdf(data) as doc:
-        return PdfRead(pages=[_read_page(page) for page in doc])
+        result = PdfRead(pages=[_read_page(doc[i]) for i in range(min(doc.page_count, MAX_PAGES))])
+        if doc.page_count > MAX_PAGES:
+            result.notes.append(f"Only the first {MAX_PAGES} of {doc.page_count} pages were read.")
+        return result
 
 
 # --- OCR ----------------------------------------------------------------------------
@@ -374,7 +387,10 @@ def render_page(data: bytes, number: int) -> bytes:
     with open_pdf(data) as doc:
         page = doc[number - 1]
         long_side = max(page.rect.width, page.rect.height) or 1
-        zoom = min(max(OCR_LONG_SIDE_PX / long_side, 1.5), 4.0)
+        zoom = min(OCR_LONG_SIDE_PX / long_side, 4.0)
+        area = page.rect.width * page.rect.height * zoom * zoom
+        if area > MAX_RENDER_PIXELS:
+            zoom *= (MAX_RENDER_PIXELS / area) ** 0.5
         return page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)).tobytes("png")
 
 

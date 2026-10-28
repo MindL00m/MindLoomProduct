@@ -167,6 +167,10 @@ def extract_file_text(filename: str, data: bytes) -> str:
     """Return extracted text for PDF, JSON (incl. conversations), or plain text."""
 
     name = (filename or "upload").lower()
+    if name.endswith((".docx", ".xlsx", ".pptx")):
+        from brain.archives import check_ooxml
+
+        check_ooxml(data)
     if name.endswith(".pdf") or data[:4] == b"%PDF":
         return _extract_pdf(data)
     if name.endswith(".json"):

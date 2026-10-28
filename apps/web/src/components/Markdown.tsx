@@ -12,6 +12,7 @@
  * (``[WEB: 2]``) reach it as ``web:2``.
  */
 
+import { safeHref as sharedSafeHref } from "@/lib/safeHref";
 import { Fragment, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -378,11 +379,7 @@ const AUTOLINK = /^<(https?:\/\/[^\s>]+|mailto:[^\s>]+)>/;
 const BARE_URL = /^https?:\/\/[^\s<]*[^\s<.,:;"')\]!?]/;
 
 function safeHref(url: string): string | null {
-  const trimmed = url.trim();
-  if (/^(https?:|mailto:)/i.test(trimmed)) return trimmed;
-  if (trimmed.startsWith("/") && !trimmed.startsWith("//")) return trimmed;
-  if (trimmed.startsWith("#")) return trimmed;
-  return null;
+  return sharedSafeHref(url) ?? null;
 }
 
 function link(href: string, children: ReactNode, key: string): ReactNode {

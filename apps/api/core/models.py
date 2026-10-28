@@ -602,6 +602,17 @@ class DocumentMetadataInput(BaseModel):
     visibility: Optional[ContentVisibility] = None
     source_url: Optional[str] = None
 
+    @field_validator("source_url")
+    @classmethod
+    def _web_link_only(cls, value: Optional[str]) -> Optional[str]:
+        """A source link is shown as a clickable link, so only http(s) addresses."""
+
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        if urlsplit(cleaned).scheme.lower() not in {"http", "https"}:
+            raise ValueError("source_url must be an http:// or https:// link.")
+        return cleaned
 
 class DerivedFrom(BaseModel):
     """Locator for the slice of a ``Document`` a chunk was derived from.

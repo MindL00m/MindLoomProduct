@@ -105,7 +105,9 @@ def _extract_lines(
         parts.append(text)
         offset = end + 1  # +1 for the newline joining lines
 
-    for page_index in range(doc.page_count):
+    from brain.pdf_reader import MAX_PAGES
+
+    for page_index in range(min(doc.page_count, MAX_PAGES)):
         number = page_index + 1
         if ocr_pages and number in ocr_pages:
             for raw in ocr_pages[number].splitlines():

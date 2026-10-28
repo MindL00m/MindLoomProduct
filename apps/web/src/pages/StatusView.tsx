@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { safeHref } from "@/lib/safeHref";
 import { useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -426,7 +427,7 @@ function TrackerDetail({
                   Source:{" "}
                   {update.source_url ? (
                     <a
-                      href={update.source_url}
+                      href={safeHref(update.source_url)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"

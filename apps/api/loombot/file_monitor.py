@@ -32,6 +32,7 @@ from lens.status_trackers import (
     _visible,
 )
 from loombot import files as files_service
+from loombot.file_builders import csv_safe
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def apply_changes(
     for raw in (append_rows or [])[:MAX_APPEND_PER_CHECK]:
         if not isinstance(raw, list):
             continue
-        row = [str(cell if cell is not None else "").strip() for cell in raw][:width]
+        row = [csv_safe(str(cell if cell is not None else "").strip()) for cell in raw][:width]
         row += [""] * (width - len(row))
         key = tuple(row)
         if not any(row) or key in existing:
@@ -111,7 +112,7 @@ def apply_changes(
         col = columns.get(str(change.get("column") or "").strip().lower())
         if col is None or not 1 <= row_number < len(matrix):
             continue
-        value = str(change.get("value") if change.get("value") is not None else "").strip()
+        value = csv_safe(str(change.get("value") if change.get("value") is not None else "").strip())
         target = matrix[row_number]
         target += [""] * (width - len(target))
         if target[col] != value:
@@ -176,7 +177,7 @@ def apply_xlsx_changes(
 
     import openpyxl
 
-    from loombot.file_builders import cell_value
+    from loombot.file_builders import set_untrusted_cell
 
     shown = xlsx_matrix(data)
     if not shown:
@@ -224,7 +225,7 @@ def apply_xlsx_changes(
                         target.coordinate
                     )
                     continue
-            target.value = cell_value(value)
+            set_untrusted_cell(target, value)
         existing.add(key)
         added += 1
 
@@ -245,7 +246,7 @@ def apply_xlsx_changes(
             continue  # never overwrite a formula
         value = str(change.get("value") if change.get("value") is not None else "").strip()
         if _cell_text(target.value) != value:
-            target.value = cell_value(value)
+            set_untrusted_cell(target, value)
             updated += 1
     if not added and not updated:
         return data, 0, 0

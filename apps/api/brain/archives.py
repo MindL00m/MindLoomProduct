@@ -112,3 +112,30 @@ def read_archive(data: bytes, *, accept=None) -> ArchiveContents:
             total += len(blob)
             contents.entries.append(ArchiveEntry(path=path, name=name, data=blob))
     return contents
+
+
+# Office files (DOCX, XLSX, PPTX) are ZIPs too. A 15 MB file whose XML inflates a
+# thousand times would exhaust memory in any parser, so check before parsing.
+MAX_OOXML_PART_BYTES = 100_000_000
+MAX_OOXML_TOTAL_BYTES = 300_000_000
+MAX_OOXML_RATIO = 200
+
+
+def check_ooxml(data: bytes) -> None:
+    """Raise :class:`ArchiveError` for an Office file that would decompress too far."""
+
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ArchiveError("That is not a valid Office file.") from exc
+    with archive:
+        total = 0
+        for info in archive.infolist():
+            total += info.file_size
+            ratio = info.file_size / max(info.compress_size, 1)
+            if (
+                info.file_size > MAX_OOXML_PART_BYTES
+                or total > MAX_OOXML_TOTAL_BYTES
+                or (info.file_size > 1_000_000 and ratio > MAX_OOXML_RATIO)
+            ):
+                raise ArchiveError("That Office file expands to an unsafe size and was not opened.")

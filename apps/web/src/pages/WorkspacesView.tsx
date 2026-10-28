@@ -15,6 +15,7 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { Markdown } from "@/components/Markdown";
 import { FileKindIcon } from "@/components/FileKindIcon";
+import { WorkspaceFilesDialog } from "@/components/WorkspaceFilesDialog";
 import { listMessageContacts, type MessageContact } from "@/services/reviews";
 import {
   addWorkspaceMembers,
@@ -98,6 +99,7 @@ export default function WorkspacesView() {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -414,6 +416,14 @@ export default function WorkspacesView() {
                   Members
                   {active.kind !== "org_wide" && <UserPlus className="size-3.5 text-primary" />}
                 </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                  onClick={() => setShowFiles(true)}
+                >
+                  <FileText className="size-3.5" />
+                  Files
+                </button>
                 {isContextOnly && (
                   <>
                     <button
@@ -522,7 +532,7 @@ export default function WorkspacesView() {
                     </span>
                   ))}
                   <span className="self-center text-[11px] text-muted-foreground">
-                    Saved to your Files. Loombot reads them with your next @Loombot message.
+                    Saved to your Files and shared in this workspace's Files when you send.
                   </span>
                 </div>
               )}
@@ -651,6 +661,14 @@ export default function WorkspacesView() {
             setShowMembers(false);
             await loadWorkspaces();
           }}
+        />
+      )}
+
+      {showFiles && active && (
+        <WorkspaceFilesDialog
+          workspace={active}
+          onClose={() => setShowFiles(false)}
+          onChanged={() => loadMessages(active.workspace_id)}
         />
       )}
 

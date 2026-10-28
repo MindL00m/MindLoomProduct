@@ -1141,6 +1141,8 @@ class WorkspaceContext:
     requester_name: str = ""
     # Recent messages from other members ("Name: text"), shown as context only.
     others_said: list[str] = field(default_factory=list)
+    # Files shared in this workspace ({"name", "kind", "owner_name"}); any member can read them.
+    shared_files: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1290,10 +1292,16 @@ async def _run_file_tool(
     org_id: str,
     user_id: str,
     state: _FileToolState,
+    workspace: WorkspaceContext | None = None,
 ) -> dict[str, Any]:
     name = _FILE_TOOL_ALIASES.get(name, name)
     if name == "list_files":
         files = await files_service.list_files(org_id, user_id)
+        own = {f["name"].lower() for f in files}
+        shared = [
+            f for f in (workspace.shared_files if workspace else [])
+            if str(f.get("name") or "").lower() not in own
+        ]
         return {
             "files": [
                 {
@@ -1307,6 +1315,14 @@ async def _run_file_tool(
                     "monitor_instructions": f.get("monitor_instructions"),
                 }
                 for f in files
+            ] + [
+                {
+                    "name": f["name"],
+                    "type": f.get("kind") or "csv",
+                    "shared_in_workspace_by": f.get("owner_name"),
+                    "note": "Read-only for you; shared in this workspace by a colleague.",
+                }
+                for f in shared
             ]
         }
 
@@ -1356,6 +1372,26 @@ async def _run_file_tool(
 
     if name == "read_file":
         found = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if found is None and workspace is not None and workspace.workspace_id:
+            from loombot.workspace_files import find_workspace_file
+
+            shared = await find_workspace_file(org_id, workspace.workspace_id, file_name)
+            if shared is not None:
+                text_content = await files_service.read_text_for_ask(
+                    org_id, shared["owner_user_id"], shared
+                )
+                limit = files_service.ASK_MAX_FILE_CHARS
+                return {
+                    "name": shared["name"],
+                    "type": shared["kind"],
+                    "details": _file_detail(shared),
+                    "content": text_content[:limit],
+                    "truncated": len(text_content) > limit,
+                    "note": (
+                        "Shared in this workspace by a colleague. To change it, create an "
+                        "updated copy in the asker's Files."
+                    ),
+                }
         if found is None:
             return {"error": f"No file named {file_name}. Call list_files to see names."}
         if (found.get("kind") or "csv") != "csv":
@@ -2253,6 +2289,7 @@ async def _run_tool(
             org_id=org_id,
             user_id=user_id,
             state=file_state if file_state is not None else _FileToolState(),
+            workspace=workspace,
         ), None, None, None, None
 
     if name == "lookup_person":
@@ -2995,6 +3032,16 @@ def _workspace_hint(workspace: WorkspaceContext | None) -> str:
         if workspace.kind != "org_wide" else
         "\nEveryone in the organization is already in this workspace."
     )
+    shared = ""
+    if workspace.shared_files:
+        listed = "; ".join(
+            f"{f['name']} (shared by {f.get('owner_name') or 'a member'})"
+            for f in workspace.shared_files[:30]
+        )
+        shared = (
+            f"\nFiles shared in this workspace (read them with read_file): {listed}. "
+            "Files you create or update here are shared with every member automatically."
+        )
     others = ""
     if workspace.others_said:
         lines = "\n".join(
@@ -3011,7 +3058,7 @@ Every member sees your reply. Members: {members}.
 The person asking is {workspace.requester_name or "a member"}. Tools act with that
 person's own connections, mailbox, calendar, and Files, and only they can approve the
 drafts (emails, meetings, workspaces) you prepare, so say the draft is ready for them.
-Their mail and files are private: include only what this request needs.{scope}{adding}{others}
+Their mail and files are private: include only what this request needs.{scope}{adding}{shared}{others}
 """
 
 

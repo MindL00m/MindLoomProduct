@@ -1,7 +1,11 @@
 """Workspace (group chat) API routes."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 from pydantic import BaseModel, Field
+
+from api.routes.files import _download_response
+from loombot import files as files_service
+from loombot import workspace_files
 
 from weaver.integrations import require_user_context
 from loombot.workspaces import (
@@ -45,6 +49,15 @@ class AddMembersInput(BaseModel):
 class InviteByEmailInput(BaseModel):
     emails: list[str] = Field(min_length=1, max_length=50)
     send_email: bool = True
+
+
+class ShareFilesInput(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class UpdateWorkspaceFileInput(BaseModel):
+    # Full new text: CSV, plain text, or Markdown for a Word document.
+    content: str
 
 
 class CardStateInput(BaseModel):
@@ -199,3 +212,106 @@ async def card_state(
         message_id=message_id,
         state=request.state,
     )
+
+
+# --- Workspace Files: shared with every member, edited in place ---------------------
+
+
+@router.get("/{workspace_id}/files")
+async def workspace_file_list(
+    workspace_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> list[dict]:
+    return await workspace_files.list_workspace_files(*ctx, workspace_id)
+
+
+@router.post("/{workspace_id}/files")
+async def share_files(
+    workspace_id: str,
+    request: ShareFilesInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Share some of your own Files with everyone in the workspace."""
+
+    linked = await workspace_files.link_files(*ctx, workspace_id, request.file_ids)
+    return {"shared": linked, "files": await workspace_files.list_workspace_files(*ctx, workspace_id)}
+
+
+@router.post("/{workspace_id}/files/upload", status_code=201)
+async def upload_workspace_file(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    data = await file.read(files_service.MAX_UPLOAD_BYTES + 1)
+    return await workspace_files.upload_to_workspace(
+        *ctx, workspace_id, file.filename or "upload", data
+    )
+
+
+@router.get("/{workspace_id}/files/{file_id}")
+async def workspace_file(
+    workspace_id: str,
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    return await workspace_files.get_workspace_file(*ctx, workspace_id, file_id)
+
+
+@router.get("/{workspace_id}/files/{file_id}/preview")
+async def workspace_file_preview(
+    workspace_id: str,
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    return await workspace_files.preview_workspace_file(*ctx, workspace_id, file_id)
+
+
+@router.get("/{workspace_id}/files/{file_id}/download")
+async def workspace_file_download(
+    workspace_id: str,
+    file_id: str,
+    inline: bool = False,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> Response:
+    data, meta = await workspace_files.workspace_file_bytes(*ctx, workspace_id, file_id)
+    return _download_response(data, meta, inline=inline)
+
+
+@router.put("/{workspace_id}/files/{file_id}")
+async def edit_workspace_file(
+    workspace_id: str,
+    file_id: str,
+    request: UpdateWorkspaceFileInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Edit a shared file's text (CSV, TXT, or Word as Markdown); everyone sees the change."""
+
+    return await workspace_files.update_workspace_file(
+        *ctx, workspace_id, file_id, content=request.content
+    )
+
+
+@router.put("/{workspace_id}/files/{file_id}/upload")
+async def replace_workspace_file(
+    workspace_id: str,
+    file_id: str,
+    file: UploadFile = File(...),
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    data = await file.read(files_service.MAX_UPLOAD_BYTES + 1)
+    return await workspace_files.replace_workspace_upload(
+        *ctx, workspace_id, file_id, file.filename or "upload", data
+    )
+
+
+@router.delete("/{workspace_id}/files/{file_id}", status_code=204)
+async def unshare_file(
+    workspace_id: str,
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> Response:
+    """Stop sharing a file in this workspace. The file stays in its owner's Files."""
+
+    await workspace_files.unlink_file(*ctx, workspace_id, file_id)
+    return Response(status_code=204)

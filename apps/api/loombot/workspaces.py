@@ -347,7 +347,10 @@ def card_summaries(payload: dict[str, Any]) -> list[str]:
         out.append("a pull request draft")
     changes = payload.get("file_changes") or []
     if changes:
-        out.append(f"{len(changes)} file change{'s' if len(changes) != 1 else ''} in their Files")
+        out.append(
+            f"{len(changes)} file{'s' if len(changes) != 1 else ''} added or updated in "
+            "this workspace's Files"
+        )
     if payload.get("status_tracker"):
         out.append("a status tracker on their Home page")
     return out
@@ -545,6 +548,17 @@ async def _loombot_reply(
         members = (
             await list_workspace_members(org_id, user_id, workspace_id) if workspace_id else []
         )
+        shared_files: list[dict] = []
+        if workspace_id:
+            from loombot.workspace_files import list_workspace_files
+
+            try:
+                shared_files = [
+                    {"name": f["name"], "kind": f["kind"], "owner_name": f.get("owner_name")}
+                    for f in await list_workspace_files(org_id, user_id, workspace_id)
+                ]
+            except Exception:  # noqa: BLE001 - Loombot still answers without the list
+                logger.warning("Could not list workspace files", exc_info=True)
         context = WorkspaceContext(
             workspace_id=workspace_id,
             name=str(workspace.get("name") or "Workspace"),
@@ -555,6 +569,7 @@ async def _loombot_reply(
             ],
             requester_name=requester_name,
             others_said=others_said,
+            shared_files=shared_files,
         )
         if mode == LOOMBOT_MODE_CONTEXT:
             # Knowledge answers come only from CONTEXT.md; tools still work.
@@ -647,6 +662,9 @@ async def send_workspace_message(
             user_timezone=user_timezone,
             attached_file_names=attached_file_names,
         )
+        await _share_turn_files(
+            org_id, user_id, workspace_id, attached_file_names or [], payload
+        )
         bot_message = await _insert_message(
             org_id=org_id,
             workspace_id=workspace_id,
@@ -657,8 +675,37 @@ async def send_workspace_message(
             payload=payload,
             requested_by=user_id,
         )
+    elif attached_file_names:
+        await _share_turn_files(org_id, user_id, workspace_id, attached_file_names, None)
 
     return {"message": user_message, "bot_message": bot_message}
+
+
+async def _share_turn_files(
+    org_id: str,
+    user_id: str,
+    workspace_id: str,
+    attached_file_names: list[str],
+    payload: dict | None,
+) -> None:
+    """Files attached to the message, and files Loombot created or updated for it,
+    go into the workspace's Files so every member can open and edit them."""
+
+    from loombot import files as files_service
+    from loombot.workspace_files import link_files_quietly
+
+    file_ids: list[str] = []
+    for name in attached_file_names:
+        try:
+            found = await files_service.find_file_by_name(org_id, user_id, name)
+        except Exception:  # noqa: BLE001
+            found = None
+        if found:
+            file_ids.append(found["file_id"])
+    for change in (payload or {}).get("file_changes") or []:
+        if change.get("action") in {"created", "updated"} and change.get("file_id"):
+            file_ids.append(str(change["file_id"]))
+    await link_files_quietly(org_id, user_id, workspace_id, list(dict.fromkeys(file_ids)))
 
 
 async def update_card_state(

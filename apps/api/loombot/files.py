@@ -646,6 +646,10 @@ async def delete_file(org_id: str, user_id: str, file_id: str) -> None:
         """), {"org": org_id, "user": user_id, "id": file_id})).mappings().one_or_none()
     if deleted is None:
         raise HTTPException(status_code=404, detail="File not found.")
+    async with factory() as session, session.begin():
+        await session.execute(text(
+            "DELETE FROM workspace_files WHERE org_id=:org AND file_id=:id"
+        ), {"org": org_id, "id": file_id})
     await _delete_blobs(deleted["blob_key"], deleted["previous_blob_key"])
 
 

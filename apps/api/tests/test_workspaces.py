@@ -185,7 +185,7 @@ def test_other_members_never_receive_the_askers_private_details() -> None:
     assert "raises.csv" not in json.dumps(out)
     assert payload["web_results"][0]["url"] == "https://x.com"  # public results stay
     assert payload["card_summaries"] == [
-        "a message draft", "a meeting draft (\u201cLaunch sync\u201d)", "1 file change in their Files",
+        "a message draft", "a meeting draft (\u201cLaunch sync\u201d)", "1 file added or updated in this workspace's Files",
     ]
     assert out["card_state"] == {}
     assert payload["card_outcomes"] == ["email sent"]

@@ -2,7 +2,19 @@
 
 import { apiFetch } from "@/lib/api";
 
-export type FileKind = "csv" | "txt" | "md" | "json" | "docx" | "xlsx" | "pdf" | "pptx";
+export type FileKind =
+  | "csv"
+  | "txt"
+  | "md"
+  | "json"
+  | "docx"
+  | "xlsx"
+  | "pdf"
+  | "pptx"
+  | ImageKind;
+
+export type ImageKind = "png" | "jpg" | "jpeg" | "gif" | "webp";
+export const IMAGE_KINDS: FileKind[] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /** Kinds stored as text (1 MB limit); the rest are binary (15 MB). */
 export const TEXT_KINDS: FileKind[] = ["csv", "txt", "md", "json"];
@@ -13,10 +25,11 @@ export const FILE_UPLOAD_ACCEPT =
   "application/json,application/pdf," +
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation," +
+  ".png,.jpg,.jpeg,.gif,.webp,image/png,image/jpeg,image/gif,image/webp";
 
 export function kindFromName(name: string): FileKind | null {
-  const match = /\.(csv|txt|md|json|docx|xlsx|pdf|pptx)$/i.exec(name.trim());
+  const match = /\.(csv|txt|md|json|docx|xlsx|pdf|pptx|png|jpe?g|gif|webp)$/i.exec(name.trim());
   return match ? (match[1].toLowerCase() as FileKind) : null;
 }
 
@@ -90,7 +103,7 @@ export function getFile(fileId: string): Promise<LoomFile> {
  * Kinds that can be created from text: Word, PDF, and PowerPoint from Markdown,
  * Excel from Markdown tables or CSV.
  */
-export type WritableKind = FileKind;
+export type WritableKind = Exclude<FileKind, ImageKind>;
 
 export function createFile(
   name: string,
@@ -145,6 +158,7 @@ export type FilePreview =
   | { kind: "xlsx"; sheets: SheetPreview[] }
   | { kind: "pdf"; pages: number }
   | { kind: "pptx"; slides: SlidePreview[] }
+  | { kind: "image"; height: number; width: number }
   | { kind: "csv" | "txt" | "md" | "json"; content: string };
 
 export interface SlidePreview {

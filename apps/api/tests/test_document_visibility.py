@@ -24,11 +24,10 @@ async def test_document_ingestion_defaults_to_private_uploader(monkeypatch):
         )
 
     monkeypatch.setattr(document_ingestion, "run_ingestion", fake_run_ingestion)
-    monkeypatch.setattr(
-        document_ingestion,
-        "extract_file_text",
-        lambda *_args, **_kwargs: "Hello world document body",
-    )
+    async def fake_extract(*_args, **_kwargs):
+        return "Hello world document body", "text"
+
+    monkeypatch.setattr(document_ingestion, "extract_text_with_ocr", fake_extract)
 
     await document_ingestion.ingest_document(
         data=b"hello",
@@ -57,11 +56,10 @@ async def test_document_ingestion_honours_organization_visibility(monkeypatch):
         )
 
     monkeypatch.setattr(document_ingestion, "run_ingestion", fake_run_ingestion)
-    monkeypatch.setattr(
-        document_ingestion,
-        "extract_file_text",
-        lambda *_args, **_kwargs: "Hello world document body",
-    )
+    async def fake_extract(*_args, **_kwargs):
+        return "Hello world document body", "text"
+
+    monkeypatch.setattr(document_ingestion, "extract_text_with_ocr", fake_extract)
 
     await document_ingestion.ingest_document(
         data=b"hello",

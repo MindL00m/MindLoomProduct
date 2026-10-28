@@ -34,7 +34,9 @@ from core.database import get_session_factory
 logger = logging.getLogger(__name__)
 
 EditedBy = Literal["user", "loombot"]
-FileKind = Literal["csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx"]
+FileKind = Literal[
+    "csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx", "png", "jpg", "jpeg", "gif", "webp",
+]
 
 MAX_FILE_BYTES = 1_000_000          # text kinds (CSV, TXT)
 MAX_UPLOAD_BYTES = 15_000_000       # binary kinds (DOCX, XLSX, PDF)
@@ -56,9 +58,15 @@ KINDS: dict[str, str] = {
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "md": "text/markdown",
     "json": "application/json",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
 }
 TEXT_KINDS = frozenset({"csv", "txt", "md", "json"})
-BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
+IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
+BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"}) | IMAGE_KINDS
 # Binary kinds that are built from text (Markdown, or CSV/Markdown tables for XLSX).
 BUILT_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
 
@@ -183,6 +191,12 @@ def validate_binary(kind: str, data: bytes) -> None:
         if not data.startswith(b"%PDF"):
             raise HTTPException(status_code=422, detail="That file is not a valid PDF.")
         return
+    if kind in IMAGE_KINDS:
+        from brain.media_text import is_image
+
+        if not is_image("", data):
+            raise HTTPException(status_code=422, detail="That file is not a valid picture.")
+        return
     required = {
         "docx": "word/document.xml", "xlsx": "xl/workbook.xml", "pptx": "ppt/presentation.xml",
     }[kind]
@@ -198,10 +212,15 @@ def binary_stats(kind: str, data: bytes) -> tuple[int, int]:
     """(row_count, column_count) shown in the file list.
 
     PDF: pages. DOCX: non-empty paragraphs, tables. XLSX: non-empty rows, sheets.
-    PPTX: slides.
+    PPTX: slides. Pictures: height and width in pixels.
     """
 
     try:
+        if kind in IMAGE_KINDS:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(data)) as picture:
+                return picture.height, picture.width
         if kind == "pptx":
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 slides = [
@@ -506,7 +525,10 @@ async def upload_file(
     if kind is None:
         raise HTTPException(
             status_code=422,
-            detail="Supported files: .csv, .txt, .md, .json, .docx, .xlsx, .pdf, and .pptx.",
+            detail=(
+                "Supported files: .csv, .txt, .md, .json, .docx, .xlsx, .pdf, .pptx, and "
+                "pictures (.png, .jpg, .gif, .webp)."
+            ),
         )
     final_name = name or filename
     if kind in TEXT_KINDS:
@@ -1105,6 +1127,31 @@ def xlsx_sheets(data: bytes, *, max_rows: int = 500, max_cols: int = 50) -> list
         workbook.close()
 
 
+# Vision transcriptions of pictures and scanned PDFs, keyed by file version.
+_OCR_CACHE: dict[tuple[str, str], str] = {}
+_OCR_CACHE_SIZE = 64
+
+
+async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
+    """A PDF's text, or a picture's or scanned PDF's text read by the vision model."""
+
+    from brain.media_text import extract_text_with_ocr, no_text_reason, pdf_is_scanned
+
+    if file["kind"] == "pdf" and not pdf_is_scanned(data):
+        return pdf_text(data)
+    key = (str(file.get("file_id")), str(file.get("updated_at")))
+    if key in _OCR_CACHE:
+        return _OCR_CACHE[key]
+    extracted, method = await extract_text_with_ocr(file["name"], data)
+    result = extracted or f"({no_text_reason(file['name'], data)})"
+    if method == "ocr":
+        result = f"(Read from the {'scan' if file['kind'] == 'pdf' else 'picture'} with OCR.)\n{result}"
+        if len(_OCR_CACHE) >= _OCR_CACHE_SIZE:
+            _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
+        _OCR_CACHE[key] = result
+    return result
+
+
 def pptx_text(data: bytes) -> str:
     from loombot.file_builders import pptx_slides
 
@@ -1133,8 +1180,8 @@ async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> 
     if kind in TEXT_KINDS:
         return file.get("content") or ""
     data, _ = await get_file_bytes(org_id, user_id, file["file_id"])
-    if kind == "pdf":
-        return pdf_text(data)
+    if kind in IMAGE_KINDS or kind == "pdf":
+        return await _text_with_ocr(file, data)
     if kind == "docx":
         from loombot.docx_builder import blocks_to_markdown
 
@@ -1168,6 +1215,8 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
         from loombot.file_builders import pptx_slides
 
         return {"kind": "pptx", "slides": pptx_slides(data)}
+    if meta["kind"] in IMAGE_KINDS:
+        return {"kind": "image", "height": meta["row_count"], "width": meta["column_count"]}
     return {"kind": meta["kind"], "content": data.decode("utf-8")}
 
 

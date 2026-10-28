@@ -30,12 +30,12 @@ interface UploadItem {
   result?: IngestionResult;
 }
 
-const ACCEPT = ".json,.jsonl,.pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.log";
+const ACCEPT = ".json,.jsonl,.pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.log,.png,.jpg,.jpeg,.gif,.webp";
 
 function kindOf(file: File): ItemKind | null {
   const name = file.name.toLowerCase();
   if (name.endsWith(".json") || file.type === "application/json") return "json";
-  if (/\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl)$/.test(name)) return "document";
+  if (/\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp)$/.test(name)) return "document";
   return null;
 }
 

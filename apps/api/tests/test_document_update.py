@@ -188,6 +188,6 @@ def test_unique_name_avoids_collisions() -> None:
     assert files_service.unique_name(existing, "Other.docx") == "Other.docx"
 
 
-@pytest.mark.parametrize("name,kind", [("a.csv", "csv"), ("b.TXT", "txt"), ("c.docx", "docx"), ("d.pdf", "pdf"), ("e.xlsx", "xlsx"), ("f.png", None)])
+@pytest.mark.parametrize("name,kind", [("a.csv", "csv"), ("b.TXT", "txt"), ("c.docx", "docx"), ("d.pdf", "pdf"), ("e.xlsx", "xlsx"), ("f.png", "png"), ("g.zip", None)])
 def test_kind_from_name(name, kind) -> None:
     assert files_service.kind_from_name(name) == kind

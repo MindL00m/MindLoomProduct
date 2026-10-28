@@ -71,7 +71,8 @@ import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/st
 import { cn } from "@/lib/utils";
 
 const FILE_ACCEPT =
-  ".pdf,.json,.txt,.csv,.docx,.xlsx,application/pdf,application/json,text/plain,text/csv," +
+  ".pdf,.json,.txt,.csv,.docx,.xlsx,.pptx,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf," +
+  "application/json,text/plain,text/csv,image/png,image/jpeg,image/gif,image/webp," +
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 

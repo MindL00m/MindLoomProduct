@@ -28,6 +28,7 @@ import {
   type LoomFileMeta,
   type SheetPreview,
   type SlidePreview,
+  IMAGE_KINDS,
   type UpdatedVersionResult,
 } from "@/services/files";
 import { fileDetail, FileKindIcon } from "@/components/FileKindIcon";
@@ -231,13 +232,15 @@ export function DocumentFileView({
           <SharedByLine file={file} />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setShowUpdate((v) => !v)}
-            className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-brand-50 px-2.5 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100"
-          >
-            <Sparkles className="size-3.5" /> Update from memory
-          </button>
+          {["docx", "xlsx", "pdf", "txt"].includes(file.kind) && (
+            <button
+              type="button"
+              onClick={() => setShowUpdate((v) => !v)}
+              className="flex items-center gap-1.5 rounded-md border border-primary/40 bg-brand-50 px-2.5 py-1.5 text-xs font-medium text-brand-700 hover:bg-brand-100"
+            >
+              <Sparkles className="size-3.5" /> Update from memory
+            </button>
+          )}
           {file.kind === "xlsx" && <ExcelButton fileId={file.file_id} name={file.name} />}
           {file.kind === "docx" && !editingDoc && (
             <button
@@ -358,6 +361,18 @@ export function DocumentFileView({
         </div>
       ) : file.kind === "pdf" ? (
         <PdfFrame fileId={file.file_id} updatedAt={file.updated_at} />
+      ) : IMAGE_KINDS.includes(file.kind) ? (
+        <div className="m-4 flex min-h-0 flex-1 flex-col">
+          <BlobFrame
+            load={() => downloadFileBlob(file.file_id)}
+            loadKey={`${file.file_id}:${file.updated_at}`}
+            type="image"
+            title={file.name}
+          />
+          <p className="mt-2 text-xs text-muted-foreground">
+            LoomBot reads the text in pictures with OCR when you ask about this file.
+          </p>
+        </div>
       ) : (
         <StructuredPreview fileId={file.file_id} updatedAt={file.updated_at} />
       )}

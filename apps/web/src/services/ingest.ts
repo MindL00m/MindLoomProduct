@@ -185,7 +185,7 @@ function isJson(file: File): boolean {
 }
 
 function isDocument(file: File): boolean {
-  return /\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl)$/i.test(file.name);
+  return /\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp)$/i.test(file.name);
 }
 
 /** Ingest a file into the org knowledge graph (PDF or conversation JSON). */

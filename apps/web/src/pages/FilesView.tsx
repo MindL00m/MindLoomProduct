@@ -33,6 +33,7 @@ import {
   type LoomFileMeta,
   type UnseenShare,
   type WritableKind,
+  TEXT_KINDS,
   listUnseenShares,
   markSharesSeen,
 } from "@/services/files";
@@ -373,8 +374,8 @@ function EmptyState({ loading, onNew }: { loading: boolean; onNew: () => void })
       </span>
       <h2 className="mt-4 text-xl font-semibold tracking-tight">Your files</h2>
       <p className="mt-1 max-w-md text-sm text-muted-foreground">
-        Create a spreadsheet (CSV), text file, or Word document here, or upload one from your
-        computer. You can also ask LoomBot in Ask or a workspace to write or change one, for
+        Create a spreadsheet, Excel workbook, Word document, PDF, PowerPoint deck, or text file
+        here, or upload one from your computer. You can also ask LoomBot in Ask or a workspace to write or change one, for
         example “add a Q3 column to budget.csv” or “write a launch memo as a Word doc”.
       </p>
       <button
@@ -387,6 +388,33 @@ function EmptyState({ loading, onNew }: { loading: boolean; onNew: () => void })
     </div>
   );
 }
+
+const NEW_FILE_TYPES: { kind: WritableKind; label: string }[] = [
+  { kind: "csv", label: "CSV" },
+  { kind: "xlsx", label: "Excel" },
+  { kind: "docx", label: "Word" },
+  { kind: "pdf", label: "PDF" },
+  { kind: "pptx", label: "PowerPoint" },
+  { kind: "txt", label: "Text" },
+  { kind: "md", label: "Markdown" },
+  { kind: "json", label: "JSON" },
+];
+
+const BODY_PLACEHOLDER: Partial<Record<WritableKind, string>> = {
+  docx: "# Title\n\nWrite paragraphs here.\n\n- Bullet point\n- **Bold** and *italic*\n\n| Column | Column |\n| --- | --- |\n| Cell | Cell |",
+  pdf: "# Quotation\n\nFor **Acme Ltd**\n\n| Item | Qty | Rate |\n| --- | --- | --- |\n| SOP | 20 MT | 520 |",
+  pptx: "# Deck title\nSubtitle\n\n## First slide\n- Point one\n- Point two\n\n## Second slide\n| Product | Price |\n| --- | --- |\n| SOP | 520 |",
+  xlsx: "## Prices\n| Product | Price | Qty |\n| --- | --- | --- |\n| SOP | 520 | 20 |\n| Total | | =SUM(C2:C2) |",
+  md: "# Notes\n\n- First point",
+  json: '{\n  "key": "value"\n}',
+};
+
+const BODY_HELP: Partial<Record<WritableKind, string>> = {
+  docx: "Optional. Use # for headings, - for bullets, 1. for numbered lists, **bold**, *italic*, and | for tables. You can edit it later.",
+  pdf: "Markdown: # headings, - bullets, **bold**, and | tables are laid out on A4 pages.",
+  pptx: "Each # or ## heading starts a slide; bullets and | tables go on that slide.",
+  xlsx: "Each Markdown table becomes a sheet named after the heading above it, or paste CSV. Numbers stay numbers and =SUM(...) stays a formula.",
+};
 
 function NewFileForm({
   existingNames,
@@ -423,12 +451,13 @@ function NewFileForm({
     if (!file) return;
     const picked = kindFromName(file.name);
     if (!picked) {
-      setError("Choose a .csv, .txt, .docx, .xlsx, or .pdf file.");
+      setError("Choose a .csv, .txt, .md, .json, .docx, .xlsx, .pdf, or .pptx file.");
       return;
     }
-    const limit = picked === "csv" || picked === "txt" ? 1_000_000 : 15_000_000;
+    const isText = TEXT_KINDS.includes(picked);
+    const limit = isText ? 1_000_000 : 15_000_000;
     if (file.size > limit) {
-      setError(picked === "csv" || picked === "txt" ? "CSV and text files are limited to 1 MB." : "Files are limited to 15 MB.");
+      setError(isText ? "CSV and text files are limited to 1 MB." : "Files are limited to 15 MB.");
       return;
     }
     setImported(file);
@@ -444,7 +473,7 @@ function NewFileForm({
       let created: LoomFile;
       if (imported) {
         created = await uploadFile(imported, finalName);
-      } else if (kind === "txt" || kind === "docx") {
+      } else if (kind !== "csv") {
         created = await createFile(finalName, body, kind);
       } else {
         const columns = headers
@@ -499,8 +528,8 @@ function NewFileForm({
           </button>
         </div>
       ) : (
-        <div className="flex rounded-md border border-border p-0.5 text-sm" role="radiogroup" aria-label="File type">
-          {(["csv", "txt", "docx"] as const).map((option) => (
+        <div className="grid grid-cols-4 gap-0.5 rounded-md border border-border p-0.5 text-sm" role="radiogroup" aria-label="File type">
+          {NEW_FILE_TYPES.map(({ kind: option, label }) => (
             <button
               key={option}
               type="button"
@@ -508,12 +537,12 @@ function NewFileForm({
               aria-checked={kind === option}
               onClick={() => setKind(option)}
               className={cn(
-                "flex flex-1 items-center justify-center gap-1.5 rounded px-3 py-1.5 font-medium",
+                "flex items-center justify-center gap-1.5 rounded px-2 py-1.5 font-medium",
                 kind === option ? "bg-secondary text-foreground" : "text-muted-foreground",
               )}
             >
               <FileKindIcon kind={option} />
-              {option === "csv" ? "Spreadsheet (CSV)" : option === "txt" ? "Text (TXT)" : "Word (DOCX)"}
+              {label}
             </button>
           ))}
         </div>
@@ -551,24 +580,18 @@ function NewFileForm({
         </label>
       )}
 
-      {!imported && (kind === "txt" || kind === "docx") && (
+      {!imported && kind !== "csv" && (
         <label className="block text-sm font-medium">
-          {kind === "docx" ? "Document text" : "Text"}
+          {kind === "txt" || kind === "json" ? "Text" : "Content"}
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={8}
-            placeholder={
-              kind === "docx"
-                ? "# Title\n\nWrite paragraphs here.\n\n- Bullet point\n- **Bold** and *italic*\n\n| Column | Column |\n| --- | --- |\n| Cell | Cell |"
-                : "Start typing, or leave empty."
-            }
+            placeholder={BODY_PLACEHOLDER[kind] ?? "Start typing, or leave empty."}
             className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-sm"
           />
           <span className="mt-1 block text-xs font-normal text-muted-foreground">
-            {kind === "docx"
-              ? "Optional. Use # for headings, - for bullets, 1. for numbered lists, **bold**, *italic*, and | for tables. You can edit it later."
-              : "Optional. You can edit it later."}
+            {BODY_HELP[kind] ?? "Optional. You can edit it later."}
           </span>
         </label>
       )}
@@ -636,7 +659,8 @@ function NewFileForm({
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        You can upload CSV, TXT, Word (.docx), Excel (.xlsx), and PDF files.
+        You can upload CSV, TXT, Markdown, JSON, Word (.docx), Excel (.xlsx), PDF, and
+        PowerPoint (.pptx) files.
       </p>
     </form>
   );

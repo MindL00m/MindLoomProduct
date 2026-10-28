@@ -1,8 +1,9 @@
 """Per-user files for the LoomBot Files tab, editable from Files and Ask.
 
-Supported kinds: CSV and TXT (text, stored in ``content`` and editable in the
-app) plus DOCX, XLSX and PDF (binary, stored in blob storage). DOCX files can
-also be created and edited as Markdown (see ``docx_builder``). Files are private
+Supported kinds: CSV, TXT, Markdown and JSON (text, stored in ``content`` and
+editable in the app) plus DOCX, XLSX, PDF and PPTX (binary, stored in blob
+storage). Every kind can be created from text: DOCX, PDF and PPTX from Markdown
+and XLSX from CSV or Markdown tables (see ``docx_builder`` and ``file_builders``). Files are private
 to their owner within an org. Every change keeps the prior version
 (``previous_content`` or ``previous_blob_key``) so the last change, including
 one made by Ask, can be undone; undoing twice re-applies the change.
@@ -33,7 +34,7 @@ from core.database import get_session_factory
 logger = logging.getLogger(__name__)
 
 EditedBy = Literal["user", "loombot"]
-FileKind = Literal["csv", "txt", "docx", "xlsx", "pdf"]
+FileKind = Literal["csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx"]
 
 MAX_FILE_BYTES = 1_000_000          # text kinds (CSV, TXT)
 MAX_UPLOAD_BYTES = 15_000_000       # binary kinds (DOCX, XLSX, PDF)
@@ -52,9 +53,14 @@ KINDS: dict[str, str] = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pdf": "application/pdf",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "md": "text/markdown",
+    "json": "application/json",
 }
-TEXT_KINDS = frozenset({"csv", "txt"})
-BINARY_KINDS = frozenset({"docx", "xlsx", "pdf"})
+TEXT_KINDS = frozenset({"csv", "txt", "md", "json"})
+BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
+# Binary kinds that are built from text (Markdown, or CSV/Markdown tables for XLSX).
+BUILT_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
 
 _NAME_FORBIDDEN = re.compile(r"[\\/\x00-\x1f]")
 
@@ -148,7 +154,14 @@ def normalize_txt(content: str) -> tuple[str, int, int]:
 
 
 def normalize_text(kind: str, content: str) -> tuple[str, int, int]:
-    return normalize_csv(content) if kind == "csv" else normalize_txt(content)
+    if kind == "csv":
+        return normalize_csv(content)
+    if kind == "json" and (content or "").strip():
+        try:
+            json.loads(content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"That is not valid JSON: {exc}.") from exc
+    return normalize_txt(content)
 
 
 def _decode_text(data: bytes) -> str:
@@ -170,7 +183,9 @@ def validate_binary(kind: str, data: bytes) -> None:
         if not data.startswith(b"%PDF"):
             raise HTTPException(status_code=422, detail="That file is not a valid PDF.")
         return
-    required = {"docx": "word/document.xml", "xlsx": "xl/workbook.xml"}[kind]
+    required = {
+        "docx": "word/document.xml", "xlsx": "xl/workbook.xml", "pptx": "ppt/presentation.xml",
+    }[kind]
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if required not in archive.namelist():
@@ -183,9 +198,17 @@ def binary_stats(kind: str, data: bytes) -> tuple[int, int]:
     """(row_count, column_count) shown in the file list.
 
     PDF: pages. DOCX: non-empty paragraphs, tables. XLSX: non-empty rows, sheets.
+    PPTX: slides.
     """
 
     try:
+        if kind == "pptx":
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                slides = [
+                    n for n in archive.namelist()
+                    if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)
+                ]
+            return len(slides), 0
         if kind == "pdf":
             import fitz
 
@@ -421,7 +444,28 @@ async def create_binary_file(
         raise
 
 
-WRITABLE_KINDS = frozenset({"csv", "txt", "docx"})
+WRITABLE_KINDS = TEXT_KINDS | BUILT_KINDS
+
+
+def build_binary(kind: str, content: str, name: str) -> bytes:
+    """Bytes for a DOCX, PDF or PPTX from Markdown, or an XLSX from CSV/Markdown tables."""
+
+    if len((content or "").encode("utf-8")) > MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="Document text is limited to 1 MB.")
+    title = stem(name)
+    if kind == "docx":
+        from loombot.docx_builder import markdown_to_docx
+
+        return markdown_to_docx(content or "", title=title)
+    from loombot import file_builders
+
+    if kind == "xlsx":
+        return file_builders.text_to_xlsx(content or "")
+    if kind == "pdf":
+        return file_builders.markdown_to_pdf(content or "", title=title)
+    if kind == "pptx":
+        return file_builders.markdown_to_pptx(content or "", title=title)
+    raise HTTPException(status_code=422, detail=f"Cannot build a .{kind} file from text.")
 
 
 async def create_document(
@@ -434,22 +478,22 @@ async def create_document(
     edited_by: EditedBy = "user",
     based_on: str | None = None,
 ) -> dict[str, Any]:
-    """Create a CSV or TXT file from text, or a DOCX file from Markdown."""
+    """Create a text file (CSV, TXT, Markdown, JSON), or build a DOCX, PDF or PPTX
+    from Markdown, or an XLSX from CSV text or Markdown tables."""
 
     if kind in TEXT_KINDS:
         return await create_file(
             org_id, user_id, name, content, edited_by=edited_by, kind=kind, based_on=based_on
         )
-    if kind != "docx":
-        raise HTTPException(status_code=422, detail="New files can be CSV, TXT, or DOCX.")
-    if len((content or "").encode("utf-8")) > MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="Document text is limited to 1 MB.")
-    from loombot.docx_builder import markdown_to_docx
-
-    clean_name = normalize_name(name, "docx")
-    data = markdown_to_docx(content or "", title=stem(clean_name))
+    if kind not in BUILT_KINDS:
+        raise HTTPException(
+            status_code=422,
+            detail="New files can be CSV, TXT, Markdown, JSON, Word, Excel, PDF, or PowerPoint.",
+        )
+    clean_name = normalize_name(name, kind)
+    data = build_binary(kind, content, clean_name)
     return await create_binary_file(
-        org_id, user_id, clean_name, "docx", data, edited_by=edited_by, based_on=based_on
+        org_id, user_id, clean_name, kind, data, edited_by=edited_by, based_on=based_on
     )
 
 
@@ -462,7 +506,7 @@ async def upload_file(
     if kind is None:
         raise HTTPException(
             status_code=422,
-            detail="Supported files: .csv, .txt, .docx, .xlsx, and .pdf.",
+            detail="Supported files: .csv, .txt, .md, .json, .docx, .xlsx, .pdf, and .pptx.",
         )
     final_name = name or filename
     if kind in TEXT_KINDS:
@@ -500,6 +544,15 @@ async def update_file(
                 org_id, user_id, file_id, "docx",
                 markdown_to_docx(content, title=stem(current["name"])), edited_by=edited_by,
             )
+        if name is None:
+            return current
+        content = None
+    if content is not None and kind in BUILT_KINDS:
+        # Rebuild an Excel, PDF or PowerPoint file from new text (undoable).
+        current = await _replace_binary(
+            org_id, user_id, file_id, kind, build_binary(kind, content, current["name"]),
+            edited_by=edited_by,
+        )
         if name is None:
             return current
         content = None
@@ -1052,6 +1105,18 @@ def xlsx_sheets(data: bytes, *, max_rows: int = 500, max_cols: int = 50) -> list
         workbook.close()
 
 
+def pptx_text(data: bytes) -> str:
+    from loombot.file_builders import pptx_slides
+
+    out: list[str] = []
+    for slide in pptx_slides(data):
+        out.append(f"[Slide {slide['number']}] {slide['title']}".rstrip())
+        out.extend(slide["lines"])
+        if slide["notes"]:
+            out.append(f"Notes: {slide['notes']}")
+    return "\n".join(out)
+
+
 def pdf_text(data: bytes) -> str:
     import fitz
 
@@ -1074,6 +1139,8 @@ async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> 
         from loombot.docx_builder import blocks_to_markdown
 
         return blocks_to_markdown(docx_blocks(data))
+    if kind == "pptx":
+        return pptx_text(data)
     out: list[str] = []
     for sheet in xlsx_sheets(data, max_rows=2000):
         out.append(f"[Sheet: {sheet['name']}]")
@@ -1097,6 +1164,10 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
     if meta["kind"] == "pdf":
         rows, _ = binary_stats("pdf", data)
         return {"kind": "pdf", "pages": rows}
+    if meta["kind"] == "pptx":
+        from loombot.file_builders import pptx_slides
+
+        return {"kind": "pptx", "slides": pptx_slides(data)}
     return {"kind": meta["kind"], "content": data.decode("utf-8")}
 
 

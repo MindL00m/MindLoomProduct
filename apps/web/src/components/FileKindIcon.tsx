@@ -1,11 +1,19 @@
-import { FileSpreadsheet, FileText, FileType2 } from "lucide-react";
+import { FileCode2, FileSpreadsheet, FileText, FileType2, Presentation } from "lucide-react";
 import type { FileKind, LoomFileMeta } from "@/services/files";
 import { plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export function FileKindIcon({ kind, className }: { kind: FileKind; className?: string }) {
   const Icon =
-    kind === "csv" || kind === "xlsx" ? FileSpreadsheet : kind === "pdf" ? FileType2 : FileText;
+    kind === "csv" || kind === "xlsx"
+      ? FileSpreadsheet
+      : kind === "pdf"
+        ? FileType2
+        : kind === "pptx"
+          ? Presentation
+          : kind === "json"
+            ? FileCode2
+            : FileText;
   const color =
     kind === "xlsx" || kind === "csv"
       ? "text-emerald-700"
@@ -13,7 +21,9 @@ export function FileKindIcon({ kind, className }: { kind: FileKind; className?: 
         ? "text-red-700"
         : kind === "docx"
           ? "text-sky-700"
-          : "text-muted-foreground";
+          : kind === "pptx"
+            ? "text-orange-700"
+            : "text-muted-foreground";
   return <Icon className={cn("size-4 shrink-0", color, className)} aria-hidden="true" />;
 }
 
@@ -22,7 +32,11 @@ export function fileDetail(f: Pick<LoomFileMeta, "kind" | "row_count" | "column_
     case "csv":
       return plural(f.row_count, "row");
     case "txt":
+    case "md":
+    case "json":
       return plural(f.row_count, "line");
+    case "pptx":
+      return plural(f.row_count, "slide");
     case "pdf":
       return plural(f.row_count, "page");
     case "docx":

@@ -766,21 +766,30 @@ _FILE_TOOLS_SPEC.append({
     "function": {
         "name": "write_document",
         "description": (
-            "Create a text file (.txt) or Word document (.docx) in the user's Files tab, "
-            "or replace one's contents. DOCX content is Markdown (# headings, - lists, "
-            "**bold**, | tables |). Saves immediately and can be undone. Read an existing "
-            "file with read_file before replacing it."
+            "Create a file in the user's Files tab, or replace one's contents: Word "
+            "(.docx), PDF (.pdf) or PowerPoint (.pptx) from Markdown (# headings, - lists, "
+            "**bold**, | tables |; in .pptx each # or ## heading starts a slide), Excel "
+            "(.xlsx) from Markdown tables (one sheet per table, named by the heading above "
+            "it; numbers stay numbers, =SUM(B2:B9) stays a formula) or CSV text, or "
+            ".txt, .md and .json text. Saves immediately and can be undone. Read an "
+            "existing file with read_file before replacing it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "File name ending in .docx or .txt, e.g. 'Launch plan.docx'.",
+                    "description": (
+                        "File name with its type, e.g. 'Launch plan.docx', 'Price list.xlsx', "
+                        "'Quote.pdf', 'Pitch.pptx', 'notes.txt'."
+                    ),
                 },
                 "content": {
                     "type": "string",
-                    "description": "The COMPLETE text: Markdown for .docx, plain text for .txt.",
+                    "description": (
+                        "The COMPLETE content: Markdown for .docx/.pdf/.pptx/.md, Markdown "
+                        "tables or CSV for .xlsx, plain text for .txt, JSON for .json."
+                    ),
                 },
                 "summary": {
                     "type": "string",
@@ -1176,8 +1185,9 @@ _SHORT_REPLY = re.compile(
 _FILE_CREATE = re.compile(
     r"\b(?:make|create|build|generate|export|save|put|write|compile|dump|keep|maintain|start|log|draft|"
     r"type up|prepare)\b.{0,60}"
-    r"\b(?:files?|sheets?|tables?|docs?|documents?|docx|txt|memo|report|letter|agenda|minutes|"
-    r"proposal|brief|notes)\b"
+    r"\b(?:files?|sheets?|spreadsheets?|workbooks?|excel|xlsx|tables?|docs?|documents?|docx|"
+    r"txt|pdfs?|pptx|powerpoint|decks?|slides?|presentations?|memo|report|letter|agenda|"
+    r"minutes|proposal|brief|notes|invoice|quote|quotation|certificate)\b"
 )
 _FILE_PARTS = re.compile(
     r"\b(?:file|sheet|table|rows?|columns?|cells?|headers?)\b"
@@ -1272,6 +1282,10 @@ def _file_detail(f: dict[str, Any]) -> str:
         return f"PDF, {rows} pages"
     if kind == "docx":
         return f"Word document, {rows} paragraphs"
+    if kind == "pptx":
+        return f"PowerPoint, {rows} slides"
+    if kind in {"md", "json"}:
+        return f"{_KIND_LABELS[kind]} text, {rows} lines"
     return f"Excel workbook, {columns} sheets"
 
 
@@ -1616,6 +1630,12 @@ def _record_change(state: _FileToolState, change: FileChange) -> None:
     state.changes.append(change)
 
 
+_KIND_LABELS = {
+    "txt": "text", "md": "Markdown", "json": "JSON", "docx": "Word",
+    "xlsx": "Excel", "pdf": "PDF", "pptx": "PowerPoint",
+}
+
+
 async def _write_document(
     file_name: str,
     arguments: dict[str, Any],
@@ -1624,7 +1644,7 @@ async def _write_document(
     user_id: str,
     state: _FileToolState,
 ) -> dict[str, Any]:
-    """Create or replace a .txt or .docx file (Markdown for .docx)."""
+    """Create or replace a text, Markdown, JSON, Word, Excel, PDF or PowerPoint file."""
 
     content = arguments.get("content")
     if not isinstance(content, str) or not content.strip():
@@ -1635,13 +1655,8 @@ async def _write_document(
         file_name = f"{file_name}.docx"
     if kind == "csv":
         return {"error": "Use write_csv_file for .csv files."}
-    if kind not in {"txt", "docx"}:
-        return {
-            "error": (
-                f"write_document writes .txt and .docx files. For a .{kind} file, call "
-                "create_updated_document to make an updated copy."
-            )
-        }
+    if kind not in files_service.WRITABLE_KINDS:
+        return {"error": f"write_document cannot write .{kind} files."}
     summary = str(arguments.get("summary") or "").strip()[:300]
     existing = await files_service.find_file_by_name(org_id, user_id, file_name)
     if existing is not None and existing.get("kind") != kind:
@@ -1670,8 +1685,8 @@ async def _write_document(
         action=action,
         kind=kind,
         summary=summary or (
-            "New Word document." if kind == "docx" and action == "created"
-            else "New text file." if action == "created" else "Rewrote the document."
+            f"New {_KIND_LABELS.get(kind, 'text')} file." if action == "created"
+            else "Rewrote the document."
         ),
         row_count=saved.get("row_count", 0),
         column_count=saved.get("column_count", 0),

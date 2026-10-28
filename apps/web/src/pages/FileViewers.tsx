@@ -27,6 +27,7 @@ import {
   type LoomFile,
   type LoomFileMeta,
   type SheetPreview,
+  type SlidePreview,
   type UpdatedVersionResult,
 } from "@/services/files";
 import { fileDetail, FileKindIcon } from "@/components/FileKindIcon";
@@ -128,7 +129,7 @@ export function DocumentFileView({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
   const replaceInput = useRef<HTMLInputElement>(null);
-  const isText = file.kind === "txt";
+  const isText = file.kind === "txt" || file.kind === "md" || file.kind === "json";
   // Word documents are edited as Markdown and rebuilt on save (undoable).
   const [docText, setDocText] = useState<string | null>(null);
   const [docOriginal, setDocOriginal] = useState("");
@@ -591,7 +592,37 @@ function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: s
   }
   if (preview.kind === "docx") return <DocPreview blocks={preview.blocks} />;
   if (preview.kind === "xlsx") return <WorkbookPreview sheets={preview.sheets} />;
+  if (preview.kind === "pptx") return <SlidesPreview slides={preview.slides} />;
   return null;
+}
+
+function SlidesPreview({ slides }: { slides: SlidePreview[] }) {
+  if (slides.length === 0) {
+    return <p className="m-4 text-sm text-muted-foreground">This presentation has no slides.</p>;
+  }
+  return (
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+      {slides.map((slide) => (
+        <section
+          key={slide.number}
+          className="aspect-video w-full max-w-2xl overflow-hidden rounded-md border border-border bg-card p-5 shadow-sm"
+        >
+          <p className="text-[11px] text-muted-foreground">Slide {slide.number}</p>
+          <h3 className="mt-1 text-lg font-semibold">{slide.title}</h3>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+            {slide.lines.slice(0, 12).map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+          {slide.notes && (
+            <p className="mt-2 border-t border-border pt-2 text-xs text-muted-foreground">
+              Notes: {slide.notes}
+            </p>
+          )}
+        </section>
+      ))}
+    </div>
+  );
 }
 
 export function DocPreview({ blocks }: { blocks: DocBlock[] }) {

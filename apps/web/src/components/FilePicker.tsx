@@ -37,7 +37,7 @@ export function FilePickerModal({
     const file = list?.[0];
     if (!file) return;
     if (!kindFromName(file.name)) {
-      setError("Attach a .csv, .txt, .docx, .xlsx, or .pdf file.");
+      setError("Attach a .csv, .txt, .md, .json, .docx, .xlsx, .pdf, or .pptx file.");
       return;
     }
     setUploading(true);

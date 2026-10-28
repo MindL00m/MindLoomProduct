@@ -19,7 +19,7 @@ import {
   type WorkspaceFile,
 } from "@/services/workspaces";
 
-const EDITABLE: FileKind[] = ["csv", "txt", "docx"];
+const EDITABLE: FileKind[] = ["csv", "txt", "md", "json", "docx"];
 
 /**
  * The workspace's shared Files. Each file stays in its owner's Files, but every

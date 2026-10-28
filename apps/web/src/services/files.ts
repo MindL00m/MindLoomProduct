@@ -1,17 +1,22 @@
-/** LoomBot Files: the signed-in user's private CSV, TXT, DOCX, XLSX, and PDF files. */
+/** LoomBot Files: the signed-in user's private text, Word, Excel, PDF, and PowerPoint files. */
 
 import { apiFetch } from "@/lib/api";
 
-export type FileKind = "csv" | "txt" | "docx" | "xlsx" | "pdf";
+export type FileKind = "csv" | "txt" | "md" | "json" | "docx" | "xlsx" | "pdf" | "pptx";
+
+/** Kinds stored as text (1 MB limit); the rest are binary (15 MB). */
+export const TEXT_KINDS: FileKind[] = ["csv", "txt", "md", "json"];
 
 /** Extensions the Files tab accepts for upload. */
 export const FILE_UPLOAD_ACCEPT =
-  ".csv,.txt,.docx,.xlsx,.pdf,text/csv,text/plain,application/pdf," +
+  ".csv,.txt,.md,.json,.docx,.xlsx,.pdf,.pptx,text/csv,text/plain,text/markdown," +
+  "application/json,application/pdf," +
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet," +
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
 export function kindFromName(name: string): FileKind | null {
-  const match = /\.(csv|txt|docx|xlsx|pdf)$/i.exec(name.trim());
+  const match = /\.(csv|txt|md|json|docx|xlsx|pdf|pptx)$/i.exec(name.trim());
   return match ? (match[1].toLowerCase() as FileKind) : null;
 }
 
@@ -81,8 +86,11 @@ export function getFile(fileId: string): Promise<LoomFile> {
   return request(`/${encodeURIComponent(fileId)}`, { method: "GET" }, "Could not open file.");
 }
 
-/** Kinds that can be created and edited as text (DOCX content is Markdown). */
-export type WritableKind = "csv" | "txt" | "docx";
+/**
+ * Kinds that can be created from text: Word, PDF, and PowerPoint from Markdown,
+ * Excel from Markdown tables or CSV.
+ */
+export type WritableKind = FileKind;
 
 export function createFile(
   name: string,
@@ -136,7 +144,15 @@ export type FilePreview =
   | { kind: "docx"; blocks: DocBlock[]; markdown?: string }
   | { kind: "xlsx"; sheets: SheetPreview[] }
   | { kind: "pdf"; pages: number }
-  | { kind: "csv" | "txt"; content: string };
+  | { kind: "pptx"; slides: SlidePreview[] }
+  | { kind: "csv" | "txt" | "md" | "json"; content: string };
+
+export interface SlidePreview {
+  number: number;
+  title: string;
+  lines: string[];
+  notes: string;
+}
 
 export type DocBlock =
   | { type: "heading"; level: number; text: string }

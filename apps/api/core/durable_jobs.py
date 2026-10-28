@@ -157,6 +157,7 @@ async def execute(message: dict[str, Any]) -> None:
                 org_id,
                 list(payload.get("visible_to") or []),
                 local,
+                uploaded_by=payload.get("uploaded_by"),
             )
         elif kind == "document":
             from brain.document_ingestion import run_document_ingestion_background

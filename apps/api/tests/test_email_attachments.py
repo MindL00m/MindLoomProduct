@@ -31,6 +31,21 @@ def _pdf(text: str) -> bytes:
     return data
 
 
+def _scan_pdf(pages: int = 2) -> bytes:
+    """Pages that are only a picture of text, like a scanner produces."""
+
+    import fitz
+
+    picture = fitz.open()
+    source = picture.new_page()
+    source.insert_text((50, 60), "Receipt total 42.00", fontsize=14)
+    png = source.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page().insert_image(fitz.Rect(0, 0, 595, 842), stream=png)
+    return doc.tobytes()
+
+
 def _blank_pdf(pages: int = 2) -> bytes:
     doc = fitz.open()
     for _ in range(pages):
@@ -128,8 +143,8 @@ async def test_extract_attachment_reads_common_formats() -> None:
 
 async def test_scanned_pdf_and_images_are_flagged_without_ocr(monkeypatch) -> None:
     monkeypatch.setattr(email_content, "_ocr_enabled", lambda: False)
-    scanned = await email_content.extract_attachment("scan.pdf", "application/pdf", _blank_pdf())
-    assert scanned.text == "" and "Scanned PDF" in scanned.note
+    scanned = await email_content.extract_attachment("scan.pdf", "application/pdf", _scan_pdf())
+    assert scanned.text == "" and "scanned" in scanned.note.lower()
     photo = await email_content.extract_attachment("receipt.jpg", "image/jpeg", b"x" * 40_000)
     assert photo.text == "" and "OCR" in photo.note
 
@@ -143,9 +158,10 @@ async def test_scanned_pdf_is_transcribed_with_ocr(monkeypatch) -> None:
 
     monkeypatch.setattr(email_content, "_ocr_enabled", lambda: True)
     monkeypatch.setattr(email_content, "ocr_images", fake_ocr)
-    scanned = await email_content.extract_attachment("scan.pdf", "application/pdf", _blank_pdf(2))
-    assert scanned.method == "ocr" and scanned.text == "Receipt total 42.00"
-    assert seen == [2]
+    scanned = await email_content.extract_attachment("scan.pdf", "application/pdf", _scan_pdf(2))
+    assert scanned.method == "ocr"
+    assert scanned.text == "[Page 1]\nReceipt total 42.00\n\n[Page 2]\nReceipt total 42.00"
+    assert seen == [1, 1]  # one page per OCR call, so text stays with its page
 
 
 def test_split_for_chunks_keeps_pieces_small() -> None:

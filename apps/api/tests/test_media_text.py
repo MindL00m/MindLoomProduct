@@ -26,6 +26,21 @@ def _blank_pdf(pages: int = 2) -> bytes:
     return doc.tobytes()
 
 
+def _scan_pdf(pages: int = 2) -> bytes:
+    """Pages that are only a picture of text, like a scanner produces."""
+
+    import fitz
+
+    picture = fitz.open()
+    source = picture.new_page()
+    source.insert_text((50, 60), "Receipt total 42.00", fontsize=14)
+    png = source.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page().insert_image(fitz.Rect(0, 0, 595, 842), stream=png)
+    return doc.tobytes()
+
+
 def _text_pdf() -> bytes:
     import fitz
 
@@ -42,8 +57,9 @@ def test_is_image_by_name_or_bytes() -> None:
 
 
 def test_scanned_pdf_detection() -> None:
-    assert media_text.pdf_is_scanned(_blank_pdf())
+    assert media_text.pdf_is_scanned(_scan_pdf())
     assert not media_text.pdf_is_scanned(_text_pdf())
+    assert not media_text.pdf_is_scanned(_blank_pdf())  # nothing on the page to read
 
 
 async def test_picture_is_transcribed(monkeypatch) -> None:
@@ -57,12 +73,12 @@ async def test_picture_is_transcribed(monkeypatch) -> None:
 
 
 async def test_scanned_pdf_falls_back_to_ocr(monkeypatch) -> None:
-    async def ocr(data, *, label, max_pages=20):
-        return "[Pages 1-2]\nBILL OF LADING"
+    async def ocr(images, *, label):
+        return "BILL OF LADING MSCU4471"
 
     monkeypatch.setattr(media_text, "ocr_available", lambda: True)
-    monkeypatch.setattr(media_text, "ocr_pdf", ocr)
-    text, method = await media_text.extract_text_with_ocr("scan.pdf", _blank_pdf())
+    monkeypatch.setattr("weaver.email_content.ocr_images", ocr)
+    text, method = await media_text.extract_text_with_ocr("scan.pdf", _scan_pdf())
     assert method == "ocr" and "BILL OF LADING" in text
 
 
@@ -71,7 +87,7 @@ async def test_text_pdf_skips_ocr(monkeypatch) -> None:
         raise AssertionError("OCR should not run for a text PDF")
 
     monkeypatch.setattr(media_text, "ocr_available", lambda: True)
-    monkeypatch.setattr(media_text, "ocr_pdf", ocr)
+    monkeypatch.setattr("weaver.email_content.ocr_images", ocr)
     text, method = await media_text.extract_text_with_ocr("invoice.pdf", _text_pdf())
     assert method == "text" and "Commercial invoice" in text
 

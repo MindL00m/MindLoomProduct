@@ -315,10 +315,21 @@ async def ingest_conversation(
 async def ingest_pdf(
     request: Request,
     background_tasks: BackgroundTasks,
-    org_id: Annotated[str, Depends(require_org_id)],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
     file: Annotated[UploadFile, File()],
+    visibility: Annotated[str, Form()] = "private",
 ) -> dict[str, str]:
-    """Ingest an uploaded PDF: store it, chunk it structurally, and classify."""
+    """Ingest an uploaded PDF: store it, chunk it structurally, and classify.
+
+    Like every manual upload it is private to the uploader unless ``visibility``
+    is "organization".
+    """
+
+    from keeper.visibility_acl import permissions_for_upload
+
+    org_id, user_id = ctx
+    if visibility not in {"private", "organization"}:
+        raise HTTPException(status_code=400, detail="visibility must be private or organization.")
 
     filename = file.filename or "upload.pdf"
     is_pdf = filename.lower().endswith(".pdf") or file.content_type == "application/pdf"
@@ -337,7 +348,10 @@ async def ingest_pdf(
             "conversation_id": filename,
             "filename": filename,
             "data": base64.b64encode(data).decode("ascii"),
-            "visible_to": [],
+            "visible_to": permissions_for_upload(
+                org_id=org_id, uploaded_by=user_id, visibility=visibility
+            ),
+            "uploaded_by": user_id,
         },
     )
 

@@ -30,12 +30,12 @@ interface UploadItem {
   result?: IngestionResult;
 }
 
-const ACCEPT = ".json,.jsonl,.pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.log,.png,.jpg,.jpeg,.gif,.webp";
+const ACCEPT = ".json,.jsonl,.pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.log,.png,.jpg,.jpeg,.gif,.webp,.zip";
 
 function kindOf(file: File): ItemKind | null {
   const name = file.name.toLowerCase();
   if (name.endsWith(".json") || file.type === "application/json") return "json";
-  if (/\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp)$/.test(name)) return "document";
+  if (/\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp|zip)$/.test(name)) return "document";
   return null;
 }
 
@@ -85,7 +85,7 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
           kind = "whatsapp";
           update(id, { kind });
         }
-        const { job_id } =
+        const queued: { job_id: string; job_ids?: string[]; files?: string[] } =
           kind === "json"
             ? await uploadConversationJson(file, { visibility })
             : kind === "whatsapp"
@@ -102,6 +102,15 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
                   visibility,
                 });
         update(id, { status: "processing", message: "Chunking & classifying…" });
+        // A ZIP is queued as one job per document inside it; wait for all of them.
+        for (const [index, extra] of (queued.job_ids ?? []).slice(0, -1).entries()) {
+          update(id, {
+            status: "processing",
+            message: `Document ${index + 1} of ${queued.job_ids?.length}: ${queued.files?.[index] ?? ""}`,
+          });
+          await pollJob(extra, () => {});
+        }
+        const job_id = queued.job_ids?.length ? queued.job_ids[queued.job_ids.length - 1] : queued.job_id;
 
         const final = await pollJob(job_id, (status) => {
           if (status.status === "processing" || status.status === "queued") {
@@ -135,6 +144,23 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
     (files: FileList | null) => {
       if (!files) return;
       Array.from(files).forEach((file) => void start(file));
+    },
+    [start],
+  );
+
+  // A whole folder: import every supported file in it and its subfolders.
+  const folderRef = useRef<HTMLInputElement>(null);
+  const [folderNote, setFolderNote] = useState<string | null>(null);
+  const handleFolder = useCallback(
+    (files: FileList | null) => {
+      const all = Array.from(files ?? []);
+      const supported = all.filter((file) => kindOf(file) !== null);
+      supported.forEach((file) => void start(file));
+      const skipped = all.length - supported.length;
+      setFolderNote(
+        `Importing ${supported.length} file${supported.length === 1 ? "" : "s"} from the folder` +
+          (skipped ? `; skipped ${skipped} unsupported.` : "."),
+      );
     },
     [start],
   );
@@ -176,6 +202,18 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
         }}
       />
 
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        className="sr-only"
+        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+        onChange={(e) => {
+          handleFolder(e.target.files);
+          e.target.value = "";
+        }}
+      />
+
       <label
         htmlFor={inputId}
         onDragOver={(e) => {
@@ -205,13 +243,24 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
           </span>
         </span>
         <span className="text-xs text-muted-foreground">
-          PDF, DOCX, PPTX, XLSX, CSV, text, logs, JSONL, or conversation JSON
+          PDF, DOCX, PPTX, XLSX, CSV, text, logs, JSONL, conversation JSON, pictures
+          (scans and photos are read with OCR), or a ZIP of any of these
         </span>
         <span className="text-xs text-muted-foreground">
           WhatsApp chat exports (.txt, without media) are detected automatically and
           read in your timezone ({browserTimeZone()}).
         </span>
       </label>
+      <div className="-mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => folderRef.current?.click()}
+          className="font-medium text-primary hover:underline"
+        >
+          Upload a whole folder
+        </button>
+        {folderNote && <span>{folderNote}</span>}
+      </div>
 
       {items.length > 0 && (
         <ul className="space-y-2">

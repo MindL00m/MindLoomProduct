@@ -351,19 +351,23 @@ async def ingest_company_document(
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
     file: Annotated[UploadFile, File()],
     metadata_json: Annotated[str, Form()] = "{}",
-) -> dict[str, str]:
-    """Queue a normal company document with optional provenance metadata."""
+) -> dict:
+    """Queue a company document (or every document in a ZIP) with optional metadata."""
 
     org_id, user_id = ctx
     filename = file.filename or "document"
+    is_archive = filename.lower().endswith(".zip")
     try:
-        ensure_supported_document(filename)
+        if not is_archive:
+            ensure_supported_document(filename)
         metadata = DocumentMetadataInput.model_validate_json(metadata_json)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded document is empty.")
+    if is_archive:
+        return await _ingest_archive(filename, data, org_id, user_id, metadata)
     job_id = await enqueue(
         "document",
         org_id=org_id,
@@ -378,6 +382,61 @@ async def ingest_company_document(
         },
     )
     return {"job_id": job_id, "status": "queued"}
+
+
+async def _ingest_archive(
+    filename: str,
+    data: bytes,
+    org_id: str,
+    user_id: str,
+    metadata: DocumentMetadataInput,
+) -> dict:
+    """Queue every supported document inside a ZIP as its own ingestion job."""
+
+    import mimetypes
+
+    from brain.archives import ArchiveError, read_archive
+    from brain.document_ingestion import SUPPORTED_DOCUMENT_EXTENSIONS
+
+    def supported(path: str) -> bool:
+        return any(path.lower().endswith(ext) for ext in SUPPORTED_DOCUMENT_EXTENSIONS)
+
+    try:
+        contents = read_archive(data, accept=supported)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not contents.entries:
+        raise HTTPException(status_code=400, detail="The ZIP has no supported documents.")
+    base = metadata.model_dump(mode="json")
+    job_ids: list[str] = []
+    for entry in contents.entries:
+        folder = entry.path.rsplit("/", 1)[0] if "/" in entry.path else ""
+        entry_metadata = {
+            **base,
+            # One title for many files would hide which is which; use each file's name.
+            "title": base.get("title") if len(contents.entries) == 1 and base.get("title") else entry.name,
+            "folder_path": base.get("folder_path") or "/".join(p for p in (filename, folder) if p),
+        }
+        job_ids.append(await enqueue(
+            "document",
+            org_id=org_id,
+            conversation_id=entry.name,
+            payload={
+                "conversation_id": entry.name,
+                "filename": entry.name,
+                "mime_type": mimetypes.guess_type(entry.name)[0] or "application/octet-stream",
+                "data": base64.b64encode(entry.data).decode("ascii"),
+                "uploaded_by": user_id,
+                "metadata": entry_metadata,
+            },
+        ))
+    return {
+        "job_id": job_ids[0],
+        "status": "queued",
+        "job_ids": job_ids,
+        "files": [entry.path for entry in contents.entries],
+        "skipped": contents.skipped,
+    }
 
 
 @app.post("/ingest/directory", response_model=DirectoryIngestResult)

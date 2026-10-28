@@ -20,6 +20,7 @@ import csv
 import io
 import json
 import logging
+import mimetypes
 import re
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -35,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 EditedBy = Literal["user", "loombot"]
 FileKind = Literal[
-    "csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx", "png", "jpg", "jpeg", "gif", "webp",
+    "csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx",
+    "png", "jpg", "jpeg", "gif", "webp", "file",
 ]
 
 MAX_FILE_BYTES = 1_000_000          # text kinds (CSV, TXT)
@@ -63,10 +65,15 @@ KINDS: dict[str, str] = {
     "jpeg": "image/jpeg",
     "gif": "image/gif",
     "webp": "image/webp",
+    # Any other type: kept as uploaded and downloadable; Ask reads it when it is text.
+    "file": "application/octet-stream",
 }
+OTHER_KIND = "file"
+# Kinds that can keep themselves updated from new knowledge (see file_monitor).
+MONITORABLE_KINDS = frozenset({"csv", "xlsx"})
 TEXT_KINDS = frozenset({"csv", "txt", "md", "json"})
 IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
-BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"}) | IMAGE_KINDS
+BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx", OTHER_KIND}) | IMAGE_KINDS
 # Binary kinds that are built from text (Markdown, or CSV/Markdown tables for XLSX).
 BUILT_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
 
@@ -77,7 +84,7 @@ _META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column
     (previous_content IS NOT NULL OR previous_blob_key IS NOT NULL) AS can_undo,
     created_at, updated_at, based_on_file_id,
     monitor_enabled, monitor_instructions, monitor_started_at,
-    shared_by_user_id, shared_by_name, shared_note, shared_at, share_seen_at"""
+    shared_by_user_id, shared_by_name, shared_note, shared_at, share_seen_at, is_template"""
 
 
 # --- Names and kinds ----------------------------------------------------------
@@ -86,6 +93,8 @@ _META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column
 def kind_from_name(name: str) -> str | None:
     lowered = (name or "").strip().lower()
     for kind in KINDS:
+        if kind == OTHER_KIND:
+            continue
         if lowered.endswith(f".{kind}"):
             return kind
     return None
@@ -99,7 +108,7 @@ def normalize_name(name: str, kind: str = "csv") -> str:
         raise HTTPException(status_code=422, detail="File name is required.")
     if _NAME_FORBIDDEN.search(cleaned):
         raise HTTPException(status_code=422, detail="File names cannot contain slashes.")
-    if not cleaned.lower().endswith(f".{kind}"):
+    if kind != OTHER_KIND and not cleaned.lower().endswith(f".{kind}"):
         cleaned += f".{kind}"
     if len(cleaned) > MAX_NAME_LENGTH:
         raise HTTPException(
@@ -187,6 +196,10 @@ def _decode_text(data: bytes) -> str:
 def validate_binary(kind: str, data: bytes) -> None:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Files are limited to 15 MB.")
+    if kind == OTHER_KIND:
+        if not data:
+            raise HTTPException(status_code=422, detail="That file is empty.")
+        return
     if kind == "pdf":
         if not data.startswith(b"%PDF"):
             raise HTTPException(status_code=422, detail="That file is not a valid PDF.")
@@ -302,6 +315,7 @@ def _meta(row: Any) -> dict[str, Any]:
         "shared_note": row.get("shared_note"),
         "shared_at": row.get("shared_at"),
         "share_seen": row.get("share_seen_at") is not None or row.get("shared_at") is None,
+        "is_template": bool(row.get("is_template")),
     }
 
 
@@ -441,8 +455,9 @@ async def create_binary_file(
     *,
     edited_by: EditedBy = "user",
     based_on: str | None = None,
+    mime_type: str | None = None,
 ) -> dict[str, Any]:
-    """Create a DOCX, XLSX, or PDF file from bytes."""
+    """Create a binary file (Office, PDF, picture, or any other type) from bytes."""
 
     if kind not in BINARY_KINDS:
         raise HTTPException(status_code=422, detail=f"Unsupported file type: {kind}.")
@@ -454,7 +469,7 @@ async def create_binary_file(
     try:
         return await _insert({
             "id": file_id, "org": org_id, "user": user_id, "name": clean_name,
-            "kind": kind, "mime": KINDS[kind], "size": len(data), "content": "",
+            "kind": kind, "mime": mime_type or KINDS[kind], "size": len(data), "content": "",
             "blob": blob, "rows": rows, "columns": columns, "edited_by": edited_by,
             "based_on": based_on,
         }, clean_name)
@@ -517,25 +532,35 @@ async def create_document(
 
 
 async def upload_file(
-    org_id: str, user_id: str, filename: str, data: bytes, name: str | None = None
+    org_id: str,
+    user_id: str,
+    filename: str,
+    data: bytes,
+    name: str | None = None,
+    *,
+    auto_rename: bool = False,
 ) -> dict[str, Any]:
-    """Create a file from an upload; the type comes from the file extension."""
+    """Create a file from an upload; the type comes from the file extension.
 
-    kind = kind_from_name(filename)
-    if kind is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Supported files: .csv, .txt, .md, .json, .docx, .xlsx, .pdf, .pptx, and "
-                "pictures (.png, .jpg, .gif, .webp)."
-            ),
-        )
-    final_name = name or filename
+    Known types are validated and previewed. Any other type is kept as uploaded
+    (kind ``file``) so it can be downloaded, shared and attached. With
+    ``auto_rename`` a taken name becomes "name (2).ext" instead of a conflict, which
+    multi-file and folder uploads rely on.
+    """
+
+    final_name = " ".join((name or filename or "upload").split()) or "upload"
+    kind = kind_from_name(final_name) or kind_from_name(filename) or OTHER_KIND
+    if auto_rename:
+        existing = {f["name"] for f in await list_files(org_id, user_id)}
+        final_name = unique_name(existing, final_name)
     if kind in TEXT_KINDS:
         if len(data) > MAX_FILE_BYTES:
             raise HTTPException(status_code=413, detail="CSV and text files are limited to 1 MB.")
         return await create_file(org_id, user_id, final_name, _decode_text(data), kind=kind)
-    return await create_binary_file(org_id, user_id, final_name, kind, data)
+    mime = None
+    if kind == OTHER_KIND:
+        mime = mimetypes.guess_type(final_name)[0] or "application/octet-stream"
+    return await create_binary_file(org_id, user_id, final_name, kind, data, mime_type=mime)
 
 
 async def update_file(
@@ -629,7 +654,7 @@ async def replace_upload(
 
     current = await get_file(org_id, user_id, file_id)
     kind = current["kind"]
-    if kind_from_name(filename) != kind:
+    if (kind_from_name(filename) or OTHER_KIND) != kind:
         raise HTTPException(
             status_code=422, detail=f"Upload a .{kind} file to replace {current['name']}."
         )
@@ -734,13 +759,15 @@ def unique_name(existing: set[str], wanted: str) -> str:
     taken = {name.lower() for name in existing}
     if wanted.lower() not in taken:
         return wanted
-    kind = kind_from_name(wanted)
-    base = stem(wanted)
+    base, dot, extension = wanted.rpartition(".")
+    if not dot or not base or " " in extension or len(extension) > 10:
+        base, extension = wanted, ""
     for n in range(2, 100):
-        candidate = f"{base} ({n}).{kind}" if kind else f"{base} ({n})"
+        candidate = f"{base} ({n}).{extension}" if extension else f"{base} ({n})"
         if candidate.lower() not in taken:
             return candidate
-    return f"{base} {uuid4().hex[:6]}.{kind}" if kind else f"{base} {uuid4().hex[:6]}"
+    tag = uuid4().hex[:6]
+    return f"{base} {tag}.{extension}" if extension else f"{base} {tag}"
 
 
 # --- Sharing ------------------------------------------------------------------------
@@ -962,13 +989,15 @@ async def set_monitoring(
     """Turn monitoring on or off, or store suggested instructions while off.
 
     Enabling needs instructions (given here or stored earlier). Only knowledge
-    that arrives after monitoring starts is applied. CSV files only.
+    that arrives after monitoring starts is applied. CSV files and Excel workbooks
+    (their first sheet) can be monitored.
     """
 
     current = await get_file(org_id, user_id, file_id)
-    if current["kind"] != "csv" and (enabled or instructions):
+    if current["kind"] not in MONITORABLE_KINDS and (enabled or instructions):
         raise HTTPException(
-            status_code=422, detail="Automatic updates are available for CSV files only."
+            status_code=422,
+            detail="Automatic updates are available for CSV files and Excel workbooks.",
         )
     cleaned = " ".join((instructions or "").split())[:MAX_MONITOR_INSTRUCTIONS] or None
     final = cleaned or current.get("monitor_instructions")
@@ -985,7 +1014,19 @@ async def set_monitoring(
     if enabled:
         from lens.status_trackers import extract_keywords
 
-        headers = " ".join(_headers(current["content"]))
+        if current["kind"] == "xlsx":
+            from loombot.file_monitor import xlsx_matrix
+
+            data, _ = await get_file_bytes(org_id, user_id, file_id)
+            table = xlsx_matrix(data)
+            headers = " ".join(table[0]) if table else ""
+            if not table:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Add a header row to the first sheet before turning on automatic updates.",
+                )
+        else:
+            headers = " ".join(_headers(current["content"]))
         base = stem(current["name"])
         params["keywords"] = json.dumps(extract_keywords(final, base.replace("-", " ").replace("_", " ")))
         try:
@@ -1152,6 +1193,92 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
     return result
 
 
+async def set_template(org_id: str, user_id: str, file_id: str, is_template: bool) -> dict[str, Any]:
+    """Mark or unmark a file as a template."""
+
+    factory = get_session_factory()
+    async with factory() as session, session.begin():
+        row = (await session.execute(text(f"""
+            UPDATE loombot_files SET is_template=:flag
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+            RETURNING {_META_COLUMNS}
+        """), {"org": org_id, "user": user_id, "id": file_id, "flag": is_template})).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    return _meta(row)
+
+
+async def extract_zip_to_files(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
+    """Unpack a ZIP in Files into separate files (names made unique; the ZIP stays)."""
+
+    from brain.archives import ArchiveError, read_archive
+
+    data, meta = await get_file_bytes(org_id, user_id, file_id)
+    try:
+        contents = read_archive(data)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    created: list[dict[str, Any]] = []
+    skipped = list(contents.skipped)
+    for entry in contents.entries:
+        try:
+            created.append(await upload_file(org_id, user_id, entry.name, entry.data, auto_rename=True))
+        except HTTPException as exc:
+            skipped.append({"path": entry.path, "reason": str(exc.detail)})
+    return {
+        "archive": meta["name"],
+        "created": [{k: v for k, v in f.items() if k != "content"} for f in created],
+        "skipped": skipped,
+    }
+
+
+def zip_text(name: str, data: bytes, *, max_chars: int = 120_000) -> str:
+    """The text of every readable file in a ZIP, each under its path."""
+
+    from brain.archives import read_archive
+    from brain.file_extract import extract_file_text
+
+    readable = (".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md", ".log", ".json",
+                ".jsonl", ".html", ".htm", ".xml")
+    contents = read_archive(data, accept=lambda path: path.lower().endswith(readable))
+    parts: list[str] = []
+    size = 0
+    for entry in contents.entries:
+        try:
+            text_part = extract_file_text(entry.name, entry.data).strip()
+        except Exception:  # noqa: BLE001 - one bad member must not hide the others
+            continue
+        if not text_part:
+            continue
+        block = f"[{entry.path}]\n{text_part}"
+        parts.append(block)
+        size += len(block)
+        if size >= max_chars:
+            break
+    listed = ", ".join(s["path"] for s in contents.skipped[:20])
+    if listed:
+        parts.append(f"(Not read from {name}: {listed})")
+    return "\n\n".join(parts)[:max_chars] or f"({name} has no readable documents.)"
+
+
+def other_file_text(name: str, data: bytes) -> str:
+    """Text of a file of another type when it is text (HTML, XML, code, logs), or the
+    documents inside a ZIP archive."""
+
+    from brain.archives import ArchiveError, is_zip
+
+    if is_zip(name, data):
+        try:
+            return zip_text(name, data)
+        except ArchiveError as exc:
+            return f"({name}: {exc})"
+    if b"\x00" in data[:4096]:
+        return f"({name} is a binary file; it can be downloaded or attached but not read.)"
+    from brain.file_extract import extract_file_text
+
+    return extract_file_text(name, data)
+
+
 def pptx_text(data: bytes) -> str:
     from loombot.file_builders import pptx_slides
 
@@ -1188,6 +1315,8 @@ async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> 
         return blocks_to_markdown(docx_blocks(data))
     if kind == "pptx":
         return pptx_text(data)
+    if kind == OTHER_KIND:
+        return other_file_text(file["name"], data)
     out: list[str] = []
     for sheet in xlsx_sheets(data, max_rows=2000):
         out.append(f"[Sheet: {sheet['name']}]")
@@ -1217,6 +1346,16 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
         return {"kind": "pptx", "slides": pptx_slides(data)}
     if meta["kind"] in IMAGE_KINDS:
         return {"kind": "image", "height": meta["row_count"], "width": meta["column_count"]}
+    if meta["kind"] == OTHER_KIND:
+        from brain.archives import ArchiveError, is_zip, list_archive
+
+        if is_zip(meta["name"], data):
+            try:
+                return {"kind": "zip", "entries": list_archive(data)}
+            except ArchiveError:
+                pass
+        text_content = None if b"\x00" in data[:4096] else data[:200_000].decode("utf-8", "replace")
+        return {"kind": "file", "mime_type": meta["mime_type"], "text": text_content}
     return {"kind": meta["kind"], "content": data.decode("utf-8")}
 
 

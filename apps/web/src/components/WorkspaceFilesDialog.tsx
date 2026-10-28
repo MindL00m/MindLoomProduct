@@ -6,7 +6,6 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { formatBytes } from "@/lib/format";
 import type { FileKind, FilePreview } from "@/services/files";
-import { FILE_UPLOAD_ACCEPT } from "@/services/files";
 import {
   downloadWorkspaceFile,
   editWorkspaceFile,
@@ -130,7 +129,6 @@ export function WorkspaceFilesDialog({
       <input
         ref={input}
         type="file"
-        accept={FILE_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];

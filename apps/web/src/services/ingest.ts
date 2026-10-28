@@ -108,7 +108,7 @@ export async function importWhatsAppExport(
 export async function uploadDocument(
   file: File,
   metadata: DocumentMetadata = {},
-): Promise<{ job_id: string }> {
+): Promise<{ job_id: string; job_ids?: string[]; files?: string[] }> {
   const form = new FormData();
   form.append("file", file);
   form.append("metadata_json", JSON.stringify(metadata));
@@ -185,7 +185,7 @@ function isJson(file: File): boolean {
 }
 
 function isDocument(file: File): boolean {
-  return /\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp)$/i.test(file.name);
+  return /\.(pdf|docx|pptx|xlsx|csv|txt|md|log|jsonl|png|jpe?g|gif|webp|zip)$/i.test(file.name);
 }
 
 /** Ingest a file into the org knowledge graph (PDF or conversation JSON). */
@@ -202,8 +202,11 @@ export async function ingestFileToGraph(
     return pollJob(job_id, onUpdate ?? (() => {}));
   }
   if (isDocument(file)) {
-    const { job_id } = await uploadDocument(file);
-    return pollJob(job_id, onUpdate ?? (() => {}));
+    const queued = await uploadDocument(file);
+    // A ZIP is one job per document inside it.
+    const jobs = queued.job_ids?.length ? queued.job_ids : [queued.job_id];
+    for (const job of jobs.slice(0, -1)) await pollJob(job, () => {});
+    return pollJob(jobs[jobs.length - 1], onUpdate ?? (() => {}));
   }
   throw new Error("Unsupported document type.");
 }

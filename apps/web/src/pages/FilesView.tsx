@@ -9,6 +9,7 @@ import {
   Plus,
   Radar,
   Save,
+  Ship,
   Trash2,
   Undo2,
   Upload,
@@ -39,6 +40,8 @@ import {
 } from "@/services/files";
 import { DriveBrowser, EmailFilesBrowser, SourceTabs, type FileSource } from "@/pages/FileSources";
 import { DocumentFileView, ExcelButton } from "@/pages/FileViewers";
+import { UploadManyButton } from "@/components/UploadManyButton";
+import { ShipmentDocumentsDialog } from "@/components/ShipmentDocumentsDialog";
 import { SharedByLine, ShareButton } from "@/pages/FileSharing";
 import { cn } from "@/lib/utils";
 import { plural, timeAgo } from "@/lib/format";
@@ -60,6 +63,8 @@ export default function FilesView({ onSharesChange }: { onSharesChange?: (count:
   const [active, setActive] = useState<LoomFile | null>(null);
   const [opening, setOpening] = useState(false);
   const [showNew, setShowNew] = useState(false);
+  const [uploadNote, setUploadNote] = useState<string | null>(null);
+  const [showShipment, setShowShipment] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const refreshList = useCallback(async () => {
@@ -184,6 +189,46 @@ export default function FilesView({ onSharesChange }: { onSharesChange?: (count:
           >
             <FilePlus2 className="size-4" /> New file
           </button>
+          <UploadManyButton
+            compact
+            upload={(file) => uploadFile(file, undefined, true)}
+            onDone={({ uploaded, failed }) => {
+              setUploadNote(
+                `Uploaded ${uploaded} file${uploaded === 1 ? "" : "s"}.` +
+                  (failed.length
+                    ? ` Skipped ${failed.length}: ${failed
+                        .slice(0, 3)
+                        .map((f) => `${f.name} (${f.error})`)
+                        .join(", ")}${failed.length > 3 ? "…" : ""}`
+                    : ""),
+              );
+              void refreshList();
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => setShowShipment(true)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+          >
+            <Ship className="size-3.5" /> Shipment documents
+          </button>
+          {showShipment && (
+            <ShipmentDocumentsDialog
+              onClose={() => setShowShipment(false)}
+              onOpen={(file) => {
+                setShowShipment(false);
+                void refreshList().then(() => openInFiles(file.file_id));
+              }}
+            />
+          )}
+          {uploadNote && (
+            <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+              <span className="flex-1">{uploadNote}</span>
+              <button type="button" aria-label="Dismiss" onClick={() => setUploadNote(null)}>
+                <X className="size-3" />
+              </button>
+            </p>
+          )}
         </div>
         <FileList
           files={files}
@@ -356,6 +401,11 @@ function FileList({
                 {f.monitor_enabled && (
                   <Radar className="size-3 shrink-0 text-primary" aria-label="Updates automatically" />
                 )}
+                {f.is_template && (
+                  <span className="shrink-0 rounded bg-brand-50 px-1 text-[10px] font-medium uppercase text-brand-700">
+                    Template
+                  </span>
+                )}
               </span>
             </span>
           </button>
@@ -444,7 +494,7 @@ function NewFileForm({
     return trimmed.toLowerCase().endsWith(`.${finalKind}`) ? trimmed : `${trimmed}.${finalKind}`;
   })();
   const duplicate = finalName !== "" && existingNames.includes(finalName.toLowerCase());
-  const canMonitor = finalKind === "csv";
+  const canMonitor = finalKind === "csv" || finalKind === "xlsx";
 
   function pick(list: FileList | null) {
     const file = list?.[0];
@@ -1053,7 +1103,7 @@ function FileEditor({
 }
 
 
-function MonitoringPanel({
+export function MonitoringPanel({
   file,
   dirty,
   onSaved,

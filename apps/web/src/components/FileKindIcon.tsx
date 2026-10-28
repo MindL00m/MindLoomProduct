@@ -47,6 +47,8 @@ export function fileDetail(f: Pick<LoomFileMeta, "kind" | "row_count" | "column_
     case "gif":
     case "webp":
       return f.row_count ? `${f.column_count} × ${f.row_count} picture` : "Picture";
+    case "file":
+      return "File";
     case "pdf":
       return plural(f.row_count, "page");
     case "docx":

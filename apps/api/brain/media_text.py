@@ -70,6 +70,16 @@ def pdf_is_scanned(data: bytes) -> bool:
 async def extract_text_with_ocr(filename: str, data: bytes) -> tuple[str, str]:
     """(text, method) where method is "text", "ocr", or "none"."""
 
+    from brain.archives import ArchiveError, is_zip
+
+    if is_zip(filename, data):
+        from loombot.files import zip_text
+
+        try:
+            text = (await asyncio.to_thread(zip_text, filename, data)).strip()
+        except ArchiveError:
+            return "", "none"
+        return text, "text" if text else "none"
     if is_image(filename, data):
         if not ocr_available():
             return "", "none"

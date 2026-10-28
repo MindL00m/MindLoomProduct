@@ -11,7 +11,9 @@ export type FileKind =
   | "xlsx"
   | "pdf"
   | "pptx"
-  | ImageKind;
+  | ImageKind
+  /** Any other type, kept as uploaded and downloadable. */
+  | "file";
 
 export type ImageKind = "png" | "jpg" | "jpeg" | "gif" | "webp";
 export const IMAGE_KINDS: FileKind[] = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -41,6 +43,8 @@ export interface LoomFileMeta {
   size_bytes: number;
   /** Set on files generated as an updated version of another file. */
   based_on_file_id?: string | null;
+  /** A template: its {{placeholders}} are filled to make new documents. */
+  is_template?: boolean;
   row_count: number;
   column_count: number;
   last_edited_by: "user" | "loombot";
@@ -103,7 +107,7 @@ export function getFile(fileId: string): Promise<LoomFile> {
  * Kinds that can be created from text: Word, PDF, and PowerPoint from Markdown,
  * Excel from Markdown tables or CSV.
  */
-export type WritableKind = Exclude<FileKind, ImageKind>;
+export type WritableKind = Exclude<FileKind, ImageKind | "file">;
 
 export function createFile(
   name: string,
@@ -117,11 +121,15 @@ export function createFile(
   );
 }
 
-/** Upload a CSV, TXT, DOCX, XLSX, or PDF file. */
-export function uploadFile(file: File, name?: string): Promise<LoomFile> {
+/**
+ * Upload any file. Known types are previewed; others are kept for download.
+ * ``autoRename`` turns a taken name into "name (2).ext" (multi-file uploads).
+ */
+export function uploadFile(file: File, name?: string, autoRename = false): Promise<LoomFile> {
   const form = new FormData();
   form.append("file", file);
   if (name?.trim()) form.append("name", name.trim());
+  if (autoRename) form.append("auto_rename", "true");
   return request("/upload", { method: "POST", body: form }, "Could not upload file.");
 }
 
@@ -159,6 +167,8 @@ export type FilePreview =
   | { kind: "pdf"; pages: number }
   | { kind: "pptx"; slides: SlidePreview[] }
   | { kind: "image"; height: number; width: number }
+  | { kind: "file"; mime_type: string; text: string | null }
+  | { kind: "zip"; entries: { path: string; size: number }[] }
   | { kind: "csv" | "txt" | "md" | "json"; content: string };
 
 export interface SlidePreview {
@@ -177,6 +187,17 @@ export interface SheetPreview {
   name: string;
   rows: string[][];
   truncated: boolean;
+}
+
+export interface ExtractZipResult {
+  archive: string;
+  created: LoomFileMeta[];
+  skipped: { path: string; reason: string }[];
+}
+
+/** Unpack a ZIP in Files into separate files; the ZIP itself is kept. */
+export function extractZip(fileId: string): Promise<ExtractZipResult> {
+  return request(`/${encodeURIComponent(fileId)}/extract`, { method: "POST" }, "Could not unpack the ZIP.");
 }
 
 export function getFilePreview(fileId: string): Promise<FilePreview> {
@@ -313,5 +334,103 @@ export function markSharesSeen(fileIds?: string[]): Promise<{ cleared: number }>
     "/shares/seen",
     { method: "POST", body: JSON.stringify({ file_ids: fileIds ?? null }) },
     "Could not update notifications.",
+  );
+}
+
+// --- Templates --------------------------------------------------------------------
+
+export interface TemplateInfo {
+  file: LoomFileMeta;
+  /** Single-value {{placeholders}}, in document order. */
+  fields: string[];
+  /** Line-item lists: {{items.description}} rows repeat once per item. */
+  lists: Record<string, string[]>;
+}
+
+export interface FillTemplateResult {
+  file: LoomFileMeta;
+  template: string;
+  values: Record<string, unknown>;
+  unfilled: string[];
+  notes: string;
+}
+
+export function listTemplates(): Promise<LoomFileMeta[]> {
+  return request("/templates", { method: "GET" }, "Could not load templates.");
+}
+
+export function setTemplate(fileId: string, isTemplate: boolean): Promise<TemplateInfo> {
+  return request(
+    `/${encodeURIComponent(fileId)}/template`,
+    { method: "PUT", body: JSON.stringify({ is_template: isTemplate }) },
+    "Could not change the template setting.",
+  );
+}
+
+export function getTemplate(fileId: string): Promise<TemplateInfo> {
+  return request(`/${encodeURIComponent(fileId)}/template`, { method: "GET" }, "Could not read the template.");
+}
+
+/** Make a new file from a template; LoomBot fills what is not typed. */
+export function fillTemplate(
+  fileId: string,
+  input: {
+    values?: Record<string, unknown>;
+    instructions?: string;
+    source_file_ids?: string[];
+    name?: string;
+  },
+): Promise<FillTemplateResult> {
+  return request(
+    `/${encodeURIComponent(fileId)}/fill`,
+    { method: "POST", body: JSON.stringify(input) },
+    "Could not fill the template.",
+  );
+}
+
+/** Copy a sample document as a template, with its deal-specific values as fields. */
+export function makeTemplate(
+  fileId: string,
+  instructions?: string,
+): Promise<TemplateInfo & { summary: string }> {
+  return request(
+    `/${encodeURIComponent(fileId)}/make-template`,
+    { method: "POST", body: JSON.stringify({ instructions: instructions || null }) },
+    "Could not make a template.",
+  );
+}
+
+// --- Shipment documents -------------------------------------------------------------
+
+export type ShipmentDocumentType =
+  | "commercial_invoice"
+  | "packing_list"
+  | "certificate_of_origin"
+  | "certificate_of_analysis";
+
+export interface ShipmentDocumentsResult {
+  documents: {
+    document_type: ShipmentDocumentType;
+    label: string;
+    file: LoomFileMeta;
+    used_template: boolean;
+    unfilled: string[];
+  }[];
+  shipment: Record<string, unknown>;
+  missing: string[];
+  warnings: string[];
+}
+
+/** Make invoices, packing lists and certificates from the shipment's own documents. */
+export function createShipmentDocuments(input: {
+  document_types: ShipmentDocumentType[];
+  source_file_ids: string[];
+  template_file_ids?: Partial<Record<ShipmentDocumentType, string>>;
+  instructions?: string;
+}): Promise<ShipmentDocumentsResult> {
+  return request(
+    "/shipment-documents",
+    { method: "POST", body: JSON.stringify(input) },
+    "Could not make the shipment documents.",
   );
 }

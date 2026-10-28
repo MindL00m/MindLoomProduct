@@ -166,6 +166,7 @@ export type FilePreview =
   | { kind: "pptx"; slides: SlidePreview[] }
   | { kind: "image"; height: number; width: number }
   | { kind: "file"; mime_type: string; text: string | null }
+  | { kind: "zip"; entries: { path: string; size: number }[] }
   | { kind: "csv" | "txt" | "md" | "json"; content: string };
 
 export interface SlidePreview {
@@ -184,6 +185,17 @@ export interface SheetPreview {
   name: string;
   rows: string[][];
   truncated: boolean;
+}
+
+export interface ExtractZipResult {
+  archive: string;
+  created: LoomFileMeta[];
+  skipped: { path: string; reason: string }[];
+}
+
+/** Unpack a ZIP in Files into separate files; the ZIP itself is kept. */
+export function extractZip(fileId: string): Promise<ExtractZipResult> {
+  return request(`/${encodeURIComponent(fileId)}/extract`, { method: "POST" }, "Could not unpack the ZIP.");
 }
 
 export function getFilePreview(fileId: string): Promise<FilePreview> {

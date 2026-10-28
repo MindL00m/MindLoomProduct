@@ -53,6 +53,7 @@ _EXTENSION_KINDS = {
     ".jpeg": "image",
     ".gif": "image",
     ".webp": "image",
+    ".zip": "zip",
 }
 _MIME_KINDS = {
     "application/pdf": "pdf",
@@ -66,6 +67,8 @@ _MIME_KINDS = {
     "application/json": "json",
     "text/html": "html",
     "message/rfc822": "email",
+    "application/zip": "zip",
+    "application/x-zip-compressed": "zip",
 }
 _LEGACY_OFFICE = {".doc", ".xls", ".ppt", ".rtf", ".odt", ".ods", ".odp", ".pages", ".numbers", ".key"}
 # File names extract_file_text dispatches on, per kind.
@@ -425,6 +428,10 @@ async def extract_attachment(
             result.text = _truncate(await ocr_images([data], label=filename))
             result.method = "ocr" if result.text else "skipped"
             return result
+        elif kind == "zip":
+            from loombot.files import zip_text
+
+            result.text = _truncate(await asyncio.to_thread(zip_text, filename, data))
         elif kind == "html":
             result.text = _truncate(html_to_text(_decode_text(data)))
         elif kind == "email":

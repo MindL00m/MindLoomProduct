@@ -1176,9 +1176,70 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
     return result
 
 
-def other_file_text(name: str, data: bytes) -> str:
-    """Text of a file of another type when it is text (HTML, XML, code, logs)."""
+async def extract_zip_to_files(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:
+    """Unpack a ZIP in Files into separate files (names made unique; the ZIP stays)."""
 
+    from brain.archives import ArchiveError, read_archive
+
+    data, meta = await get_file_bytes(org_id, user_id, file_id)
+    try:
+        contents = read_archive(data)
+    except ArchiveError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    created: list[dict[str, Any]] = []
+    skipped = list(contents.skipped)
+    for entry in contents.entries:
+        try:
+            created.append(await upload_file(org_id, user_id, entry.name, entry.data, auto_rename=True))
+        except HTTPException as exc:
+            skipped.append({"path": entry.path, "reason": str(exc.detail)})
+    return {
+        "archive": meta["name"],
+        "created": [{k: v for k, v in f.items() if k != "content"} for f in created],
+        "skipped": skipped,
+    }
+
+
+def zip_text(name: str, data: bytes, *, max_chars: int = 120_000) -> str:
+    """The text of every readable file in a ZIP, each under its path."""
+
+    from brain.archives import read_archive
+    from brain.file_extract import extract_file_text
+
+    readable = (".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md", ".log", ".json",
+                ".jsonl", ".html", ".htm", ".xml")
+    contents = read_archive(data, accept=lambda path: path.lower().endswith(readable))
+    parts: list[str] = []
+    size = 0
+    for entry in contents.entries:
+        try:
+            text_part = extract_file_text(entry.name, entry.data).strip()
+        except Exception:  # noqa: BLE001 - one bad member must not hide the others
+            continue
+        if not text_part:
+            continue
+        block = f"[{entry.path}]\n{text_part}"
+        parts.append(block)
+        size += len(block)
+        if size >= max_chars:
+            break
+    listed = ", ".join(s["path"] for s in contents.skipped[:20])
+    if listed:
+        parts.append(f"(Not read from {name}: {listed})")
+    return "\n\n".join(parts)[:max_chars] or f"({name} has no readable documents.)"
+
+
+def other_file_text(name: str, data: bytes) -> str:
+    """Text of a file of another type when it is text (HTML, XML, code, logs), or the
+    documents inside a ZIP archive."""
+
+    from brain.archives import ArchiveError, is_zip
+
+    if is_zip(name, data):
+        try:
+            return zip_text(name, data)
+        except ArchiveError as exc:
+            return f"({name}: {exc})"
     if b"\x00" in data[:4096]:
         return f"({name} is a binary file; it can be downloaded or attached but not read.)"
     from brain.file_extract import extract_file_text
@@ -1254,6 +1315,13 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
     if meta["kind"] in IMAGE_KINDS:
         return {"kind": "image", "height": meta["row_count"], "width": meta["column_count"]}
     if meta["kind"] == OTHER_KIND:
+        from brain.archives import ArchiveError, is_zip, list_archive
+
+        if is_zip(meta["name"], data):
+            try:
+                return {"kind": "zip", "entries": list_archive(data)}
+            except ArchiveError:
+                pass
         text_content = None if b"\x00" in data[:4096] else data[:200_000].decode("utf-8", "replace")
         return {"kind": "file", "mime_type": meta["mime_type"], "text": text_content}
     return {"kind": meta["kind"], "content": data.decode("utf-8")}

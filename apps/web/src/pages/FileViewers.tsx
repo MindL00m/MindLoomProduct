@@ -26,6 +26,8 @@ import {
   type FilePreview,
   type LoomFile,
   type LoomFileMeta,
+  type ExtractZipResult,
+  extractZip,
   type SheetPreview,
   type SlidePreview,
   IMAGE_KINDS,
@@ -42,6 +44,15 @@ const KIND_LABEL: Record<string, string> = {
   xlsx: "Excel workbook",
   pdf: "PDF",
   csv: "CSV",
+  md: "Markdown",
+  json: "JSON",
+  pptx: "PowerPoint",
+  png: "Picture",
+  jpg: "Picture",
+  jpeg: "Picture",
+  gif: "Picture",
+  webp: "Picture",
+  file: "File",
 };
 
 /**
@@ -374,7 +385,11 @@ export function DocumentFileView({
           </p>
         </div>
       ) : (
-        <StructuredPreview fileId={file.file_id} updatedAt={file.updated_at} />
+        <StructuredPreview
+          fileId={file.file_id}
+          updatedAt={file.updated_at}
+          onExtracted={onCreated}
+        />
       )}
 
       {(dirty || editingDoc) && (
@@ -582,7 +597,15 @@ function PdfFrame({ fileId, updatedAt }: { fileId: string; updatedAt: string }) 
   return <iframe title="PDF preview" src={url} className="m-4 min-h-0 flex-1 rounded-md border border-border" />;
 }
 
-function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: string }) {
+function StructuredPreview({
+  fileId,
+  updatedAt,
+  onExtracted,
+}: {
+  fileId: string;
+  updatedAt: string;
+  onExtracted?: (file: LoomFileMeta) => void;
+}) {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [error, setError] = useState("");
 
@@ -608,6 +631,9 @@ function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: s
   if (preview.kind === "docx") return <DocPreview blocks={preview.blocks} />;
   if (preview.kind === "xlsx") return <WorkbookPreview sheets={preview.sheets} />;
   if (preview.kind === "pptx") return <SlidesPreview slides={preview.slides} />;
+  if (preview.kind === "zip") {
+    return <ZipPreview fileId={fileId} entries={preview.entries} onExtracted={onExtracted} />;
+  }
   if (preview.kind === "file") {
     return preview.text !== null ? (
       <pre className="m-4 min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-xs">
@@ -621,6 +647,76 @@ function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: s
     );
   }
   return null;
+}
+
+function ZipPreview({
+  fileId,
+  entries,
+  onExtracted,
+}: {
+  fileId: string;
+  entries: { path: string; size: number }[];
+  onExtracted?: (file: LoomFileMeta) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ExtractZipResult | null>(null);
+  const [error, setError] = useState("");
+
+  async function extract() {
+    setBusy(true);
+    setError("");
+    try {
+      const done = await extractZip(fileId);
+      setResult(done);
+      if (done.created[0]) onExtracted?.(done.created[0]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not unpack the ZIP.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm font-medium">
+          ZIP archive with {entries.length} file{entries.length === 1 ? "" : "s"}
+        </p>
+        <button
+          type="button"
+          disabled={busy || entries.length === 0}
+          onClick={() => void extract()}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+          Extract into Files
+        </button>
+      </div>
+      {result && (
+        <p className="text-xs text-foreground">
+          Added {result.created.length} file{result.created.length === 1 ? "" : "s"} to your Files.
+          {result.skipped.length
+            ? ` Skipped ${result.skipped.length}: ${result.skipped
+                .slice(0, 4)
+                .map((s) => `${s.path} (${s.reason})`)
+                .join(", ")}.`
+            : ""}
+        </p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      <ul className="divide-y divide-border rounded-md border border-border text-sm">
+        {entries.slice(0, 300).map((entry) => (
+          <li key={entry.path} className="flex justify-between gap-3 px-3 py-1.5">
+            <span className="truncate">{entry.path}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(entry.size)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-muted-foreground">
+        LoomBot can also read the documents inside this ZIP when you ask about it.
+      </p>
+    </div>
+  );
 }
 
 function SlidesPreview({ slides }: { slides: SlidePreview[] }) {

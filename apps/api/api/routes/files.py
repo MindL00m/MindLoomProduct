@@ -201,6 +201,16 @@ async def file_events(
     return await files_service.list_events(*ctx, file_id)
 
 
+@router.post("/{file_id}/extract")
+async def extract_zip(
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Unpack a ZIP in Files into separate files; the ZIP itself is kept."""
+
+    return await files_service.extract_zip_to_files(*ctx, file_id)
+
+
 @router.get("/{file_id}/download")
 async def download_file(
     file_id: str,

@@ -1,4 +1,4 @@
-"""LoomBot Files tab: the signed-in user's private CSV, TXT, DOCX, XLSX, and PDF files."""
+"""LoomBot Files tab: the signed-in user's private files (text, Word, Excel, PDF, PowerPoint)."""
 
 from typing import Literal
 from urllib.parse import quote
@@ -14,9 +14,10 @@ router = APIRouter(prefix="/loombot/files", tags=["loombot-files"])
 
 class CreateFileInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    # CSV text, plain text, or Markdown for a Word document.
+    # CSV text, plain text, JSON, or Markdown (Word, PDF, PowerPoint, Markdown).
+    # Excel takes CSV text or Markdown tables (one sheet per table).
     content: str = ""
-    kind: Literal["csv", "txt", "docx"] = "csv"
+    kind: Literal["csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx"] = "csv"
 
 
 class UpdatedVersionInput(BaseModel):

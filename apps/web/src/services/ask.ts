@@ -69,9 +69,15 @@ export interface ProposedEmail {
   recipient_email: string;
   recipient_name?: string;
   recipient_user_id?: string | null;
+  cc_email?: string;
+  bcc_email?: string;
+  /** One email per To address, so recipients never see each other. */
+  send_separately?: boolean;
   subject: string;
   body: string;
+  /** True when the user can send from a connected mailbox (Gmail or Outlook). */
   google_connected?: boolean;
+  email_provider?: "gmail" | "outlook" | "";
   candidates?: MessageablePerson[];
   attachments?: EmailAttachmentRef[];
 }

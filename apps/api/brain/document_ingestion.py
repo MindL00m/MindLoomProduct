@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from brain.file_extract import extract_file_text
+from brain.media_text import IMAGE_EXTENSIONS, extract_text_with_ocr, no_text_reason
 from core.models import (
     Conversation,
     DocumentMetadataInput,
@@ -27,6 +27,7 @@ SUPPORTED_DOCUMENT_EXTENSIONS = {
     ".md",
     ".log",
     ".jsonl",
+    *IMAGE_EXTENSIONS,
 }
 
 
@@ -42,6 +43,7 @@ def document_source(filename: str) -> str:
         ".log": "operational_log",
         ".md": "text",
         ".txt": "text",
+        **{extension: "image" for extension in IMAGE_EXTENSIONS},
     }.get(suffix, "document")
 
 
@@ -50,7 +52,7 @@ def ensure_supported_document(filename: str) -> None:
     if suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
         raise ValueError(
             "Unsupported document type. Use PDF, DOCX, PPTX, XLSX, CSV, "
-            "TXT, Markdown, LOG, or JSONL."
+            "TXT, Markdown, LOG, JSONL, or a picture (PNG, JPEG, GIF, WebP)."
         )
 
 
@@ -64,11 +66,9 @@ async def ingest_document(
     metadata: DocumentMetadataInput,
 ):
     ensure_supported_document(filename)
-    text = extract_file_text(filename, data).strip()
+    text, _method = await extract_text_with_ocr(filename, data)
     if not text:
-        raise ValueError(
-            "No readable text was found. Scanned images and media require the later OCR/media pipeline."
-        )
+        raise ValueError(no_text_reason(filename, data))
     now = metadata.source_updated_at or datetime.now(timezone.utc)
     source = document_source(filename)
     if source in {"csv", "spreadsheet", "operational_log"}:

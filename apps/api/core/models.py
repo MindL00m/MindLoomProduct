@@ -980,9 +980,17 @@ class ProposedEmail(BaseModel):
     recipient_email: str = ""
     recipient_name: str = ""
     recipient_user_id: Optional[str] = None
+    cc_email: str = ""
+    bcc_email: str = ""
+    send_separately: bool = Field(
+        default=False,
+        description="Send one email per To address so recipients never see each other.",
+    )
     subject: str
     body: str
+    # True when the user can send from a connected mailbox (Gmail or Outlook).
     google_connected: bool = False
+    email_provider: str = ""
     candidates: list[MessageablePerson] = Field(default_factory=list)
     attachments: list[EmailAttachmentRef] = Field(
         default_factory=list, description="Files attached to the draft; the user can change them."

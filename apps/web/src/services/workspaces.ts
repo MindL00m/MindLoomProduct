@@ -1,5 +1,6 @@
 import { apiFetch } from "@/lib/api";
 import type { QueryResponse } from "@/services/ask";
+import type { FilePreview, LoomFile, LoomFileMeta } from "@/services/files";
 
 export interface Workspace {
   workspace_id: string;
@@ -174,6 +175,74 @@ export async function addWorkspaceMembers(
   return response.json();
 }
 
+export interface WorkspaceInvite {
+  invite_id: string;
+  email: string;
+  created_at: string | null;
+  invited_by?: string | null;
+}
+
+export interface InviteByEmailResult {
+  added: WorkspaceMember[];
+  already_members: string[];
+  invited: string[];
+  already_invited: string[];
+  outside_organization: string[];
+  invalid: string[];
+  invite_emails_sent: number;
+  members: WorkspaceMember[];
+  invites: WorkspaceInvite[];
+}
+
+/**
+ * Add people by email. Signed-in colleagues join now; colleagues on the company
+ * domain who have not signed in yet get an invite and join on first sign-in.
+ */
+export async function addWorkspaceMembersByEmail(
+  workspaceId: string,
+  emails: string[],
+  sendEmail = true,
+): Promise<InviteByEmailResult> {
+  const response = await apiFetch(`/workspaces/${workspaceId}/members/by-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ emails, send_email: sendEmail }),
+  });
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not add people."));
+  return response.json();
+}
+
+export async function listWorkspaceInvites(workspaceId: string): Promise<WorkspaceInvite[]> {
+  const response = await apiFetch(`/workspaces/${workspaceId}/invites`);
+  if (!response.ok) throw new Error("Could not load invites.");
+  return response.json();
+}
+
+export async function cancelWorkspaceInvite(
+  workspaceId: string,
+  inviteId: string,
+): Promise<{ invites: WorkspaceInvite[] }> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/invites/${encodeURIComponent(inviteId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not cancel the invite."));
+  return response.json();
+}
+
+/** Leave the workspace (your own id) or, as its creator, remove someone. */
+export async function removeWorkspaceMember(
+  workspaceId: string,
+  memberUserId: string,
+): Promise<{ left: boolean; members: WorkspaceMember[] }> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/members/${encodeURIComponent(memberUserId)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await errorDetail(response, "Could not remove the member."));
+  return response.json();
+}
+
 /** Save what the asker did on a Loombot reply's cards, so every member sees it. */
 export async function saveCardState(
   workspaceId: string,
@@ -190,4 +259,104 @@ export async function saveCardState(
   );
   if (!response.ok) throw new Error(await errorDetail(response, "Could not save the card."));
   return response.json();
+}
+
+// --- Workspace Files: shared with every member, edited in place --------------------
+
+export interface WorkspaceFile extends LoomFileMeta {
+  owner_user_id: string;
+  owner_name?: string | null;
+  added_by_name?: string | null;
+  added_at?: string | null;
+  is_mine: boolean;
+}
+
+async function wsFiles<T>(path: string, init: RequestInit, fallback: string): Promise<T> {
+  const response = await apiFetch(`/workspaces${path}`, {
+    ...init,
+    headers:
+      typeof init.body === "string"
+        ? { "Content-Type": "application/json", ...(init.headers ?? {}) }
+        : init.headers,
+  });
+  if (!response.ok) throw new Error(await errorDetail(response, fallback));
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+export function listWorkspaceFiles(workspaceId: string): Promise<WorkspaceFile[]> {
+  return wsFiles(`/${workspaceId}/files`, { method: "GET" }, "Could not load workspace files.");
+}
+
+/** Share some of your own Files with everyone in the workspace. */
+export function shareFilesToWorkspace(
+  workspaceId: string,
+  fileIds: string[],
+): Promise<{ files: WorkspaceFile[] }> {
+  return wsFiles(
+    `/${workspaceId}/files`,
+    { method: "POST", body: JSON.stringify({ file_ids: fileIds }) },
+    "Could not share the files.",
+  );
+}
+
+export function uploadWorkspaceFile(workspaceId: string, file: File): Promise<LoomFile> {
+  const form = new FormData();
+  form.append("file", file);
+  return wsFiles(`/${workspaceId}/files/upload`, { method: "POST", body: form }, "Could not upload.");
+}
+
+export function getWorkspaceFile(workspaceId: string, fileId: string): Promise<LoomFile> {
+  return wsFiles(`/${workspaceId}/files/${encodeURIComponent(fileId)}`, { method: "GET" }, "Could not open the file.");
+}
+
+export function getWorkspaceFilePreview(workspaceId: string, fileId: string): Promise<FilePreview> {
+  return wsFiles(
+    `/${workspaceId}/files/${encodeURIComponent(fileId)}/preview`,
+    { method: "GET" },
+    "Could not preview the file.",
+  );
+}
+
+/** Save new text (CSV, TXT, or Markdown for Word); every member sees the change. */
+export function editWorkspaceFile(
+  workspaceId: string,
+  fileId: string,
+  content: string,
+): Promise<LoomFile> {
+  return wsFiles(
+    `/${workspaceId}/files/${encodeURIComponent(fileId)}`,
+    { method: "PUT", body: JSON.stringify({ content }) },
+    "Could not save the file.",
+  );
+}
+
+export async function downloadWorkspaceFile(
+  workspaceId: string,
+  fileId: string,
+  name: string,
+  inline = false,
+): Promise<void> {
+  const response = await apiFetch(
+    `/workspaces/${workspaceId}/files/${encodeURIComponent(fileId)}/download${inline ? "?inline=true" : ""}`,
+  );
+  if (!response.ok) throw new Error("Could not download the file.");
+  const url = URL.createObjectURL(await response.blob());
+  if (inline) {
+    window.open(url, "_blank", "noopener");
+  } else {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export function unshareWorkspaceFile(workspaceId: string, fileId: string): Promise<void> {
+  return wsFiles(
+    `/${workspaceId}/files/${encodeURIComponent(fileId)}`,
+    { method: "DELETE" },
+    "Could not remove the file.",
+  );
 }

@@ -65,8 +65,11 @@ async def test_create_document_builds_a_docx(monkeypatch) -> None:
     assert saved["name"] == "Launch plan.docx" and captured["kind"] == "docx"
     assert files_service.docx_blocks(captured["data"])[0]["text"] == "Launch plan"
 
+    saved = await files_service.create_document("o", "u", "Quote", "# Quote\n\nHello", kind="pdf")
+    assert saved["name"] == "Quote.pdf" and captured["data"].startswith(b"%PDF")
+
     with pytest.raises(HTTPException):
-        await files_service.create_document("o", "u", "x.pdf", "text", kind="pdf")
+        await files_service.create_document("o", "u", "x.zip", "text", kind="zip")
 
 
 async def test_editing_docx_text_rebuilds_it_and_stays_undoable(monkeypatch) -> None:

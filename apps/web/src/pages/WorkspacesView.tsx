@@ -15,18 +15,24 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { Markdown } from "@/components/Markdown";
 import { FileKindIcon } from "@/components/FileKindIcon";
+import { WorkspaceFilesDialog } from "@/components/WorkspaceFilesDialog";
 import { listMessageContacts, type MessageContact } from "@/services/reviews";
 import {
   addWorkspaceMembers,
+  addWorkspaceMembersByEmail,
+  cancelWorkspaceInvite,
   createWorkspace,
+  listWorkspaceInvites,
   listWorkspaceMembers,
   listWorkspaceMessages,
   listWorkspaces,
+  removeWorkspaceMember,
   resyncWorkspaceContext,
   saveCardState,
   sendWorkspaceMessage,
   type LoombotPayload,
   type Workspace,
+  type WorkspaceInvite,
   type WorkspaceMember,
   type WorkspaceMessage,
 } from "@/services/workspaces";
@@ -93,6 +99,7 @@ export default function WorkspacesView() {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [showContext, setShowContext] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -409,6 +416,14 @@ export default function WorkspacesView() {
                   Members
                   {active.kind !== "org_wide" && <UserPlus className="size-3.5 text-primary" />}
                 </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                  onClick={() => setShowFiles(true)}
+                >
+                  <FileText className="size-3.5" />
+                  Files
+                </button>
                 {isContextOnly && (
                   <>
                     <button
@@ -517,7 +532,7 @@ export default function WorkspacesView() {
                     </span>
                   ))}
                   <span className="self-center text-[11px] text-muted-foreground">
-                    Saved to your Files. Loombot reads them with your next @Loombot message.
+                    Saved to your Files and shared in this workspace's Files when you send.
                   </span>
                 </div>
               )}
@@ -637,10 +652,23 @@ export default function WorkspacesView() {
         <MembersDialog
           workspace={active}
           contacts={contacts}
+          userId={userId}
           onClose={() => setShowMembers(false)}
           onAdded={async () => {
             await Promise.all([loadWorkspaces(), loadMessages(active.workspace_id)]);
           }}
+          onLeft={async () => {
+            setShowMembers(false);
+            await loadWorkspaces();
+          }}
+        />
+      )}
+
+      {showFiles && active && (
+        <WorkspaceFilesDialog
+          workspace={active}
+          onClose={() => setShowFiles(false)}
+          onChanged={() => loadMessages(active.workspace_id)}
         />
       )}
 
@@ -801,15 +829,23 @@ function SharedAnswer({ payload, asker }: { payload: LoombotPayload; asker: stri
 function MembersDialog({
   workspace,
   contacts,
+  userId,
   onClose,
   onAdded,
+  onLeft,
 }: {
   workspace: Workspace;
   contacts: MessageContact[];
+  userId: string | null;
   onClose: () => void;
   onAdded: () => Promise<void>;
+  onLeft: () => Promise<void>;
 }) {
   const [members, setMembers] = useState<WorkspaceMember[] | null>(null);
+  const [invites, setInvites] = useState<WorkspaceInvite[]>([]);
+  const [emailInput, setEmailInput] = useState("");
+  const [sendInviteEmail, setSendInviteEmail] = useState(true);
+  const isCreator = Boolean(userId && workspace.created_by === userId);
   const [selected, setSelected] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const [saving, setSaving] = useState(false);
@@ -822,6 +858,11 @@ function MembersDialog({
     void listWorkspaceMembers(workspace.workspace_id)
       .then((rows) => !cancelled && setMembers(rows))
       .catch((err: Error) => !cancelled && setError(err.message));
+    if (workspace.kind !== "org_wide") {
+      void listWorkspaceInvites(workspace.workspace_id)
+        .then((rows) => !cancelled && setInvites(rows))
+        .catch(() => undefined);
+    }
     return () => {
       cancelled = true;
     };
@@ -857,6 +898,82 @@ function MembersDialog({
     }
   }
 
+  async function addByEmail() {
+    const emails = emailInput
+      .split(/[\s,;]+/)
+      .map((e) => e.trim())
+      .filter(Boolean);
+    if (emails.length === 0) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await addWorkspaceMembersByEmail(
+        workspace.workspace_id,
+        emails,
+        sendInviteEmail,
+      );
+      setMembers(result.members);
+      setInvites(result.invites);
+      setEmailInput("");
+      const parts: string[] = [];
+      if (result.added.length) parts.push(`Added ${result.added.map((m) => m.name).join(", ")}.`);
+      if (result.invited.length) {
+        parts.push(
+          `Invited ${result.invited.join(", ")}` +
+            (result.invite_emails_sent
+              ? " and emailed them."
+              : ". They join when they first sign in."),
+        );
+      }
+      if (result.already_members.length) parts.push(`Already members: ${result.already_members.join(", ")}.`);
+      if (result.already_invited.length) parts.push(`Already invited: ${result.already_invited.join(", ")}.`);
+      if (result.outside_organization.length) {
+        parts.push(
+          `Not added (outside your organization's email domain): ${result.outside_organization.join(", ")}.`,
+        );
+      }
+      if (result.invalid.length) parts.push(`Not an email address: ${result.invalid.join(", ")}.`);
+      setNotice(parts.join(" ") || "Nothing to add.");
+      await onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add people.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(member: WorkspaceMember) {
+    const leaving = member.user_id === userId;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await removeWorkspaceMember(workspace.workspace_id, member.user_id);
+      if (leaving || result.left) {
+        await onLeft();
+        return;
+      }
+      setMembers(result.members);
+      setNotice(`Removed ${member.name}.`);
+      await onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove the member.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function cancelInvite(invite: WorkspaceInvite) {
+    setError(null);
+    try {
+      const result = await cancelWorkspaceInvite(workspace.workspace_id, invite.invite_id);
+      setInvites(result.invites);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel the invite.");
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 p-4"
@@ -874,7 +991,7 @@ function MembersDialog({
             <h3 className="font-semibold">Members of {workspace.name}</h3>
             <p className="text-sm text-muted-foreground">
               {canAdd
-                ? "Anyone in the workspace can add signed-in colleagues. New members see the whole chat history."
+                ? "Anyone in the workspace can add colleagues. New members see the whole chat history."
                 : "Everyone in your organization is in this workspace automatically."}
             </p>
           </div>
@@ -895,13 +1012,77 @@ function MembersDialog({
             </p>
           ) : (
             members.map((member) => (
-              <p key={member.user_id} className="truncate px-2 py-1 text-sm">
-                {member.name}
-                <span className="text-muted-foreground"> — {member.email}</span>
-              </p>
+              <div key={member.user_id} className="flex items-center gap-2 px-2 py-1">
+                <p className="min-w-0 flex-1 truncate text-sm">
+                  {member.name}
+                  <span className="text-muted-foreground"> — {member.email}</span>
+                </p>
+                {canAdd && (member.user_id === userId || isCreator) && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void remove(member)}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
+                  >
+                    {member.user_id === userId ? "Leave" : "Remove"}
+                  </button>
+                )}
+              </div>
             ))
           )}
+          {invites.map((invite) => (
+            <div key={invite.invite_id} className="flex items-center gap-2 px-2 py-1">
+              <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                {invite.email}
+                <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase">
+                  Invited
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => void cancelInvite(invite)}
+                className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
+              >
+                Cancel
+              </button>
+            </div>
+          ))}
         </div>
+
+        {canAdd && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Add by email</p>
+            <div className="flex gap-2">
+              <input
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void addByEmail();
+                  }
+                }}
+                placeholder="priya@company.com, sam@company.com"
+                aria-label="Email addresses to add"
+                className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+              <SecondaryButton
+                disabled={saving || !emailInput.trim()}
+                onClick={() => void addByEmail()}
+              >
+                Add
+              </SecondaryButton>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={sendInviteEmail}
+                onChange={(e) => setSendInviteEmail(e.target.checked)}
+              />
+              Email an invite to people who have not signed in yet (from your Gmail)
+            </label>
+          </div>
+        )}
 
         {canAdd && (
           <div className="space-y-2">
@@ -946,8 +1127,8 @@ function MembersDialog({
               )}
             </div>
             <p className="text-xs text-muted-foreground">
-              Only people who have signed in to MindLoom can be added. You can also ask
-              “@Loombot add Priya to this workspace”.
+              Colleagues who have not signed in yet can be added by email above; they join
+              on their first sign-in. You can also ask “@Loombot add Priya to this workspace”.
             </p>
           </div>
         )}

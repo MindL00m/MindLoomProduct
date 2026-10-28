@@ -91,7 +91,13 @@ Messaging rules:
 - propose_email and propose_expert_message do NOT send anything. Never say a message
   or email was sent.
 - Expert Messages require a signed-in MindLoom user. Email can go to any address.
-- Google Workspace email sending is {gmail_status}.
+- Several recipients go in recipient_email, comma-separated. Put copies in cc_email,
+  and hidden copies in bcc_email.
+- When writing to several outside parties who must not see each other (for example
+  asking every supplier for an offer, or offering stock to several buyers), set
+  send_separately=true: each address gets its own email and nobody sees who else
+  was contacted.
+- Email sending from the user's mailbox is {gmail_status}.
 
 Recurring email rules:
 - When the user wants an email sent repeatedly at a fixed interval ("every 2
@@ -354,7 +360,25 @@ _TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "recipient_email": {
                         "type": "string",
-                        "description": "To address. Empty if the user must enter one.",
+                        "description": (
+                            "To address, or several separated by commas. Empty if the "
+                            "user must enter one."
+                        ),
+                    },
+                    "cc_email": {
+                        "type": "string",
+                        "description": "Optional Cc addresses, comma-separated.",
+                    },
+                    "bcc_email": {
+                        "type": "string",
+                        "description": "Optional Bcc addresses (hidden from everyone), comma-separated.",
+                    },
+                    "send_separately": {
+                        "type": "boolean",
+                        "description": (
+                            "True to send one email per To address so recipients never see "
+                            "each other (outreach to several suppliers or buyers)."
+                        ),
                     },
                     "recipient_name": {
                         "type": "string",
@@ -742,21 +766,30 @@ _FILE_TOOLS_SPEC.append({
     "function": {
         "name": "write_document",
         "description": (
-            "Create a text file (.txt) or Word document (.docx) in the user's Files tab, "
-            "or replace one's contents. DOCX content is Markdown (# headings, - lists, "
-            "**bold**, | tables |). Saves immediately and can be undone. Read an existing "
-            "file with read_file before replacing it."
+            "Create a file in the user's Files tab, or replace one's contents: Word "
+            "(.docx), PDF (.pdf) or PowerPoint (.pptx) from Markdown (# headings, - lists, "
+            "**bold**, | tables |; in .pptx each # or ## heading starts a slide), Excel "
+            "(.xlsx) from Markdown tables (one sheet per table, named by the heading above "
+            "it; numbers stay numbers, =SUM(B2:B9) stays a formula) or CSV text, or "
+            ".txt, .md and .json text. Saves immediately and can be undone. Read an "
+            "existing file with read_file before replacing it."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "File name ending in .docx or .txt, e.g. 'Launch plan.docx'.",
+                    "description": (
+                        "File name with its type, e.g. 'Launch plan.docx', 'Price list.xlsx', "
+                        "'Quote.pdf', 'Pitch.pptx', 'notes.txt'."
+                    ),
                 },
                 "content": {
                     "type": "string",
-                    "description": "The COMPLETE text: Markdown for .docx, plain text for .txt.",
+                    "description": (
+                        "The COMPLETE content: Markdown for .docx/.pdf/.pptx/.md, Markdown "
+                        "tables or CSV for .xlsx, plain text for .txt, JSON for .json."
+                    ),
                 },
                 "summary": {
                     "type": "string",
@@ -1077,8 +1110,9 @@ _WORKSPACE_MEMBERS_TOOL: dict[str, Any] = {
     "function": {
         "name": "add_workspace_members",
         "description": (
-            "Add people to the current workspace by name, email, or title. Only signed-in "
-            "MindLoom users can be added."
+            "Add people to the current workspace by name, email, or title. Signed-in "
+            "MindLoom users join straight away; colleagues on the company domain who have "
+            "not signed in yet are invited by email and join on first sign-in."
         ),
         "parameters": {
             "type": "object",
@@ -1116,6 +1150,8 @@ class WorkspaceContext:
     requester_name: str = ""
     # Recent messages from other members ("Name: text"), shown as context only.
     others_said: list[str] = field(default_factory=list)
+    # Files shared in this workspace ({"name", "kind", "owner_name"}); any member can read them.
+    shared_files: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1149,8 +1185,9 @@ _SHORT_REPLY = re.compile(
 _FILE_CREATE = re.compile(
     r"\b(?:make|create|build|generate|export|save|put|write|compile|dump|keep|maintain|start|log|draft|"
     r"type up|prepare)\b.{0,60}"
-    r"\b(?:files?|sheets?|tables?|docs?|documents?|docx|txt|memo|report|letter|agenda|minutes|"
-    r"proposal|brief|notes)\b"
+    r"\b(?:files?|sheets?|spreadsheets?|workbooks?|excel|xlsx|tables?|docs?|documents?|docx|"
+    r"txt|pdfs?|pptx|powerpoint|decks?|slides?|presentations?|memo|report|letter|agenda|"
+    r"minutes|proposal|brief|notes|invoice|quote|quotation|certificate)\b"
 )
 _FILE_PARTS = re.compile(
     r"\b(?:file|sheet|table|rows?|columns?|cells?|headers?)\b"
@@ -1245,6 +1282,10 @@ def _file_detail(f: dict[str, Any]) -> str:
         return f"PDF, {rows} pages"
     if kind == "docx":
         return f"Word document, {rows} paragraphs"
+    if kind == "pptx":
+        return f"PowerPoint, {rows} slides"
+    if kind in {"md", "json"}:
+        return f"{_KIND_LABELS[kind]} text, {rows} lines"
     return f"Excel workbook, {columns} sheets"
 
 
@@ -1265,10 +1306,16 @@ async def _run_file_tool(
     org_id: str,
     user_id: str,
     state: _FileToolState,
+    workspace: WorkspaceContext | None = None,
 ) -> dict[str, Any]:
     name = _FILE_TOOL_ALIASES.get(name, name)
     if name == "list_files":
         files = await files_service.list_files(org_id, user_id)
+        own = {f["name"].lower() for f in files}
+        shared = [
+            f for f in (workspace.shared_files if workspace else [])
+            if str(f.get("name") or "").lower() not in own
+        ]
         return {
             "files": [
                 {
@@ -1282,6 +1329,14 @@ async def _run_file_tool(
                     "monitor_instructions": f.get("monitor_instructions"),
                 }
                 for f in files
+            ] + [
+                {
+                    "name": f["name"],
+                    "type": f.get("kind") or "csv",
+                    "shared_in_workspace_by": f.get("owner_name"),
+                    "note": "Read-only for you; shared in this workspace by a colleague.",
+                }
+                for f in shared
             ]
         }
 
@@ -1331,6 +1386,26 @@ async def _run_file_tool(
 
     if name == "read_file":
         found = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if found is None and workspace is not None and workspace.workspace_id:
+            from loombot.workspace_files import find_workspace_file
+
+            shared = await find_workspace_file(org_id, workspace.workspace_id, file_name)
+            if shared is not None:
+                text_content = await files_service.read_text_for_ask(
+                    org_id, shared["owner_user_id"], shared
+                )
+                limit = files_service.ASK_MAX_FILE_CHARS
+                return {
+                    "name": shared["name"],
+                    "type": shared["kind"],
+                    "details": _file_detail(shared),
+                    "content": text_content[:limit],
+                    "truncated": len(text_content) > limit,
+                    "note": (
+                        "Shared in this workspace by a colleague. To change it, create an "
+                        "updated copy in the asker's Files."
+                    ),
+                }
         if found is None:
             return {"error": f"No file named {file_name}. Call list_files to see names."}
         if (found.get("kind") or "csv") != "csv":
@@ -1555,6 +1630,12 @@ def _record_change(state: _FileToolState, change: FileChange) -> None:
     state.changes.append(change)
 
 
+_KIND_LABELS = {
+    "txt": "text", "md": "Markdown", "json": "JSON", "docx": "Word",
+    "xlsx": "Excel", "pdf": "PDF", "pptx": "PowerPoint",
+}
+
+
 async def _write_document(
     file_name: str,
     arguments: dict[str, Any],
@@ -1563,7 +1644,7 @@ async def _write_document(
     user_id: str,
     state: _FileToolState,
 ) -> dict[str, Any]:
-    """Create or replace a .txt or .docx file (Markdown for .docx)."""
+    """Create or replace a text, Markdown, JSON, Word, Excel, PDF or PowerPoint file."""
 
     content = arguments.get("content")
     if not isinstance(content, str) or not content.strip():
@@ -1574,13 +1655,8 @@ async def _write_document(
         file_name = f"{file_name}.docx"
     if kind == "csv":
         return {"error": "Use write_csv_file for .csv files."}
-    if kind not in {"txt", "docx"}:
-        return {
-            "error": (
-                f"write_document writes .txt and .docx files. For a .{kind} file, call "
-                "create_updated_document to make an updated copy."
-            )
-        }
+    if kind not in files_service.WRITABLE_KINDS:
+        return {"error": f"write_document cannot write .{kind} files."}
     summary = str(arguments.get("summary") or "").strip()[:300]
     existing = await files_service.find_file_by_name(org_id, user_id, file_name)
     if existing is not None and existing.get("kind") != kind:
@@ -1609,8 +1685,8 @@ async def _write_document(
         action=action,
         kind=kind,
         summary=summary or (
-            "New Word document." if kind == "docx" and action == "created"
-            else "New text file." if action == "created" else "Rewrote the document."
+            f"New {_KIND_LABELS.get(kind, 'text')} file." if action == "created"
+            else "Rewrote the document."
         ),
         row_count=saved.get("row_count", 0),
         column_count=saved.get("column_count", 0),
@@ -2228,6 +2304,7 @@ async def _run_tool(
             org_id=org_id,
             user_id=user_id,
             state=file_state if file_state is not None else _FileToolState(),
+            workspace=workspace,
         ), None, None, None, None
 
     if name == "lookup_person":
@@ -2339,6 +2416,14 @@ async def _run_tool(
         )
         if attached:
             email = email.model_copy(update={"attachments": attached})
+        if "," in recipient_email or ";" in recipient_email:
+            # Several To addresses: keep them all rather than the one matched person.
+            email = email.model_copy(update={"recipient_email": recipient_email})
+        email = email.model_copy(update={
+            "cc_email": str(arguments.get("cc_email") or "").strip(),
+            "bcc_email": str(arguments.get("bcc_email") or "").strip(),
+            "send_separately": bool(arguments.get("send_separately")),
+        })
         expert = None
         uid = str((person or {}).get("user_id") or "").strip()
         if uid:
@@ -2962,6 +3047,16 @@ def _workspace_hint(workspace: WorkspaceContext | None) -> str:
         if workspace.kind != "org_wide" else
         "\nEveryone in the organization is already in this workspace."
     )
+    shared = ""
+    if workspace.shared_files:
+        listed = "; ".join(
+            f"{f['name']} (shared by {f.get('owner_name') or 'a member'})"
+            for f in workspace.shared_files[:30]
+        )
+        shared = (
+            f"\nFiles shared in this workspace (read them with read_file): {listed}. "
+            "Files you create or update here are shared with every member automatically."
+        )
     others = ""
     if workspace.others_said:
         lines = "\n".join(
@@ -2978,7 +3073,7 @@ Every member sees your reply. Members: {members}.
 The person asking is {workspace.requester_name or "a member"}. Tools act with that
 person's own connections, mailbox, calendar, and Files, and only they can approve the
 drafts (emails, meetings, workspaces) you prepare, so say the draft is ready for them.
-Their mail and files are private: include only what this request needs.{scope}{adding}{others}
+Their mail and files are private: include only what this request needs.{scope}{adding}{shared}{others}
 """
 
 
@@ -3086,11 +3181,39 @@ async def run_ask_agent(
         workspace=workspace,
     )
     if choice is None:
-        return await _answer_turn(**kwargs)
+        return await _with_mail_provider(await _answer_turn(**kwargs), org_id, user_id)
     with use_model_for_turn(choice.model, choice.reasoning_effort):
         response = await _answer_turn(**kwargs)
     response.model_used = choice.model
     response.model_tier = choice.tier
+    return await _with_mail_provider(response, org_id, user_id)
+
+
+async def _mail_provider(org_id: str, user_id: str, google_connected: bool) -> str | None:
+    """The user's sending mailbox ("gmail" or "outlook"), or None."""
+
+    if google_connected:
+        return "gmail"
+    try:
+        from shuttle.notification_delivery import email_send_provider
+
+        return await email_send_provider(org_id, user_id)
+    except Exception:  # noqa: BLE001 - a lookup failure only hides the send button
+        logger.warning("Could not check the user's mailbox connections", exc_info=True)
+        return None
+
+
+async def _with_mail_provider(response: QueryResponse, org_id: str, user_id: str) -> QueryResponse:
+    """Mark an email draft sendable when the user has Gmail or Outlook connected."""
+
+    email = response.proposed_email
+    if email is None:
+        return response
+    provider = "gmail" if email.google_connected else await _mail_provider(org_id, user_id, False)
+    response.proposed_email = email.model_copy(update={
+        "google_connected": bool(provider),
+        "email_provider": provider or "",
+    })
     return response
 
 
@@ -3250,9 +3373,10 @@ async def _run_agent(
     from weaver.integrations import has_google_workspace_connection
 
     google_connected = await has_google_workspace_connection(org_id, user_id)
+    mail_provider = await _mail_provider(org_id, user_id, google_connected)
     gmail_status = (
-        "available for this user"
-        if google_connected
+        f"available for this user ({'Gmail' if mail_provider == 'gmail' else 'Outlook'})"
+        if mail_provider
         else "not connected for this user — still draft the email so they can connect or copy it"
     )
 

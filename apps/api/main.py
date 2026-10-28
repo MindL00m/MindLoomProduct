@@ -97,7 +97,6 @@ from api.routes.whatsapp import router as whatsapp_router
 from api.routes.workflows import router as workflows_router
 from api.routes.workspaces import router as workspaces_router
 from api.routes.zoom import router as zoom_router
-from brain.file_extract import extract_file_text
 from brain.pipeline import run_ingestion_background, run_pdf_ingestion_background
 from brain.retrieval import retrieve
 from core.schema import ensure_schema
@@ -491,9 +490,13 @@ async def extract_uploaded_file(
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     try:
-        text = extract_file_text(filename, data)
+        from brain.media_text import extract_text_with_ocr, no_text_reason
+
+        text, _method = await extract_text_with_ocr(filename, data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not read file: {exc}") from exc
+    if not text:
+        raise HTTPException(status_code=400, detail=no_text_reason(filename, data))
     return FileExtractResponse(
         document_id=str(uuid4()),
         filename=filename,

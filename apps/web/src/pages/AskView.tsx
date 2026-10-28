@@ -71,7 +71,8 @@ import { useChat, type ChatAttachment, type Conversation, type Turn } from "@/st
 import { cn } from "@/lib/utils";
 
 const FILE_ACCEPT =
-  ".pdf,.json,.txt,.csv,.docx,.xlsx,application/pdf,application/json,text/plain,text/csv," +
+  ".pdf,.json,.txt,.csv,.docx,.xlsx,.pptx,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf," +
+  "application/json,text/plain,text/csv,image/png,image/jpeg,image/gif,image/webp," +
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document," +
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -641,7 +642,13 @@ function ProposedComposeCard({
   );
   const [subject, setSubject] = useState(email?.subject || "");
   const [body, setBody] = useState(email?.body || expert?.message || "");
+  const [cc, setCc] = useState(email?.cc_email || "");
+  const [bcc, setBcc] = useState(email?.bcc_email || "");
+  const [showCopies, setShowCopies] = useState(Boolean(email?.cc_email || email?.bcc_email));
+  const [separately, setSeparately] = useState(Boolean(email?.send_separately));
+  const [sendNote, setSendNote] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<EmailAttachmentRef[]>(email?.attachments ?? []);
+  const toCount = to.split(/[,;\s]+/).filter((part) => part.includes("@")).length;
   const [picking, setPicking] = useState(false);
   const expertStatus = expertState ?? (expert ? "pending" : undefined);
   const mailStatus = emailState ?? (email ? "pending" : "pending");
@@ -683,6 +690,18 @@ function ProposedComposeCard({
         subject,
         body,
         attachments.map((file) => file.file_id),
+        { cc, bcc, separately: separately && toCount > 1 },
+      );
+      const via = result.provider === "outlook" ? " from Outlook" : "";
+      setSendNote(
+        result.separately
+          ? `Sent ${result.sent_to?.length ?? 0} separate emails${via}` +
+              (result.failed?.length
+                ? `; failed for ${result.failed.map((f) => f.recipient).join(", ")}.`
+                : ".")
+          : via
+            ? `Sent${via}.`
+            : null,
       );
       onPatch({
         emailProposalState: "sent",
@@ -742,13 +761,60 @@ function ProposedComposeCard({
       <label className="mt-3 block text-xs font-medium text-muted-foreground">
         To
         <input
-          type="email"
+          type="text"
           value={to}
           onChange={(event) => setTo(event.target.value)}
-          placeholder="Enter an email address"
+          placeholder="Email address, or several separated by commas"
           className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
         />
       </label>
+      {!showCopies && !separately ? (
+        <button
+          type="button"
+          onClick={() => setShowCopies(true)}
+          className="mt-1 text-[11px] font-medium text-primary hover:underline"
+        >
+          Add Cc / Bcc
+        </button>
+      ) : null}
+      {showCopies && !separately && (
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          <label className="block text-xs font-medium text-muted-foreground">
+            Cc
+            <input
+              type="text"
+              value={cc}
+              onChange={(event) => setCc(event.target.value)}
+              placeholder="Copy addresses"
+              className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
+            />
+          </label>
+          <label className="block text-xs font-medium text-muted-foreground">
+            Bcc (hidden)
+            <input
+              type="text"
+              value={bcc}
+              onChange={(event) => setBcc(event.target.value)}
+              placeholder="Hidden copy addresses"
+              className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground"
+            />
+          </label>
+        </div>
+      )}
+      {toCount > 1 && (
+        <label className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={separately}
+            onChange={(event) => setSeparately(event.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            Send a separate email to each of the {toCount} recipients, so nobody sees who
+            else was contacted.
+          </span>
+        </label>
+      )}
       <label className="mt-2 block text-xs font-medium text-muted-foreground">
         Subject
         <input
@@ -842,6 +908,7 @@ function ProposedComposeCard({
             ? ` with ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}`
             : ""}
           {emailId ? ` (${emailId.slice(0, 8)}…)` : ""}.
+          {sendNote ? ` ${sendNote}` : ""}
         </p>
       )}
 
@@ -899,7 +966,7 @@ function ProposedComposeCard({
       )}
       {!googleConnected && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Connect Google Workspace to send email.
+          Connect Google Workspace or Microsoft 365 to send email.
         </p>
       )}
     </div>

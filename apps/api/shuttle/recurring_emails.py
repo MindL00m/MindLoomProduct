@@ -121,7 +121,7 @@ async def create_recurring_email(
     timezone_name: str | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    from weaver.integrations import has_google_workspace_connection
+    from shuttle.notification_delivery import email_send_provider
 
     recipient = _validate_email(recipient_email)
     subject = " ".join((subject or "").split())[:300]
@@ -132,10 +132,13 @@ async def create_recurring_email(
     if not body and not refresh:
         raise HTTPException(status_code=422, detail="Add a message, or describe what each email should contain.")
     interval = interval_of(interval_value, interval_unit)
-    if not await has_google_workspace_connection(org_id, user_id):
+    if await email_send_provider(org_id, user_id) is None:
         raise HTTPException(
             status_code=409,
-            detail="Connect Google Workspace (Import → Add connector) so MindLoom can send from your Gmail.",
+            detail=(
+                "Connect Google Workspace or Microsoft 365 (Import → Add connector) so "
+                "MindLoom can send from your mailbox."
+            ),
         )
     now = datetime.now(timezone.utc)
     first = _aware(start_at) or now + interval
@@ -303,10 +306,10 @@ async def _fresh_body(row: dict[str, Any]) -> str:
 async def _send(row: dict[str, Any]) -> tuple[str, str, str]:
     """Send one email; returns (provider message id, subject, body)."""
 
-    from shuttle.notification_delivery import send_user_gmail
+    from shuttle.notification_delivery import send_user_email
 
     body = await _fresh_body(row) if row.get("refresh_instructions") else row["body"]
-    message_id = await send_user_gmail(
+    _provider, message_id = await send_user_email(
         org_id=row["org_id"], user_id=row["owner_user_id"],
         recipient=row["recipient_email"], subject=row["subject"], body=body,
     )

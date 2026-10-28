@@ -277,6 +277,12 @@ async def google_signin(*, identity: GoogleIdentity) -> AuthSessionResponse:
         name=identity.name,
         photo_url=identity.picture,
     )
+    try:
+        from loombot.workspaces import accept_workspace_invites
+
+        await accept_workspace_invites(org.org_id, user.user_id, user.email)
+    except Exception:  # noqa: BLE001 - sign-in must not fail over a pending invite
+        logger.warning("Could not accept workspace invites for %s", user.email, exc_info=True)
 
     return _session_response(org_id=org.org_id, org_name=org.name, user=user)
 

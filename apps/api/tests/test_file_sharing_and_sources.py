@@ -185,6 +185,11 @@ def _share_fakes(monkeypatch, *, google=True):
     monkeypatch.setattr(files_service, "files_as_attachments", attachments)
     monkeypatch.setattr(notification_delivery, "send_user_gmail", send)
     monkeypatch.setattr("weaver.integrations.has_google_workspace_connection", connected)
+
+    async def provider(*args):
+        return "gmail" if google else None
+
+    monkeypatch.setattr(notification_delivery, "email_send_provider", provider)
     return calls
 
 
@@ -196,8 +201,9 @@ async def test_share_in_mindloom_copies_to_members_and_emails_everyone(monkeypat
     )
     assert calls["mindloom"] == [(["u-priya"], "Please review by Friday.")]
     assert result["not_in_mindloom"] == ["vendor@other.com"]
+    # One email per person, so recipients never see each other's addresses.
+    assert [c["recipient"] for c in calls["email"]] == ["Priya@us.com", "vendor@other.com"]
     sent = calls["email"][0]
-    assert sent["recipient"] == "Priya@us.com, vendor@other.com"
     assert sent["subject"] == "Alex Kim shared Plan.docx with you"
     assert "Please review by Friday." in sent["body"] and sent["attachments"][0][0] == "Plan.docx"
 

@@ -104,12 +104,30 @@ export async function sendProposedExpertMessage(
 }
 
 /** Send an approved email from the user's Gmail, optionally with LoomBot Files attached. */
+export interface SendEmailOptions {
+  cc?: string;
+  bcc?: string;
+  /** One email per To address, so recipients never see each other. */
+  separately?: boolean;
+}
+
+export interface SendEmailResult {
+  status: "sent" | "partially_sent" | string;
+  provider?: "gmail" | "outlook" | string;
+  provider_message_id?: string;
+  sent_to?: string[];
+  separately?: boolean;
+  failed?: { recipient: string; error: string }[];
+  attachments?: string[];
+}
+
 export async function sendProposedEmail(
   recipientEmail: string,
   subject: string,
   body: string,
   attachmentFileIds: string[] = [],
-): Promise<{ status: string; provider_message_id?: string; attachments?: string[] }> {
+  options: SendEmailOptions = {},
+): Promise<SendEmailResult> {
   const response = await apiFetch("/knowledge/reviews/messages/send-proposed-email", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -118,6 +136,9 @@ export async function sendProposedEmail(
       subject,
       body,
       attachment_file_ids: attachmentFileIds,
+      cc_email: options.separately ? null : options.cc?.trim() || null,
+      bcc_email: options.separately ? null : options.bcc?.trim() || null,
+      send_separately: Boolean(options.separately),
     }),
   });
   if (!response.ok) {

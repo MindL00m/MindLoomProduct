@@ -382,6 +382,11 @@ function FileList({
                 {f.monitor_enabled && (
                   <Radar className="size-3 shrink-0 text-primary" aria-label="Updates automatically" />
                 )}
+                {f.is_template && (
+                  <span className="shrink-0 rounded bg-brand-50 px-1 text-[10px] font-medium uppercase text-brand-700">
+                    Template
+                  </span>
+                )}
               </span>
             </span>
           </button>

@@ -82,7 +82,7 @@ _META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column
     (previous_content IS NOT NULL OR previous_blob_key IS NOT NULL) AS can_undo,
     created_at, updated_at, based_on_file_id,
     monitor_enabled, monitor_instructions, monitor_started_at,
-    shared_by_user_id, shared_by_name, shared_note, shared_at, share_seen_at"""
+    shared_by_user_id, shared_by_name, shared_note, shared_at, share_seen_at, is_template"""
 
 
 # --- Names and kinds ----------------------------------------------------------
@@ -313,6 +313,7 @@ def _meta(row: Any) -> dict[str, Any]:
         "shared_note": row.get("shared_note"),
         "shared_at": row.get("shared_at"),
         "share_seen": row.get("share_seen_at") is not None or row.get("shared_at") is None,
+        "is_template": bool(row.get("is_template")),
     }
 
 
@@ -1174,6 +1175,21 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
             _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
         _OCR_CACHE[key] = result
     return result
+
+
+async def set_template(org_id: str, user_id: str, file_id: str, is_template: bool) -> dict[str, Any]:
+    """Mark or unmark a file as a template."""
+
+    factory = get_session_factory()
+    async with factory() as session, session.begin():
+        row = (await session.execute(text(f"""
+            UPDATE loombot_files SET is_template=:flag
+            WHERE org_id=:org AND owner_user_id=:user AND file_id=:id
+            RETURNING {_META_COLUMNS}
+        """), {"org": org_id, "user": user_id, "id": file_id, "flag": is_template})).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+    return _meta(row)
 
 
 async def extract_zip_to_files(org_id: str, user_id: str, file_id: str) -> dict[str, Any]:

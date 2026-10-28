@@ -20,6 +20,24 @@ class CreateFileInput(BaseModel):
     kind: Literal["csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx"] = "csv"
 
 
+class TemplateFlagInput(BaseModel):
+    is_template: bool
+
+
+class FillTemplateInput(BaseModel):
+    # Values typed by the user; lists of objects fill line-item rows.
+    values: dict = Field(default_factory=dict)
+    # What LoomBot should fill in, e.g. "Invoice for the Dubai SOP shipment".
+    instructions: str | None = Field(default=None, max_length=2000)
+    # Files LoomBot reads the values from (a bill of lading, a contract).
+    source_file_ids: list[str] = Field(default_factory=list, max_length=8)
+    name: str | None = Field(default=None, max_length=200)
+
+
+class MakeTemplateInput(BaseModel):
+    instructions: str | None = Field(default=None, max_length=1000)
+
+
 class UpdatedVersionInput(BaseModel):
     instructions: str | None = Field(default=None, max_length=1000)
 
@@ -55,6 +73,13 @@ class UpdateFileInput(BaseModel):
 @router.get("")
 async def list_files(ctx: tuple[str, str] = Depends(require_user_context)) -> list[dict]:
     return await files_service.list_files(*ctx)
+
+
+@router.get("/templates")
+async def list_templates(ctx: tuple[str, str] = Depends(require_user_context)) -> list[dict]:
+    """The user's files marked as templates."""
+
+    return [f for f in await files_service.list_files(*ctx) if f.get("is_template")]
 
 
 @router.post("", status_code=201)
@@ -199,6 +224,61 @@ async def file_events(
     """Automatic changes monitoring made to this file, newest first."""
 
     return await files_service.list_events(*ctx, file_id)
+
+
+@router.put("/{file_id}/template")
+async def mark_template(
+    file_id: str,
+    body: TemplateFlagInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Mark a file as a template (or not); returns its {{placeholders}}."""
+
+    from loombot import templates
+
+    meta = await files_service.set_template(*ctx, file_id, body.is_template)
+    if not body.is_template:
+        return {"file": meta, "fields": [], "lists": {}}
+    return await templates.describe_template(*ctx, file_id)
+
+
+@router.get("/{file_id}/template")
+async def template_fields(
+    file_id: str,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    from loombot import templates
+
+    return await templates.describe_template(*ctx, file_id)
+
+
+@router.post("/{file_id}/fill", status_code=201)
+async def fill_template(
+    file_id: str,
+    body: FillTemplateInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Make a new file from a template; the template itself never changes."""
+
+    from loombot import templates
+
+    return await templates.fill_template_file(
+        *ctx, file_id, values=body.values, instructions=body.instructions,
+        source_file_ids=body.source_file_ids, name=body.name,
+    )
+
+
+@router.post("/{file_id}/make-template", status_code=201)
+async def make_template(
+    file_id: str,
+    body: MakeTemplateInput,
+    ctx: tuple[str, str] = Depends(require_user_context),
+) -> dict:
+    """Copy a sample document as a template, with its deal-specific values as fields."""
+
+    from loombot import templates
+
+    return await templates.make_template_from_sample(*ctx, file_id, instructions=body.instructions)
 
 
 @router.post("/{file_id}/extract")

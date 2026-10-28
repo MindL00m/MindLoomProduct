@@ -36,6 +36,7 @@ import {
 import { fileDetail, FileKindIcon } from "@/components/FileKindIcon";
 import { SharedByLine, ShareButton } from "@/pages/FileSharing";
 import { formatBytes, timeAgo } from "@/lib/format";
+import { TemplateControls } from "@/components/TemplatePanel";
 import { cn } from "@/lib/utils";
 
 const KIND_LABEL: Record<string, string> = {
@@ -253,6 +254,11 @@ export function DocumentFileView({
             </button>
           )}
           {file.kind === "xlsx" && <ExcelButton fileId={file.file_id} name={file.name} />}
+          <TemplateControls
+            file={file}
+            onChanged={(changed) => onSaved({ ...file, ...changed })}
+            onCreated={onCreated}
+          />
           {file.kind === "docx" && !editingDoc && (
             <button
               type="button"

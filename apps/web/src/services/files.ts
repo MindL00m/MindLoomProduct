@@ -43,6 +43,8 @@ export interface LoomFileMeta {
   size_bytes: number;
   /** Set on files generated as an updated version of another file. */
   based_on_file_id?: string | null;
+  /** A template: its {{placeholders}} are filled to make new documents. */
+  is_template?: boolean;
   row_count: number;
   column_count: number;
   last_edited_by: "user" | "loombot";
@@ -332,5 +334,68 @@ export function markSharesSeen(fileIds?: string[]): Promise<{ cleared: number }>
     "/shares/seen",
     { method: "POST", body: JSON.stringify({ file_ids: fileIds ?? null }) },
     "Could not update notifications.",
+  );
+}
+
+// --- Templates --------------------------------------------------------------------
+
+export interface TemplateInfo {
+  file: LoomFileMeta;
+  /** Single-value {{placeholders}}, in document order. */
+  fields: string[];
+  /** Line-item lists: {{items.description}} rows repeat once per item. */
+  lists: Record<string, string[]>;
+}
+
+export interface FillTemplateResult {
+  file: LoomFileMeta;
+  template: string;
+  values: Record<string, unknown>;
+  unfilled: string[];
+  notes: string;
+}
+
+export function listTemplates(): Promise<LoomFileMeta[]> {
+  return request("/templates", { method: "GET" }, "Could not load templates.");
+}
+
+export function setTemplate(fileId: string, isTemplate: boolean): Promise<TemplateInfo> {
+  return request(
+    `/${encodeURIComponent(fileId)}/template`,
+    { method: "PUT", body: JSON.stringify({ is_template: isTemplate }) },
+    "Could not change the template setting.",
+  );
+}
+
+export function getTemplate(fileId: string): Promise<TemplateInfo> {
+  return request(`/${encodeURIComponent(fileId)}/template`, { method: "GET" }, "Could not read the template.");
+}
+
+/** Make a new file from a template; LoomBot fills what is not typed. */
+export function fillTemplate(
+  fileId: string,
+  input: {
+    values?: Record<string, unknown>;
+    instructions?: string;
+    source_file_ids?: string[];
+    name?: string;
+  },
+): Promise<FillTemplateResult> {
+  return request(
+    `/${encodeURIComponent(fileId)}/fill`,
+    { method: "POST", body: JSON.stringify(input) },
+    "Could not fill the template.",
+  );
+}
+
+/** Copy a sample document as a template, with its deal-specific values as fields. */
+export function makeTemplate(
+  fileId: string,
+  instructions?: string,
+): Promise<TemplateInfo & { summary: string }> {
+  return request(
+    `/${encodeURIComponent(fileId)}/make-template`,
+    { method: "POST", body: JSON.stringify({ instructions: instructions || null }) },
+    "Could not make a template.",
   );
 }

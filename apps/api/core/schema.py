@@ -421,6 +421,8 @@ _LOOMBOT_FILE_KINDS_SQL = [
     "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS share_seen_at TIMESTAMPTZ",
     """CREATE INDEX IF NOT EXISTS idx_loombot_files_unseen_shares
   ON loombot_files (org_id, owner_user_id) WHERE shared_at IS NOT NULL AND share_seen_at IS NULL""",
+    # A template: its {{placeholders}} are filled to make new documents (loombot/templates.py).
+    "ALTER TABLE loombot_files ADD COLUMN IF NOT EXISTS is_template BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 

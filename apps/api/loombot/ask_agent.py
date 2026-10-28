@@ -207,7 +207,8 @@ Status rules:
   knowledge_inventory and say the number covers what MindLoom has indexed.
 - If a tool returns an error, explain it plainly. Never invent numbers.
 
-Files rules (the user's LoomBot Files tab: CSV, TXT, DOCX, XLSX, and PDF files; not GitHub):
+Files rules (the user's LoomBot Files tab: CSV, TXT, Markdown, JSON, Word, Excel, PDF,
+PowerPoint, pictures and other files; not GitHub):
 - The user's files: {files_status}
 - Files the user attached in this conversation: {attached_files}
 - To answer questions about a file's contents, call read_file (any type).
@@ -238,6 +239,15 @@ Files rules (the user's LoomBot Files tab: CSV, TXT, DOCX, XLSX, and PDF files; 
   from the chat or the Files tab. Say what changed in one or two sentences. Do not
   paste the whole file back unless the user asks to see it; show a small markdown
   table or excerpt for short previews instead.
+- Templates: files with {{placeholders}} (list_files marks them "template").
+  When the user wants a document made "like our usual X" or from a template
+  (an invoice, quotation, certificate, letter, packing list), call list_templates,
+  then fill_template with the template name, the user's request as instructions,
+  and the names of any files that hold the facts as source_files (for example a
+  bill of lading and a sales contract). Report the new file, what was filled and
+  anything left unfilled; never guess missing values.
+- When the user gives a sample document and wants it reused, call make_template
+  with that file's name; it saves a copy with the deal-specific values as fields.
 - You cannot delete files. Tell the user to delete them in the Files tab.
 - Automatic updates (monitoring) apply to CSV files only.
 
@@ -800,6 +810,65 @@ _FILE_TOOLS_SPEC.append({
         },
     },
 })
+_FILE_TOOLS_SPEC.extend([
+    {
+        "type": "function",
+        "function": {
+            "name": "list_templates",
+            "description": "List the user's document templates with their fields and line items.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fill_template",
+            "description": (
+                "Make a new document from a template: fills its {{fields}} and line-item "
+                "rows from the user's request, the named source files and company "
+                "knowledge, and saves a new file. The template is not changed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The template's file name."},
+                    "instructions": {
+                        "type": "string",
+                        "description": "What to make, with any values the user gave.",
+                    },
+                    "source_files": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Names of Files that hold the facts, e.g. a bill of lading.",
+                    },
+                    "values": {
+                        "type": "object",
+                        "description": "Field values the user stated exactly; lists fill line items.",
+                    },
+                    "output_name": {"type": "string", "description": "Optional new file name."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "make_template",
+            "description": (
+                "Turn a sample document (Word, Excel, CSV or text) into a reusable template: "
+                "saves a copy whose deal-specific values are {{fields}}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The sample's file name."},
+                    "instructions": {"type": "string", "description": "Optional guidance."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+])
 _FILE_TOOLS_SPEC.append({
     "type": "function",
     "function": {
@@ -1130,7 +1199,8 @@ _DATA_TOOLS = {
 }
 _FILE_TOOLS = {
     "list_files", "read_file", "write_csv_file", "write_document", "set_file_monitoring",
-    "create_updated_document", "save_email_attachment",
+    "create_updated_document", "save_email_attachment", "list_templates", "fill_template",
+    "make_template",
 }
 _MEETING_TOOLS = {"find_meeting_times", "propose_meeting"}
 # Earlier tool names, still accepted so older conversations and tests keep working.
@@ -1187,7 +1257,7 @@ _FILE_CREATE = re.compile(
     r"type up|prepare)\b.{0,60}"
     r"\b(?:files?|sheets?|spreadsheets?|workbooks?|excel|xlsx|tables?|docs?|documents?|docx|"
     r"txt|pdfs?|pptx|powerpoint|decks?|slides?|presentations?|memo|report|letter|agenda|"
-    r"minutes|proposal|brief|notes|invoice|quote|quotation|certificate)\b"
+    r"minutes|proposal|brief|notes|invoice|quote|quotation|certificate|templates?)\b"
 )
 _FILE_PARTS = re.compile(
     r"\b(?:file|sheet|table|rows?|columns?|cells?|headers?)\b"
@@ -1331,6 +1401,7 @@ async def _run_file_tool(
                     "updated_at": f["updated_at"],
                     "monitoring": "on" if f.get("monitor_enabled") else "off",
                     "monitor_instructions": f.get("monitor_instructions"),
+                    **({"template": True} if f.get("is_template") else {}),
                 }
                 for f in files
             ] + [
@@ -1551,6 +1622,75 @@ async def _run_file_tool(
         }
         if ask_user:
             result["ask_user"] = ask_user
+        return result
+
+    if name == "list_templates":
+        from loombot import templates
+
+        out = []
+        for f in await files_service.list_files(org_id, user_id):
+            if not f.get("is_template"):
+                continue
+            try:
+                described = await templates.describe_template(org_id, user_id, f["file_id"])
+            except HTTPException:
+                continue
+            out.append({
+                "name": f["name"], "type": f["kind"],
+                "fields": described["fields"], "line_items": described["lists"],
+            })
+        return {"templates": out} if out else {
+            "templates": [],
+            "note": (
+                "No templates yet. A sample document can become one with make_template, "
+                "or the user can mark a file with {{placeholders}} as a template in Files."
+            ),
+        }
+
+    if name in {"fill_template", "make_template"}:
+        from loombot import templates
+
+        found = await files_service.find_file_by_name(org_id, user_id, file_name)
+        if found is None:
+            return {"error": f"No file named {file_name}. Call list_templates or list_files."}
+        if name == "make_template":
+            made = await templates.make_template_from_sample(
+                org_id, user_id, found["file_id"],
+                instructions=str(arguments.get("instructions") or "") or None,
+            )
+            saved = made["file"]
+            _record_change(state, FileChange(
+                file_id=saved["file_id"], name=saved["name"], action="created",
+                kind=saved["kind"], based_on=found["name"],
+                summary=made["summary"] or "Template made from the sample.",
+            ))
+            return {"template": saved["name"], "fields": made["fields"], "line_items": made["lists"]}
+        source_ids: list[str] = []
+        missing_sources: list[str] = []
+        for source in arguments.get("source_files") or []:
+            hit = await files_service.find_file_by_name(org_id, user_id, str(source))
+            if hit is None:
+                missing_sources.append(str(source))
+            else:
+                source_ids.append(hit["file_id"])
+        values = arguments.get("values") if isinstance(arguments.get("values"), dict) else {}
+        filled = await templates.fill_template_file(
+            org_id, user_id, found["file_id"], values=values,
+            instructions=str(arguments.get("instructions") or "") or None,
+            source_file_ids=source_ids, name=str(arguments.get("output_name") or "") or None,
+        )
+        saved = filled["file"]
+        _record_change(state, FileChange(
+            file_id=saved["file_id"], name=saved["name"], action="created", kind=saved["kind"],
+            based_on=found["name"],
+            summary=(filled["notes"] or f"Filled from {found['name']}.")[:300],
+        ))
+        result = {
+            "new_file": saved["name"], "based_on": found["name"],
+            "values": filled["values"], "unfilled": filled["unfilled"], "notes": filled["notes"],
+        }
+        if missing_sources:
+            result["missing_source_files"] = missing_sources
         return result
 
     if name == "create_updated_document":

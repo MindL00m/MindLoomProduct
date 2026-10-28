@@ -158,7 +158,9 @@ async def upload_to_workspace(
     org_id: str, user_id: str, workspace_id: str, filename: str, data: bytes
 ) -> dict[str, Any]:
     await _require_member(org_id, user_id, workspace_id)
-    created = await files_service.upload_file(org_id, user_id, filename, data)
+    created = await files_service.upload_file(
+        org_id, user_id, filename, data, auto_rename=True
+    )
     await link_files(org_id, user_id, workspace_id, [created["file_id"]])
     return created
 

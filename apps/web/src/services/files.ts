@@ -11,7 +11,9 @@ export type FileKind =
   | "xlsx"
   | "pdf"
   | "pptx"
-  | ImageKind;
+  | ImageKind
+  /** Any other type, kept as uploaded and downloadable. */
+  | "file";
 
 export type ImageKind = "png" | "jpg" | "jpeg" | "gif" | "webp";
 export const IMAGE_KINDS: FileKind[] = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -103,7 +105,7 @@ export function getFile(fileId: string): Promise<LoomFile> {
  * Kinds that can be created from text: Word, PDF, and PowerPoint from Markdown,
  * Excel from Markdown tables or CSV.
  */
-export type WritableKind = Exclude<FileKind, ImageKind>;
+export type WritableKind = Exclude<FileKind, ImageKind | "file">;
 
 export function createFile(
   name: string,
@@ -117,11 +119,15 @@ export function createFile(
   );
 }
 
-/** Upload a CSV, TXT, DOCX, XLSX, or PDF file. */
-export function uploadFile(file: File, name?: string): Promise<LoomFile> {
+/**
+ * Upload any file. Known types are previewed; others are kept for download.
+ * ``autoRename`` turns a taken name into "name (2).ext" (multi-file uploads).
+ */
+export function uploadFile(file: File, name?: string, autoRename = false): Promise<LoomFile> {
   const form = new FormData();
   form.append("file", file);
   if (name?.trim()) form.append("name", name.trim());
+  if (autoRename) form.append("auto_rename", "true");
   return request("/upload", { method: "POST", body: form }, "Could not upload file.");
 }
 
@@ -159,6 +165,7 @@ export type FilePreview =
   | { kind: "pdf"; pages: number }
   | { kind: "pptx"; slides: SlidePreview[] }
   | { kind: "image"; height: number; width: number }
+  | { kind: "file"; mime_type: string; text: string | null }
   | { kind: "csv" | "txt" | "md" | "json"; content: string };
 
 export interface SlidePreview {

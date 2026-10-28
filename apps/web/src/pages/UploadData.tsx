@@ -139,6 +139,23 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
     [start],
   );
 
+  // A whole folder: import every supported file in it and its subfolders.
+  const folderRef = useRef<HTMLInputElement>(null);
+  const [folderNote, setFolderNote] = useState<string | null>(null);
+  const handleFolder = useCallback(
+    (files: FileList | null) => {
+      const all = Array.from(files ?? []);
+      const supported = all.filter((file) => kindOf(file) !== null);
+      supported.forEach((file) => void start(file));
+      const skipped = all.length - supported.length;
+      setFolderNote(
+        `Importing ${supported.length} file${supported.length === 1 ? "" : "s"} from the folder` +
+          (skipped ? `; skipped ${skipped} unsupported.` : "."),
+      );
+    },
+    [start],
+  );
+
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6">
       {showHeading && (
@@ -176,6 +193,18 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
         }}
       />
 
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        className="sr-only"
+        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+        onChange={(e) => {
+          handleFolder(e.target.files);
+          e.target.value = "";
+        }}
+      />
+
       <label
         htmlFor={inputId}
         onDragOver={(e) => {
@@ -205,13 +234,24 @@ export default function UploadData({ showHeading = true }: { showHeading?: boole
           </span>
         </span>
         <span className="text-xs text-muted-foreground">
-          PDF, DOCX, PPTX, XLSX, CSV, text, logs, JSONL, or conversation JSON
+          PDF, DOCX, PPTX, XLSX, CSV, text, logs, JSONL, conversation JSON, or pictures
+          (scans and photos are read with OCR)
         </span>
         <span className="text-xs text-muted-foreground">
           WhatsApp chat exports (.txt, without media) are detected automatically and
           read in your timezone ({browserTimeZone()}).
         </span>
       </label>
+      <div className="-mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => folderRef.current?.click()}
+          className="font-medium text-primary hover:underline"
+        >
+          Upload a whole folder
+        </button>
+        {folderNote && <span>{folderNote}</span>}
+      </div>
 
       {items.length > 0 && (
         <ul className="space-y-2">

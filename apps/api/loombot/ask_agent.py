@@ -1286,6 +1286,10 @@ def _file_detail(f: dict[str, Any]) -> str:
         return f"PowerPoint, {rows} slides"
     if kind in {"md", "json"}:
         return f"{_KIND_LABELS[kind]} text, {rows} lines"
+    if kind in files_service.IMAGE_KINDS:
+        return f"picture, {columns}x{rows} pixels (text read with OCR)"
+    if kind == files_service.OTHER_KIND:
+        return f"{f.get('mime_type') or 'file'}, readable only if it is text"
     return f"Excel workbook, {columns} sheets"
 
 

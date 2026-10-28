@@ -20,6 +20,7 @@ import csv
 import io
 import json
 import logging
+import mimetypes
 import re
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -35,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 EditedBy = Literal["user", "loombot"]
 FileKind = Literal[
-    "csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx", "png", "jpg", "jpeg", "gif", "webp",
+    "csv", "txt", "md", "json", "docx", "xlsx", "pdf", "pptx",
+    "png", "jpg", "jpeg", "gif", "webp", "file",
 ]
 
 MAX_FILE_BYTES = 1_000_000          # text kinds (CSV, TXT)
@@ -63,10 +65,13 @@ KINDS: dict[str, str] = {
     "jpeg": "image/jpeg",
     "gif": "image/gif",
     "webp": "image/webp",
+    # Any other type: kept as uploaded and downloadable; Ask reads it when it is text.
+    "file": "application/octet-stream",
 }
+OTHER_KIND = "file"
 TEXT_KINDS = frozenset({"csv", "txt", "md", "json"})
 IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
-BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"}) | IMAGE_KINDS
+BINARY_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx", OTHER_KIND}) | IMAGE_KINDS
 # Binary kinds that are built from text (Markdown, or CSV/Markdown tables for XLSX).
 BUILT_KINDS = frozenset({"docx", "xlsx", "pdf", "pptx"})
 
@@ -86,6 +91,8 @@ _META_COLUMNS = """file_id, name, kind, mime_type, size_bytes, row_count, column
 def kind_from_name(name: str) -> str | None:
     lowered = (name or "").strip().lower()
     for kind in KINDS:
+        if kind == OTHER_KIND:
+            continue
         if lowered.endswith(f".{kind}"):
             return kind
     return None
@@ -99,7 +106,7 @@ def normalize_name(name: str, kind: str = "csv") -> str:
         raise HTTPException(status_code=422, detail="File name is required.")
     if _NAME_FORBIDDEN.search(cleaned):
         raise HTTPException(status_code=422, detail="File names cannot contain slashes.")
-    if not cleaned.lower().endswith(f".{kind}"):
+    if kind != OTHER_KIND and not cleaned.lower().endswith(f".{kind}"):
         cleaned += f".{kind}"
     if len(cleaned) > MAX_NAME_LENGTH:
         raise HTTPException(
@@ -187,6 +194,10 @@ def _decode_text(data: bytes) -> str:
 def validate_binary(kind: str, data: bytes) -> None:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Files are limited to 15 MB.")
+    if kind == OTHER_KIND:
+        if not data:
+            raise HTTPException(status_code=422, detail="That file is empty.")
+        return
     if kind == "pdf":
         if not data.startswith(b"%PDF"):
             raise HTTPException(status_code=422, detail="That file is not a valid PDF.")
@@ -441,8 +452,9 @@ async def create_binary_file(
     *,
     edited_by: EditedBy = "user",
     based_on: str | None = None,
+    mime_type: str | None = None,
 ) -> dict[str, Any]:
-    """Create a DOCX, XLSX, or PDF file from bytes."""
+    """Create a binary file (Office, PDF, picture, or any other type) from bytes."""
 
     if kind not in BINARY_KINDS:
         raise HTTPException(status_code=422, detail=f"Unsupported file type: {kind}.")
@@ -454,7 +466,7 @@ async def create_binary_file(
     try:
         return await _insert({
             "id": file_id, "org": org_id, "user": user_id, "name": clean_name,
-            "kind": kind, "mime": KINDS[kind], "size": len(data), "content": "",
+            "kind": kind, "mime": mime_type or KINDS[kind], "size": len(data), "content": "",
             "blob": blob, "rows": rows, "columns": columns, "edited_by": edited_by,
             "based_on": based_on,
         }, clean_name)
@@ -517,25 +529,35 @@ async def create_document(
 
 
 async def upload_file(
-    org_id: str, user_id: str, filename: str, data: bytes, name: str | None = None
+    org_id: str,
+    user_id: str,
+    filename: str,
+    data: bytes,
+    name: str | None = None,
+    *,
+    auto_rename: bool = False,
 ) -> dict[str, Any]:
-    """Create a file from an upload; the type comes from the file extension."""
+    """Create a file from an upload; the type comes from the file extension.
 
-    kind = kind_from_name(filename)
-    if kind is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Supported files: .csv, .txt, .md, .json, .docx, .xlsx, .pdf, .pptx, and "
-                "pictures (.png, .jpg, .gif, .webp)."
-            ),
-        )
-    final_name = name or filename
+    Known types are validated and previewed. Any other type is kept as uploaded
+    (kind ``file``) so it can be downloaded, shared and attached. With
+    ``auto_rename`` a taken name becomes "name (2).ext" instead of a conflict, which
+    multi-file and folder uploads rely on.
+    """
+
+    final_name = " ".join((name or filename or "upload").split()) or "upload"
+    kind = kind_from_name(final_name) or kind_from_name(filename) or OTHER_KIND
+    if auto_rename:
+        existing = {f["name"] for f in await list_files(org_id, user_id)}
+        final_name = unique_name(existing, final_name)
     if kind in TEXT_KINDS:
         if len(data) > MAX_FILE_BYTES:
             raise HTTPException(status_code=413, detail="CSV and text files are limited to 1 MB.")
         return await create_file(org_id, user_id, final_name, _decode_text(data), kind=kind)
-    return await create_binary_file(org_id, user_id, final_name, kind, data)
+    mime = None
+    if kind == OTHER_KIND:
+        mime = mimetypes.guess_type(final_name)[0] or "application/octet-stream"
+    return await create_binary_file(org_id, user_id, final_name, kind, data, mime_type=mime)
 
 
 async def update_file(
@@ -629,7 +651,7 @@ async def replace_upload(
 
     current = await get_file(org_id, user_id, file_id)
     kind = current["kind"]
-    if kind_from_name(filename) != kind:
+    if (kind_from_name(filename) or OTHER_KIND) != kind:
         raise HTTPException(
             status_code=422, detail=f"Upload a .{kind} file to replace {current['name']}."
         )
@@ -734,13 +756,15 @@ def unique_name(existing: set[str], wanted: str) -> str:
     taken = {name.lower() for name in existing}
     if wanted.lower() not in taken:
         return wanted
-    kind = kind_from_name(wanted)
-    base = stem(wanted)
+    base, dot, extension = wanted.rpartition(".")
+    if not dot or not base or " " in extension or len(extension) > 10:
+        base, extension = wanted, ""
     for n in range(2, 100):
-        candidate = f"{base} ({n}).{kind}" if kind else f"{base} ({n})"
+        candidate = f"{base} ({n}).{extension}" if extension else f"{base} ({n})"
         if candidate.lower() not in taken:
             return candidate
-    return f"{base} {uuid4().hex[:6]}.{kind}" if kind else f"{base} {uuid4().hex[:6]}"
+    tag = uuid4().hex[:6]
+    return f"{base} {tag}.{extension}" if extension else f"{base} {tag}"
 
 
 # --- Sharing ------------------------------------------------------------------------
@@ -1152,6 +1176,16 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
     return result
 
 
+def other_file_text(name: str, data: bytes) -> str:
+    """Text of a file of another type when it is text (HTML, XML, code, logs)."""
+
+    if b"\x00" in data[:4096]:
+        return f"({name} is a binary file; it can be downloaded or attached but not read.)"
+    from brain.file_extract import extract_file_text
+
+    return extract_file_text(name, data)
+
+
 def pptx_text(data: bytes) -> str:
     from loombot.file_builders import pptx_slides
 
@@ -1188,6 +1222,8 @@ async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> 
         return blocks_to_markdown(docx_blocks(data))
     if kind == "pptx":
         return pptx_text(data)
+    if kind == OTHER_KIND:
+        return other_file_text(file["name"], data)
     out: list[str] = []
     for sheet in xlsx_sheets(data, max_rows=2000):
         out.append(f"[Sheet: {sheet['name']}]")
@@ -1217,6 +1253,9 @@ async def preview_file(org_id: str, user_id: str, file_id: str) -> dict[str, Any
         return {"kind": "pptx", "slides": pptx_slides(data)}
     if meta["kind"] in IMAGE_KINDS:
         return {"kind": "image", "height": meta["row_count"], "width": meta["column_count"]}
+    if meta["kind"] == OTHER_KIND:
+        text_content = None if b"\x00" in data[:4096] else data[:200_000].decode("utf-8", "replace")
+        return {"kind": "file", "mime_type": meta["mime_type"], "text": text_content}
     return {"kind": meta["kind"], "content": data.decode("utf-8")}
 
 

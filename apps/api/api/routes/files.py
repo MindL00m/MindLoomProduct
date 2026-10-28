@@ -25,6 +25,10 @@ class UpdatedVersionInput(BaseModel):
 
 
 def _download_response(data: bytes, meta: dict, *, inline: bool) -> Response:
+    if meta.get("kind") == files_service.OTHER_KIND:
+        # Files of any other type are never rendered by the browser on the API's origin.
+        meta = {**meta, "mime_type": "application/octet-stream"}
+        inline = False
     name = meta["name"]
     ascii_name = name.encode("ascii", "ignore").decode() or f"file.{meta['kind']}"
     disposition = "inline" if inline else "attachment"
@@ -65,12 +69,19 @@ async def create_file(
 async def upload_file(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
+    auto_rename: bool = Form(default=False),
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict:
-    """Add a CSV, TXT, DOCX, XLSX, or PDF file from the user's computer."""
+    """Add any file from the user's computer (up to 15 MB; text files up to 1 MB).
+
+    ``auto_rename`` gives a taken name a "(2)" suffix instead of failing, for
+    multi-file and folder uploads.
+    """
 
     data = await file.read(files_service.MAX_UPLOAD_BYTES + 1)
-    return await files_service.upload_file(*ctx, file.filename or "upload", data, name or None)
+    return await files_service.upload_file(
+        *ctx, file.filename or "upload", data, name or None, auto_rename=auto_rename
+    )
 
 
 @router.get("/public/{file_id}/{filename}")

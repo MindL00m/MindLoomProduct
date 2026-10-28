@@ -608,6 +608,18 @@ function StructuredPreview({ fileId, updatedAt }: { fileId: string; updatedAt: s
   if (preview.kind === "docx") return <DocPreview blocks={preview.blocks} />;
   if (preview.kind === "xlsx") return <WorkbookPreview sheets={preview.sheets} />;
   if (preview.kind === "pptx") return <SlidesPreview slides={preview.slides} />;
+  if (preview.kind === "file") {
+    return preview.text !== null ? (
+      <pre className="m-4 min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-3 font-mono text-xs">
+        {preview.text}
+      </pre>
+    ) : (
+      <p className="m-4 text-sm text-muted-foreground">
+        This {preview.mime_type || "file"} can't be previewed here. Use Download to open it, or
+        attach it to an email.
+      </p>
+    );
+  }
   return null;
 }
 

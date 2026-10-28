@@ -10,6 +10,8 @@ organization and user.
 from __future__ import annotations
 
 import base64
+
+import openai
 import hmac
 import json
 import logging
@@ -159,6 +161,19 @@ from core.rate_limit import (  # noqa: E402
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(openai.APIError)
+async def openai_error(_request: Request, exc: openai.APIError) -> JSONResponse:
+    """A model call failed (bad key, quota, outage): a clear 503, not a raw 500."""
+
+    logger.warning("Language model request failed: %s", exc.__class__.__name__)
+    status = getattr(exc, "status_code", None)
+    detail = (
+        "The language model rejected MindLoom's API key. Check OPENAI_API_KEY."
+        if status == 401 else "The language model is unavailable right now. Try again shortly."
+    )
+    return JSONResponse(status_code=503, content={"detail": detail})
 
 
 @app.exception_handler(LLMProviderError)

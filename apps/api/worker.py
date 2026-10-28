@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
+    from core.config import validate_production_secrets
+
+    validate_production_secrets()
     await ensure_schema()
     redis = Redis.from_url(get_settings().redis_url, decode_responses=True)
     from shuttle.recurring_emails import run_recurring_email_scheduler

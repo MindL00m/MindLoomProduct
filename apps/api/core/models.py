@@ -62,7 +62,8 @@ class CaptureCreate(BaseModel):
 
     id: str
     timestamp: int
-    data_url: str = Field(alias="dataUrl")
+    # A screenshot as a data URL; capped so one request cannot exhaust memory.
+    data_url: str = Field(alias="dataUrl", max_length=20_000_000)
     url: str = ""
     tab_title: str = Field(default="", alias="tabTitle")
     browser_anchor: Optional[BrowserAnchor] = Field(default=None, alias="browserAnchor")

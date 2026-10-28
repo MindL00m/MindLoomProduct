@@ -51,6 +51,16 @@ def verify_google_pubsub_oidc(request: Request) -> None:
 
     email = str(claims.get("email") or "")
     # Google Pub/Sub push tokens are issued for the service account pushing.
-    if claims.get("email_verified") is False:
+    if claims.get("email_verified") is not True:
         raise HTTPException(status_code=401, detail="Pub/Sub OIDC email is not verified.")
+    # Any Google service account can mint a token for our audience; only the one
+    # configured for the push subscription may trigger syncs.
+    expected = settings.google_pubsub_push_service_account.strip().lower()
+    if expected and email.lower() != expected:
+        raise HTTPException(status_code=401, detail="Pub/Sub token is from the wrong service account.")
+    if not expected and settings.app_env == "production":
+        logger.warning(
+            "GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT is unset; any Google service account can "
+            "trigger Gmail syncs. Set it to the push subscription's service account."
+        )
     logger.debug("Accepted Pub/Sub OIDC token for %s", email or claims.get("sub"))

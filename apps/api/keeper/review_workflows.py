@@ -158,6 +158,7 @@ async def create_expert_request(
             payload={
                 "review_id": review_id,
                 "recipient": str(expert["email"]),
+                "sender_user_id": requester_user_id,
                 "question": question,
             },
         )
@@ -325,6 +326,7 @@ async def start_expert_conversation(
             payload={
                 "review_id": review_id,
                 "recipient": str(expert["email"]),
+                "sender_user_id": requester_user_id,
                 "question": message,
             },
         )

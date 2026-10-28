@@ -15,15 +15,20 @@ def test_zoom_webhook_signature(monkeypatch):
         lambda: SimpleNamespace(zoom_webhook_secret_token=secret),
     )
     body = b'{"event":"recording.completed"}'
-    timestamp = "1784280000"
-    signature = "v0=" + hmac.new(
-        secret.encode(),
-        f"v0:{timestamp}:{body.decode()}".encode(),
-        hashlib.sha256,
-    ).hexdigest()
 
-    assert zoom_workspace.validate_zoom_webhook(body, timestamp, signature)
-    assert not zoom_workspace.validate_zoom_webhook(body, timestamp, "v0=bad")
+    def sign(timestamp: str) -> str:
+        return "v0=" + hmac.new(
+            secret.encode(), f"v0:{timestamp}:{body.decode()}".encode(), hashlib.sha256,
+        ).hexdigest()
+
+    import time
+
+    now = str(int(time.time()))
+    assert zoom_workspace.validate_zoom_webhook(body, now, sign(now))
+    assert not zoom_workspace.validate_zoom_webhook(body, now, "v0=bad")
+    # A correctly signed but old request is a replay.
+    old = str(int(time.time()) - 3600)
+    assert not zoom_workspace.validate_zoom_webhook(body, old, sign(old))
 
 
 def test_zoom_selected_access_policy():

@@ -14,8 +14,8 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      # Published so the API/worker can run on the host against Compose infra.
-      - "6379:6379"
+      # Published on this machine only, so the API/worker can run on the host.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -32,7 +32,7 @@ services:
       POSTGRES_DB: loom
     ports:
       # Host port 5433 to avoid clashing with a Postgres already running on 5432.
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Runs automatically only on first init of an empty data volume.
@@ -48,8 +48,8 @@ services:
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
     ports:
-      - "7474:7474"   # Neo4j Browser UI
-      - "7687:7687"   # Bolt
+      - "127.0.0.1:7474:7474"   # Neo4j Browser UI
+      - "127.0.0.1:7687:7687"   # Bolt
     volumes:
       - neo4jdata:/data
     healthcheck:
@@ -83,6 +83,14 @@ services:
     environment:
       # --- the only secret you must provide ---
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      # Local stack: development mode unless .env says otherwise. Secrets come from .env.
+      APP_ENV: ${APP_ENV:-development}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      ALLOW_DEV_INTEGRATIONS: ${ALLOW_DEV_INTEGRATIONS:-false}
+      GOOGLE_PUBSUB_PUSH_AUDIENCE: ${GOOGLE_PUBSUB_PUSH_AUDIENCE:-}
+      GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT: ${GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       # --- wired to the compose service network (do not need editing) ---
       POSTGRES_URL: postgresql+asyncpg://loom:${POSTGRES_PASSWORD:-loom}@postgres:5432/loom
       REDIS_URL: redis://redis:6379/0
@@ -123,7 +131,7 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       WEB_SEARCH_ENABLED: ${WEB_SEARCH_ENABLED:-true}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +148,14 @@ services:
     command: ["python", "-m", "worker"]
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      # Local stack: development mode unless .env says otherwise. Secrets come from .env.
+      APP_ENV: ${APP_ENV:-development}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      ALLOW_DEV_INTEGRATIONS: ${ALLOW_DEV_INTEGRATIONS:-false}
+      GOOGLE_PUBSUB_PUSH_AUDIENCE: ${GOOGLE_PUBSUB_PUSH_AUDIENCE:-}
+      GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT: ${GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
       POSTGRES_URL: postgresql+asyncpg://loom:${POSTGRES_PASSWORD:-loom}@postgres:5432/loom
       REDIS_URL: redis://redis:6379/0
       NEO4J_URI: bolt://neo4j:7687
@@ -180,7 +196,7 @@ services:
       args:
         VITE_API_BASE: http://localhost:8000
     ports:
-      - "5500:80"
+      - "127.0.0.1:5500:80"
     depends_on:
       - api
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import time
 import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
@@ -272,9 +273,24 @@ async def sync_zoom(
     return imported
 
 
+ZOOM_WEBHOOK_MAX_AGE_SECONDS = 300
+
+
 def validate_zoom_webhook(body: bytes, timestamp: str, signature: str) -> bool:
+    """Zoom's HMAC signature over the timestamp and body, and a fresh timestamp
+    (replayed requests older than five minutes are refused)."""
+
     secret = get_settings().zoom_webhook_secret_token
     if not secret:
+        return False
+    try:
+        sent = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    # Zoom sends seconds; accept milliseconds too.
+    if sent > 10_000_000_000:
+        sent //= 1000
+    if abs(time.time() - sent) > ZOOM_WEBHOOK_MAX_AGE_SECONDS:
         return False
     expected = "v0=" + hmac.new(
         secret.encode(),

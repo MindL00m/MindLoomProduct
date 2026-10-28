@@ -10,8 +10,15 @@ from weaver import file_sources
 router = APIRouter(prefix="/loombot/sources", tags=["loombot-files"])
 
 
+_INLINE_SAFE = {"application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"}
+
+
 def _file_response(data: bytes, name: str, mime: str, *, inline: bool) -> Response:
     ascii_name = name.encode("ascii", "ignore").decode().replace('"', "") or "file"
+    # Only types a browser shows passively may be inline; HTML, SVG and the like are
+    # always downloaded so a file from someone's mailbox or Drive can never run as a page.
+    if (mime or "").lower() not in _INLINE_SAFE:
+        mime, inline = "application/octet-stream", False
     return Response(
         content=data,
         media_type=mime or "application/octet-stream",

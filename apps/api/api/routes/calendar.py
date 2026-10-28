@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from keeper.auth import require_user_context
 from shuttle import calendar_meetings
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
 
@@ -40,7 +42,7 @@ async def status(ctx: tuple[str, str] = Depends(require_user_context)) -> dict:
     return await calendar_meetings.calendar_status(*ctx)
 
 
-@router.post("/availability")
+@router.post("/availability", dependencies=[rate_limit(actions_limit, "actions")])
 async def availability(
     body: AvailabilityInput, ctx: tuple[str, str] = Depends(require_user_context)
 ) -> dict:
@@ -59,7 +61,7 @@ async def availability(
     )
 
 
-@router.post("/meetings", status_code=201)
+@router.post("/meetings", status_code=201, dependencies=[rate_limit(outbound_limit, "outbound")])
 async def create_meeting(
     body: CreateMeetingInput, ctx: tuple[str, str] = Depends(require_user_context)
 ) -> dict:

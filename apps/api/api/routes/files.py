@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from keeper.auth import require_user_context
 from loombot import files as files_service
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
 router = APIRouter(prefix="/loombot/files", tags=["loombot-files"])
 
 
@@ -93,7 +95,7 @@ class ShipmentDocumentsInput(BaseModel):
     instructions: str | None = Field(default=None, max_length=2000)
 
 
-@router.post("/shipment-documents", status_code=201)
+@router.post("/shipment-documents", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def shipment_documents(
     body: ShipmentDocumentsInput,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -116,7 +118,7 @@ async def create_file(
     return await files_service.create_document(*ctx, body.name, body.content, kind=body.kind)
 
 
-@router.post("/upload", status_code=201)
+@router.post("/upload", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def upload_file(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
@@ -174,7 +176,7 @@ async def shares_seen(
     return {"cleared": await files_service.mark_shares_seen(*ctx, body.file_ids)}
 
 
-@router.post("/{file_id}/share")
+@router.post("/{file_id}/share", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def share_file(
     file_id: str,
     body: ShareInput,
@@ -278,7 +280,7 @@ async def template_fields(
     return await templates.describe_template(*ctx, file_id)
 
 
-@router.post("/{file_id}/fill", status_code=201)
+@router.post("/{file_id}/fill", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def fill_template(
     file_id: str,
     body: FillTemplateInput,
@@ -294,7 +296,7 @@ async def fill_template(
     )
 
 
-@router.post("/{file_id}/make-template", status_code=201)
+@router.post("/{file_id}/make-template", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def make_template(
     file_id: str,
     body: MakeTemplateInput,
@@ -307,7 +309,7 @@ async def make_template(
     return await templates.make_template_from_sample(*ctx, file_id, instructions=body.instructions)
 
 
-@router.post("/{file_id}/extract")
+@router.post("/{file_id}/extract", dependencies=[rate_limit(actions_limit, "actions")])
 async def extract_zip(
     file_id: str,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -366,7 +368,7 @@ async def open_link(
     return {"url": url, "expires_at": expires, "kind": meta["kind"]}
 
 
-@router.post("/{file_id}/updated-version", status_code=201)
+@router.post("/{file_id}/updated-version", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def updated_version(
     file_id: str,
     body: UpdatedVersionInput,

@@ -10,6 +10,7 @@ organization and user.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -141,7 +142,20 @@ app = FastAPI(
     openapi_url=None if _disable_docs else "/openapi.json",
 )
 
-from core.rate_limit import auth_limit, ingest_limit, limit, limiter, query_limit  # noqa: E402
+from core.uploads import (  # noqa: E402
+    MAX_DOCUMENT_BYTES,
+    MAX_EXTRACT_BYTES,
+    read_upload,
+)
+from core.rate_limit import (  # noqa: E402
+    actions_limit,
+    auth_limit,
+    ingest_limit,
+    limit,
+    limiter,
+    query_limit,
+    rate_limit,
+)
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
@@ -153,6 +167,25 @@ async def llm_provider_error(_request: Request, exc: LLMProviderError) -> JSONRe
 
 
 app.add_middleware(SlowAPIMiddleware)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    """Headers that stop the API's responses being framed, sniffed or run as pages."""
+
+    response = await call_next(request)
+    headers = response.headers
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    if "content-disposition" in headers:
+        # A downloaded or inline file is never allowed to run script on this origin.
+        headers.setdefault("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'none'")
+    elif not request.url.path.startswith(("/docs", "/redoc")):
+        headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    if get_settings().app_env == "production":
+        headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -341,7 +374,7 @@ async def ingest_pdf(
     if not is_pdf:
         raise HTTPException(status_code=400, detail="Expected a PDF file.")
 
-    data = await file.read()
+    data = await read_upload(file, MAX_DOCUMENT_BYTES)
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded PDF is empty.")
 
@@ -382,7 +415,7 @@ async def ingest_company_document(
         metadata = DocumentMetadataInput.model_validate_json(metadata_json)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    data = await file.read()
+    data = await read_upload(file, MAX_DOCUMENT_BYTES)
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded document is empty.")
     if is_archive:
@@ -474,7 +507,8 @@ async def ingest_directory(
         org_id, _ = ctx
         return await upsert_directory(body.people, org_id, source=body.source)
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.get("/org/graph", response_model=OrgGraphResponse)
@@ -486,7 +520,8 @@ async def get_org_graph(
     try:
         return await fetch_org_graph(org_id)
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.get("/graph/debug", response_model=KnowledgeGraphResponse)
@@ -501,7 +536,8 @@ async def get_knowledge_graph_debug(
         org_id, _ = ctx
         return await fetch_knowledge_graph_debug(org_id)
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.get("/ingest/status/{job_id}", response_model=JobStatus)
@@ -551,7 +587,8 @@ async def query(
         )
         return response
     except Exception as e:  # noqa: BLE001 - surface any failure as HTTP 500
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.post("/files/extract", response_model=FileExtractResponse)
@@ -564,7 +601,7 @@ async def extract_uploaded_file(
     """Extract text from an uploaded file for chat-only (ephemeral) context."""
 
     filename = file.filename or "upload"
-    data = await file.read()
+    data = await read_upload(file, MAX_EXTRACT_BYTES)
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     try:
@@ -572,7 +609,12 @@ async def extract_uploaded_file(
 
         text, _method = await extract_text_with_ocr(filename, data)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not read file: {exc}") from exc
+        # Reader errors (password-protected PDF, bad archive) are written for people;
+        # anything else is logged, not echoed.
+        if not isinstance(exc, ValueError):
+            logger.exception("Could not read uploaded file")
+        message = str(exc) if isinstance(exc, ValueError) else "the file could not be read."
+        raise HTTPException(status_code=400, detail=f"Could not read file: {message}") from exc
     if not text:
         raise HTTPException(status_code=400, detail=no_text_reason(filename, data))
     return FileExtractResponse(
@@ -593,7 +635,8 @@ async def get_integrations(
     try:
         return await list_integrations(org_id, user_id)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.get("/integrations/google/workspace/authorize", response_model=OAuthAuthorizeResponse)
@@ -608,7 +651,8 @@ async def authorize_google_workspace(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.post("/integrations/google/workspace/connect-dev", response_model=IntegrationsListResponse)
@@ -635,7 +679,8 @@ async def authorize_microsoft_teams(
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        logger.exception("Request failed")
+        raise HTTPException(status_code=500, detail="Something went wrong. Please try again.") from e
 
 
 @app.post("/integrations/microsoft/teams/connect-dev", response_model=IntegrationsListResponse)
@@ -741,7 +786,7 @@ async def _queue_teams_sync(
     return TeamsSyncStartResponse(job_id=job_id, status="queued", source="teams")
 
 
-@app.post("/integrations/microsoft/teams/sync", response_model=TeamsSyncStartResponse)
+@app.post("/integrations/microsoft/teams/sync", response_model=TeamsSyncStartResponse, dependencies=[rate_limit(actions_limit, "actions")])
 async def sync_microsoft_teams_now(
     background_tasks: BackgroundTasks,
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
@@ -805,7 +850,7 @@ async def _queue_workspace_sync(
     )
 
 
-@app.post("/integrations/google/workspace/gmail/sync", response_model=WorkspaceSyncStartResponse)
+@app.post("/integrations/google/workspace/gmail/sync", response_model=WorkspaceSyncStartResponse, dependencies=[rate_limit(actions_limit, "actions")])
 async def sync_gmail_now(
     background_tasks: BackgroundTasks,
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
@@ -823,7 +868,7 @@ async def sync_gmail_now(
     )
 
 
-@app.post("/integrations/google/workspace/drive/sync", response_model=WorkspaceSyncStartResponse)
+@app.post("/integrations/google/workspace/drive/sync", response_model=WorkspaceSyncStartResponse, dependencies=[rate_limit(actions_limit, "actions")])
 async def sync_drive_now(
     background_tasks: BackgroundTasks,
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
@@ -883,7 +928,7 @@ async def microsoft_teams_webhook(
     for item in values:
         if not isinstance(item, dict):
             raise HTTPException(status_code=401, detail="Invalid Microsoft notification payload.")
-        if item.get("clientState") != expected_state:
+        if not hmac.compare_digest(str(item.get("clientState") or ""), expected_state):
             raise HTTPException(status_code=401, detail="Invalid Microsoft clientState.")
         subscription_id = str(item.get("subscriptionId") or "")
         if not subscription_id:
@@ -977,7 +1022,7 @@ async def google_drive_webhook(
             status_code=503,
             detail="Drive webhook secret is not configured.",
         )
-    if x_goog_channel_token != expected_token:
+    if not hmac.compare_digest(str(x_goog_channel_token or ""), str(expected_token or "")):
         raise HTTPException(status_code=401, detail="Invalid Drive channel token.")
     if x_goog_resource_state == "sync":
         return GoogleWebhookResponse(accepted=True, provider="drive", queued=False)

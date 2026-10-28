@@ -271,6 +271,7 @@ async def execute(message: dict[str, Any]) -> None:
                 review_id=str(payload["review_id"]),
                 recipient=str(payload["recipient"]),
                 question=str(payload["question"]),
+                sender_user_id=payload.get("sender_user_id"),
             )
             local[job_id].status = "complete"
             local[job_id].progress = (

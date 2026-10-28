@@ -27,6 +27,10 @@ from keeper.review_workflows import (
     upsert_review_schedule,
 )
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
+from core.uploads import MAX_MEDIA_BYTES, read_upload
+
 router = APIRouter(prefix="/knowledge/reviews", tags=["knowledge reviews"])
 
 
@@ -130,7 +134,7 @@ async def message_contacts(
     return await list_message_contacts(*ctx)
 
 
-@router.post("/messages")
+@router.post("/messages", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def start_message_thread(
     request: StartConversationInput,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -144,7 +148,7 @@ async def start_message_thread(
     return {"review_id": review_id, "status": "open"}
 
 
-@router.post("/messages/send-proposed")
+@router.post("/messages/send-proposed", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def send_proposed_message(
     request: SendProposedMessageInput,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -157,7 +161,7 @@ async def send_proposed_message(
     )
 
 
-@router.post("/messages/send-proposed-email")
+@router.post("/messages/send-proposed-email", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def send_proposed_email_route(
     request: SendProposedEmailInput,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -212,7 +216,7 @@ async def answer_request_media(
 ) -> dict:
     parts = [answer.strip()] if answer.strip() else []
     if file is not None:
-        data = await file.read()
+        data = await read_upload(file, MAX_MEDIA_BYTES)
         if not data:
             raise HTTPException(status_code=400, detail="Attached response is empty.")
         from openai import AsyncOpenAI

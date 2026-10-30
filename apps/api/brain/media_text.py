@@ -1,7 +1,7 @@
 """Text from any uploaded file, including pictures and scanned PDFs.
 
-Pictures (PNG, JPEG, GIF, WebP) and PDF pages without selectable text are read
-with the vision model (``CAPTURE_VISION_MODEL``), using the same transcription
+Pictures (PNG, JPEG, GIF, WebP) and scanned PDF pages (see ``brain.pdf_reader``,
+which reads only the pages that need it) are read with the vision model (``CAPTURE_VISION_MODEL``), using the same transcription
 prompt as email attachments. OCR follows ``EMAIL_ATTACHMENT_OCR`` and needs an
 OpenAI key; without it, pictures and scans yield no text and callers explain why.
 """
@@ -17,10 +17,6 @@ from brain.file_extract import extract_file_text
 logger = logging.getLogger(__name__)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
-# Pages read from a scanned PDF upload, sent to the vision model a few at a time.
-MAX_UPLOAD_OCR_PAGES = 20
-_OCR_BATCH = 5
-_SCANNED_PAGE_CHARS = 40
 
 
 def is_image(filename: str, data: bytes = b"") -> bool:
@@ -47,24 +43,15 @@ async def ocr_picture(data: bytes, *, label: str) -> str:
     return await ocr_images([data], label=label)
 
 
-async def ocr_pdf(data: bytes, *, label: str, max_pages: int = MAX_UPLOAD_OCR_PAGES) -> str:
-    from weaver.email_content import _pdf_page_images, ocr_images
-
-    images = await asyncio.to_thread(_pdf_page_images, data, max_pages)
-    parts: list[str] = []
-    for start in range(0, len(images), _OCR_BATCH):
-        batch = images[start:start + _OCR_BATCH]
-        text = await ocr_images(batch, label=f"{label}, pages {start + 1}-{start + len(batch)}")
-        if text:
-            parts.append(f"[Pages {start + 1}-{start + len(batch)}]\n{text}")
-    return "\n\n".join(parts)
-
-
 def pdf_is_scanned(data: bytes) -> bool:
-    from weaver.email_content import _pdf_pages
+    """True when any page is mostly a picture (a scan) and needs OCR."""
 
-    pages = _pdf_pages(data)
-    return bool(pages) and sum(len(p) for p in pages) < _SCANNED_PAGE_CHARS * len(pages)
+    from brain.pdf_reader import PdfReadError, read_pdf_text
+
+    try:
+        return read_pdf_text(data).needs_ocr
+    except PdfReadError:
+        return False
 
 
 async def extract_text_with_ocr(filename: str, data: bytes) -> tuple[str, str]:
@@ -86,16 +73,16 @@ async def extract_text_with_ocr(filename: str, data: bytes) -> tuple[str, str]:
         text = (await ocr_picture(data, label=filename)).strip()
         return text, "ocr" if text else "none"
     is_pdf = (filename or "").lower().endswith(".pdf") or data[:4] == b"%PDF"
+    if is_pdf:
+        from brain.pdf_reader import read_pdf
+
+        # A password-protected PDF raises PdfReadError (a ValueError) with a clear message.
+        read = await read_pdf(data, label=filename, ocr=ocr_available())
+        text = read.text().strip()
+        if text and read.notes:
+            text = (text + "\n\n" + " ".join(f"({note})" for note in read.notes)).strip()
+        return text, "ocr" if read.used_ocr else ("text" if text else "none")
     text = (await asyncio.to_thread(extract_file_text, filename, data)).strip()
-    if is_pdf and ocr_available():
-        try:
-            scanned = await asyncio.to_thread(pdf_is_scanned, data)
-        except Exception:  # noqa: BLE001 - a damaged PDF keeps whatever text it had
-            scanned = False
-        if scanned:
-            transcribed = (await ocr_pdf(data, label=filename)).strip()
-            if transcribed:
-                return transcribed, "ocr"
     return text, "text" if text else "none"
 
 

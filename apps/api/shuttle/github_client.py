@@ -15,6 +15,42 @@ _API = "https://api.github.com"
 _ACCEPT = "application/vnd.github+json"
 _API_VERSION = "2022-11-28"
 
+_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+
+
+def _repo_url(owner: str, repo: str) -> str:
+    """API URL for a repository. Names are checked so a crafted owner, repo, file path
+    or branch (``../../other/repo``) cannot reach a repository outside the allowlist;
+    HTTP clients collapse ``..`` in URL paths."""
+
+    if not _NAME.match(owner or "") or not _NAME.match(repo or "") or repo in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid GitHub owner or repository name.")
+    return f"{_API}/repos/{owner}/{repo}"
+
+
+def _safe_path(path: str) -> str:
+    from urllib.parse import quote
+
+    parts = (path or "").strip().strip("/").split("/")
+    if (
+        not parts or any(p in {"", ".", ".."} for p in parts)
+        or "\\" in path or "%" in path or any(ord(c) < 32 for c in path)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+    return "/".join(quote(p, safe="") for p in parts)
+
+
+def _safe_ref(ref: str) -> str:
+    from urllib.parse import quote
+
+    value = (ref or "").strip()
+    if (
+        not value or ".." in value or value.startswith(("/", "-")) or value.endswith(("/", ".lock"))
+        or any(c in value for c in " ~^:?*[\\%") or any(ord(c) < 32 for c in value)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid branch name.")
+    return quote(value, safe="/")
+
 
 def _headers(token: str) -> dict[str, str]:
     secret = token.strip()
@@ -190,7 +226,7 @@ async def get_repo(token: str, owner: str, repo: str) -> dict[str, Any]:
         response = await request_with_backoff(
             client,
             "GET",
-            f"{_API}/repos/{owner}/{repo}",
+            f"{_repo_url(owner, repo)}",
             headers=_headers(token),
         )
 
@@ -239,7 +275,7 @@ async def get_file_contents(
         response = await request_with_backoff(
             client,
             "GET",
-            f"{_API}/repos/{owner}/{repo}/contents/{path}",
+            f"{_repo_url(owner, repo)}/contents/{_safe_path(path)}",
             headers=_headers(token),
             params=params or None,
         )
@@ -368,6 +404,8 @@ async def create_pull_request_with_file(
     path = path.strip().lstrip("/")
     base_branch = (base_branch or "").strip()
     branch_name = (branch_name or "").strip() or _slug_branch(pr_title)
+    _safe_ref(branch_name)
+    _safe_path(path)
     if not owner or not repo or not path:
         raise HTTPException(status_code=400, detail="owner, repo, and path are required.")
     if not pr_title.strip():
@@ -377,7 +415,7 @@ async def create_pull_request_with_file(
 
     async with httpx.AsyncClient(timeout=45.0) as client:
         status, repo_data = await _gh_json(
-            client, "GET", f"{_API}/repos/{owner}/{repo}", token=token
+            client, "GET", f"{_repo_url(owner, repo)}", token=token
         )
         if status == 404:
             raise HTTPException(
@@ -392,7 +430,7 @@ async def create_pull_request_with_file(
         status, ref_data = await _gh_json(
             client,
             "GET",
-            f"{_API}/repos/{owner}/{repo}/git/ref/heads/{base_branch}",
+            f"{_repo_url(owner, repo)}/git/ref/heads/{_safe_ref(base_branch)}",
             token=token,
         )
         if status >= 400:
@@ -406,7 +444,7 @@ async def create_pull_request_with_file(
         status, ref_create = await _gh_json(
             client,
             "POST",
-            f"{_API}/repos/{owner}/{repo}/git/refs",
+            f"{_repo_url(owner, repo)}/git/refs",
             token=token,
             json_body={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
         )
@@ -416,7 +454,7 @@ async def create_pull_request_with_file(
             status, ref_create = await _gh_json(
                 client,
                 "POST",
-                f"{_API}/repos/{owner}/{repo}/git/refs",
+                f"{_repo_url(owner, repo)}/git/refs",
                 token=token,
                 json_body={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
             )
@@ -439,7 +477,7 @@ async def create_pull_request_with_file(
         status, put_data = await _gh_json(
             client,
             "PUT",
-            f"{_API}/repos/{owner}/{repo}/contents/{path}",
+            f"{_repo_url(owner, repo)}/contents/{_safe_path(path)}",
             token=token,
             json_body=put_body,
         )
@@ -454,7 +492,7 @@ async def create_pull_request_with_file(
         status, pr_data = await _gh_json(
             client,
             "POST",
-            f"{_API}/repos/{owner}/{repo}/pulls",
+            f"{_repo_url(owner, repo)}/pulls",
             token=token,
             json_body={
                 "title": pr_title.strip(),

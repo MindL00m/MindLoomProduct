@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import time
 import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
@@ -143,10 +144,12 @@ def _visible_to(org_id: str, user_id: str, policy: object) -> list[str]:
     if getattr(policy, "access_mode", "") == "selected":
         users = json.loads(getattr(policy, "allowed_user_ids"))
         departments = json.loads(getattr(policy, "allowed_departments"))
-        return [
+        tokens = [
             *[f"user:{item}" for item in users],
             *[f"department:{item}" for item in departments],
         ]
+        # Nobody chosen must not widen to the org (an empty list is org-wide).
+        return [f"user:{user_id}", *tokens]
     if getattr(policy, "access_mode", "") == "organization":
         return [f"org:{org_id}"]
     # Zoom recording APIs do not expose a complete per-viewer ACL. Respecting
@@ -270,9 +273,24 @@ async def sync_zoom(
     return imported
 
 
+ZOOM_WEBHOOK_MAX_AGE_SECONDS = 300
+
+
 def validate_zoom_webhook(body: bytes, timestamp: str, signature: str) -> bool:
+    """Zoom's HMAC signature over the timestamp and body, and a fresh timestamp
+    (replayed requests older than five minutes are refused)."""
+
     secret = get_settings().zoom_webhook_secret_token
     if not secret:
+        return False
+    try:
+        sent = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    # Zoom sends seconds; accept milliseconds too.
+    if sent > 10_000_000_000:
+        sent //= 1000
+    if abs(time.time() - sent) > ZOOM_WEBHOOK_MAX_AGE_SECONDS:
         return False
     expected = "v0=" + hmac.new(
         secret.encode(),

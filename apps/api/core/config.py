@@ -7,6 +7,7 @@ configuration through :func:`get_settings`.
 
 from __future__ import annotations
 
+import secrets
 from functools import lru_cache
 from typing import Literal
 
@@ -34,6 +35,14 @@ class Settings(BaseSettings):
         description="Optional bearer token for an OpenAI-compatible local LLM endpoint.",
     )
     local_llm_timeout_seconds: float = Field(default=60.0, gt=0)
+    local_llm_allowed_hosts: str = Field(
+        default="",
+        description=(
+            "Comma-separated hosts (host or host:port) org admins may use as a local LLM "
+            "on a private network; LOCAL_LLM_API_KEY is sent only to these. Other "
+            "addresses must be public."
+        ),
+    )
     postgres_url: str = Field(..., description="SQLAlchemy connection URL for the PostgreSQL/pgvector database.")
     redis_url: str = Field(
         default="redis://localhost:6379/0",
@@ -44,14 +53,16 @@ class Settings(BaseSettings):
     neo4j_password: str = Field(..., description="Password for authenticating against Neo4j.")
 
     app_env: Literal["development", "production"] = Field(
-        default="development",
+        # Fail safe: a deployment that forgets APP_ENV runs with production checks,
+        # not with development shortcuts. Local setups set APP_ENV=development.
+        default="production",
         description="Runtime environment. Production disables connect-dev and requires SESSION_SECRET.",
     )
     session_secret: str = Field(
         default="",
         description=(
             "HMAC secret used to sign MindLoom access JWTs. Required when APP_ENV=production; "
-            "a fixed insecure default is used in development if left empty."
+            "in development an empty value gets a random per-process secret."
         ),
     )
     session_ttl_hours: int = Field(
@@ -283,6 +294,10 @@ class Settings(BaseSettings):
             "(typically the full HTTPS push URL). Required in production."
         ),
     )
+    google_pubsub_push_service_account: str = Field(
+        default="",
+        description="Service account email of the Gmail Pub/Sub push subscription; only its tokens are accepted.",
+    )
     cors_allowed_origins: str = Field(
         default="",
         description=(
@@ -336,7 +351,8 @@ class Settings(BaseSettings):
         if secret:
             return secret
         if self.app_env == "development":
-            return "dev-insecure-session-secret-change-me"
+            # Never a fixed, publicly known value: anyone could forge sessions with it.
+            return _DEV_SESSION_SECRET
         raise ValueError("SESSION_SECRET is required when APP_ENV=production.")
 
     @property
@@ -382,8 +398,10 @@ def validate_production_secrets(settings: Settings | None = None) -> None:
 
     errors: list[str] = []
     session = cfg.session_secret.strip()
-    if session in _WEAK_SESSION_SECRETS:
-        errors.append("SESSION_SECRET must be set to a strong unique value in production.")
+    if session in _WEAK_SESSION_SECRETS or len(session) < 32:
+        errors.append(
+            "SESSION_SECRET must be a strong unique value of at least 32 characters in production."
+        )
     if cfg.neo4j_password.strip() in _WEAK_NEO4J_PASSWORDS:
         errors.append("NEO4J_PASSWORD must not use a known weak default in production.")
     if not cfg.google_drive_webhook_secret.strip():
@@ -405,6 +423,9 @@ def validate_production_secrets(settings: Settings | None = None) -> None:
         errors.append("S3_BUCKET is required when BLOB_STORAGE_BACKEND=s3.")
     if errors:
         raise RuntimeError("Production secret validation failed:\n- " + "\n- ".join(errors))
+
+
+_DEV_SESSION_SECRET = secrets.token_urlsafe(48)
 
 
 @lru_cache(maxsize=1)

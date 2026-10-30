@@ -231,11 +231,41 @@ async def test_unreachable_local_endpoint_has_clear_error(monkeypatch) -> None:
         llm_provider,
         "get_settings",
         lambda: SimpleNamespace(
-            local_llm_api_key="local", local_llm_timeout_seconds=1.0
+            local_llm_api_key="local", local_llm_timeout_seconds=1.0,
+            local_llm_allowed_hosts="offline",
         ),
     )
-    with pytest.raises(llm_provider.LLMProviderError, match="Cannot reach.*local LLM"):
+    with pytest.raises(llm_provider.LLMProviderError, match="Cannot reach"):
         await llm_provider.check_local_endpoint("http://offline/v1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data/v1",
+    "http://127.0.0.1:6379/v1",
+    "http://10.0.0.8:8000/v1",
+])
+async def test_private_llm_addresses_need_the_operator_allowlist(monkeypatch, url) -> None:
+    monkeypatch.setattr(
+        llm_provider, "get_settings",
+        lambda: SimpleNamespace(local_llm_api_key="secret", local_llm_timeout_seconds=1.0,
+                                local_llm_allowed_hosts=""),
+    )
+    llm_provider._VETTED.clear()
+    with pytest.raises(llm_provider.LLMProviderError, match="not allowed"):
+        await llm_provider.vet_local_base_url(url)
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_private_host_is_trusted(monkeypatch) -> None:
+    monkeypatch.setattr(
+        llm_provider, "get_settings",
+        lambda: SimpleNamespace(local_llm_api_key="secret", local_llm_timeout_seconds=1.0,
+                                local_llm_allowed_hosts="llm-host:8000, gpu.lan"),
+    )
+    llm_provider._VETTED.clear()
+    assert await llm_provider.vet_local_base_url("http://llm-host:8000/v1") is True
+    assert await llm_provider.vet_local_base_url("http://gpu.lan/v1") is True
 
 
 def test_context_limit_keeps_system_and_latest_message() -> None:

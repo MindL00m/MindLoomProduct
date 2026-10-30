@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { resolveView, type ViewId } from "@/lib/navigation";
 import { getOrgSummary, type OrgSummary } from "@/services/auth";
 import { getExpertInboxCount } from "@/services/reviews";
+import { completeOAuthConnection } from "@/services/integrations";
 import { listUnseenShares } from "@/services/files";
 import { isExtensionSkill, listSkillFiles } from "@/services/skillFiles";
 
@@ -98,9 +99,33 @@ export default function Dashboard() {
   const [workflowNotifications, setWorkflowNotifications] = useState(0);
   const isAdmin = role === "admin";
   const view = resolveView(searchParams.get("tab"));
-  const setupParam = asOAuthProvider(searchParams.get("setup"));
+  const oauthCode = searchParams.get("oauth_code");
+  const [oauthFinishing, setOauthFinishing] = useState(Boolean(oauthCode));
+  const [oauthFinishError, setOauthFinishError] = useState<string | null>(null);
+  // The setup wizard opens only once the connection is saved for this person.
+  const setupParam = oauthFinishing ? null : asOAuthProvider(searchParams.get("setup"));
   const connectedParam = asOAuthProvider(searchParams.get("connected"));
-  const errorParam = searchParams.get("error");
+  const errorParam = oauthFinishError ?? searchParams.get("error");
+
+  useEffect(() => {
+    if (!oauthCode) return;
+    let cancelled = false;
+    setOauthFinishing(true);
+    void completeOAuthConnection(oauthCode)
+      .catch((err: Error) => {
+        if (!cancelled) setOauthFinishError(err.message);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        const next = new URLSearchParams(window.location.search);
+        next.delete("oauth_code");
+        setSearchParams(next, { replace: true });
+        setOauthFinishing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [oauthCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openView(id: ViewId) {
     setSearchParams({ tab: id });

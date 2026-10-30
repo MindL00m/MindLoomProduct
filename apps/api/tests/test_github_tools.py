@@ -421,3 +421,23 @@ async def test_create_branch_403_explains_write_permissions(monkeypatch) -> None
     assert raised.value.status_code == 403
     assert "Contents: Read and write" in raised.value.detail
     assert "Resource not accessible by personal access token" in raised.value.detail
+
+
+def test_github_names_paths_and_branches_cannot_escape_the_repo() -> None:
+    from fastapi import HTTPException
+
+    from shuttle import github_client as gc
+
+    assert gc._repo_url("acme", "app") == "https://api.github.com/repos/acme/app"
+    assert gc._safe_path("src/main.py") == "src/main.py"
+    assert gc._safe_path("docs/a b.md") == "docs/a%20b.md"
+    assert gc._safe_ref("feature/x-1") == "feature/x-1"
+    for bad in ["../../evil/x/contents/.env", "a/../b", "./x", "a//b", "%2e%2e/x", "a\\b"]:
+        with pytest.raises(HTTPException):
+            gc._safe_path(bad)
+    for owner, repo in [("acme/..", "x"), ("acme", ".."), ("a b", "x"), ("acme", "x/y")]:
+        with pytest.raises(HTTPException):
+            gc._repo_url(owner, repo)
+    for bad in ["../main", "-x", "a..b", "x.lock", "a b", "x~1"]:
+        with pytest.raises(HTTPException):
+            gc._safe_ref(bad)

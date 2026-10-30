@@ -16,6 +16,7 @@ records a suggestion it still needs the user to confirm.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -214,6 +215,12 @@ def validate_binary(kind: str, data: bytes) -> None:
         "docx": "word/document.xml", "xlsx": "xl/workbook.xml", "pptx": "ppt/presentation.xml",
     }[kind]
     try:
+        from brain.archives import ArchiveError, check_ooxml
+
+        try:
+            check_ooxml(data)
+        except ArchiveError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             if required not in archive.namelist():
                 raise HTTPException(status_code=422, detail=f"That file is not a valid .{kind} file.")
@@ -1094,6 +1101,10 @@ def _cell_text(value: Any) -> str:
 def docx_blocks(data: bytes) -> list[dict[str, Any]]:
     """Headings, paragraphs, and tables of a Word document, in order."""
 
+    from brain.archives import check_ooxml
+
+    check_ooxml(data)
+
     import docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -1137,6 +1148,10 @@ def docx_blocks(data: bytes) -> list[dict[str, Any]]:
 def xlsx_sheets(data: bytes, *, max_rows: int = 500, max_cols: int = 50) -> list[dict[str, Any]]:
     """Each sheet's cell values (computed values where Excel saved them)."""
 
+    from brain.archives import check_ooxml
+
+    check_ooxml(data)
+
     import openpyxl
 
     workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -1178,7 +1193,7 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
 
     from brain.media_text import extract_text_with_ocr, no_text_reason, pdf_is_scanned
 
-    if file["kind"] == "pdf" and not pdf_is_scanned(data):
+    if file["kind"] == "pdf" and not await asyncio.to_thread(pdf_is_scanned, data):
         return pdf_text(data)
     key = (str(file.get("file_id")), str(file.get("updated_at")))
     if key in _OCR_CACHE:
@@ -1186,7 +1201,10 @@ async def _text_with_ocr(file: dict[str, Any], data: bytes) -> str:
     extracted, method = await extract_text_with_ocr(file["name"], data)
     result = extracted or f"({no_text_reason(file['name'], data)})"
     if method == "ocr":
-        result = f"(Read from the {'scan' if file['kind'] == 'pdf' else 'picture'} with OCR.)\n{result}"
+        result = (
+            f"(Scanned pages were read with OCR.)\n{result}" if file["kind"] == "pdf"
+            else f"(Read from the picture with OCR.)\n{result}"
+        )
         if len(_OCR_CACHE) >= _OCR_CACHE_SIZE:
             _OCR_CACHE.pop(next(iter(_OCR_CACHE)))
         _OCR_CACHE[key] = result
@@ -1292,12 +1310,11 @@ def pptx_text(data: bytes) -> str:
 
 
 def pdf_text(data: bytes) -> str:
-    import fitz
+    """A PDF's text by page, with tables as Markdown tables (no OCR)."""
 
-    with fitz.open(stream=data, filetype="pdf") as doc:
-        return "\n\n".join(
-            f"[Page {i + 1}]\n{page.get_text('text').strip()}" for i, page in enumerate(doc)
-        )
+    from brain.pdf_reader import read_pdf_text
+
+    return read_pdf_text(data).text()
 
 
 async def read_text_for_ask(org_id: str, user_id: str, file: dict[str, Any]) -> str:

@@ -26,7 +26,7 @@ MAX_ATTACHMENT_BYTES = 15_000_000
 MAX_ATTACHMENTS_PER_MESSAGE = 10
 # Inline images and small images are logos and signatures, not documents.
 MIN_IMAGE_BYTES = 30_000
-MAX_OCR_PAGES = 5
+MAX_OCR_PAGES = 10
 MAX_ATTACHMENT_CHARS = 120_000
 # A PDF page with less text than this is treated as a scan.
 _SCANNED_PAGE_CHARS = 40
@@ -403,24 +403,23 @@ async def extract_attachment(
         return result
     try:
         if kind == "pdf":
-            pages = await asyncio.to_thread(_pdf_pages, data)
-            result.pages = len(pages)
-            text = "\n\n".join(f"[Page {i + 1}]\n{page}" for i, page in enumerate(pages) if page)
-            readable = sum(len(page) for page in pages)
-            if pages and readable < _SCANNED_PAGE_CHARS * len(pages):
-                if allow_ocr and _ocr_enabled():
-                    images = await asyncio.to_thread(_pdf_page_images, data, MAX_OCR_PAGES)
-                    transcribed = await ocr_images(images, label=filename)
-                    if transcribed:
-                        result.method = "ocr"
-                        result.text = _truncate(transcribed)
-                        if len(pages) > MAX_OCR_PAGES:
-                            result.note = (
-                                f"Scanned PDF: the first {MAX_OCR_PAGES} of {len(pages)} pages were read."
-                            )
-                        return result
-                result.note = "Scanned PDF with little or no selectable text."
-            result.text = _truncate(text)
+            from brain.pdf_reader import read_pdf
+
+            read = await read_pdf(
+                data, label=filename, ocr=allow_ocr and _ocr_enabled(), max_ocr_pages=MAX_OCR_PAGES
+            )
+            result.pages = read.page_count
+            result.text = _truncate(read.text())
+            if read.used_ocr:
+                result.method = "ocr"
+            notes = list(read.notes)
+            if read.needs_ocr and not read.used_ocr and not notes:
+                notes.append("Scanned PDF with little or no selectable text.")
+            if notes:
+                result.note = " ".join(notes)
+            if result.method == "ocr":
+                result.text = result.text.strip()
+                return result
         elif kind == "image":
             if not (allow_ocr and _ocr_enabled()):
                 result.note = "Image attachments are read only when vision OCR is enabled."

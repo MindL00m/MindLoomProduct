@@ -47,6 +47,50 @@ def document_source(filename: str) -> str:
     }.get(suffix, "document")
 
 
+MAX_PIECE_TOKENS = 600
+
+
+def _table_pieces(table: str, max_tokens: int) -> list[str]:
+    """A Markdown table split into row groups, each repeating the header rows."""
+
+    from brain.chunker import _ENCODING
+
+    lines = table.splitlines()
+    header, rows = lines[:2], lines[2:]
+    pieces: list[str] = []
+    current: list[str] = []
+    for row in rows:
+        candidate = "\n".join(header + current + [row])
+        if current and len(_ENCODING.encode(candidate)) > max_tokens:
+            pieces.append("\n".join(header + current))
+            current = []
+        current.append(row)
+    if current or not pieces:
+        pieces.append("\n".join(header + current))
+    return pieces
+
+
+def document_pieces(text: str, max_tokens: int = MAX_PIECE_TOKENS) -> list[str]:
+    """Split a document's text into pieces under ``max_tokens``.
+
+    Paragraphs are kept together; a large Markdown table is split by rows with
+    its header repeated, so every piece still says what each column means.
+    """
+
+    from brain.chunker import _ENCODING
+    from weaver.email_content import split_for_chunks
+
+    blocks: list[str] = []
+    for block in text.split("\n\n"):
+        lines = block.strip().splitlines()
+        is_table = len(lines) >= 3 and lines[0].startswith("|") and lines[1].startswith("|-")
+        if is_table and len(_ENCODING.encode(block)) > max_tokens:
+            blocks.extend(_table_pieces(block.strip(), max_tokens))
+        else:
+            blocks.append(block)
+    return split_for_chunks("\n\n".join(blocks), max_tokens=max_tokens)
+
+
 def ensure_supported_document(filename: str) -> None:
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_DOCUMENT_EXTENSIONS:
@@ -83,13 +127,17 @@ async def ingest_document(
             for index, line in enumerate(lines)
         ]
     else:
+        # One message per piece of about 600 tokens, split at paragraphs (a page
+        # boundary or a whole table where possible), so chunks stay within the
+        # embedding model's limit and a long document becomes many searchable chunks.
         messages = [
             IncomingMessage(
                 id=f"document:{uuid4()}",
                 sender="document",
-                timestamp=now,
-                text=text,
+                timestamp=now + timedelta(microseconds=index),
+                text=piece,
             )
+            for index, piece in enumerate(document_pieces(text))
         ]
     conversation = Conversation(
         source=source,

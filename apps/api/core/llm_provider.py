@@ -266,8 +266,13 @@ class _CompletionsAdapter:
                     _drop_params(kwargs, {param})
         except Exception as exc:
             if config.provider == "local":
+                # Never echo the upstream response: the address is admin-chosen and
+                # its body could be from an internal service.
+                logger.warning("Local LLM request failed", exc_info=True)
+                status = getattr(exc, "status_code", None)
                 raise LLMProviderError(
-                    f"Local LLM '{config.model}' at {config.base_url} failed: {exc}"
+                    f"The local LLM '{config.model}' did not answer"
+                    + (f" (HTTP {status})." if status else f" ({exc.__class__.__name__}).")
                 ) from exc
             raise
 
@@ -307,8 +312,12 @@ async def get_llm_client(org_id: str) -> LLMClientAdapter:
     settings = get_settings()
     if config.provider == "local" and not config.base_url:
         raise LLMProviderError("Local LLM is selected but no base URL is configured.")
+    trusted = await vet_local_base_url(config.base_url or "") if config.provider == "local" else True
     client = AsyncOpenAI(
-        api_key=(settings.local_llm_api_key if config.provider == "local" else settings.openai_api_key),
+        api_key=(
+            (settings.local_llm_api_key if trusted else "not-sent")
+            if config.provider == "local" else settings.openai_api_key
+        ),
         base_url=config.base_url if config.provider == "local" else None,
         timeout=(settings.local_llm_timeout_seconds if config.provider == "local" else settings.openai_request_timeout_seconds),
     )
@@ -330,13 +339,63 @@ def get_default_openai_client() -> LLMClientAdapter:
     return LLMClientAdapter(client, LLMConfiguration(model=default_openai_model()))
 
 
+_VETTED: dict[str, tuple[bool, float]] = {}
+_VET_SECONDS = 300
+
+
+async def vet_local_base_url(base_url: str) -> bool:
+    """Check an org's local LLM address. Returns True when it is operator-trusted.
+
+    An admin chooses this address, and anyone can be the admin of their own org, so
+    it must not reach internal services: only hosts the operator lists in
+    ``LOCAL_LLM_ALLOWED_HOSTS`` (for self-hosted models on a private network) or
+    public addresses are allowed, and ``LOCAL_LLM_API_KEY`` is sent only to the
+    operator's listed hosts.
+    """
+
+    import time
+    from urllib.parse import urlsplit
+
+    from core.net_safety import UnsafeUrl, check_public_url
+
+    cached = _VETTED.get(base_url)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
+    parts = urlsplit(base_url)
+    host = (parts.hostname or "").lower()
+    host_port = f"{host}:{parts.port}" if parts.port else host
+    allowed = {
+        h.strip().lower() for h in get_settings().local_llm_allowed_hosts.split(",") if h.strip()
+    }
+    if host in allowed or host_port in allowed:
+        trusted = True
+    else:
+        try:
+            await check_public_url(base_url)
+        except UnsafeUrl as exc:
+            raise LLMProviderError(
+                f"This LLM address is not allowed: {exc} An operator can allow a private "
+                "host with LOCAL_LLM_ALLOWED_HOSTS."
+            ) from exc
+        trusted = False
+    _VETTED[base_url] = (trusted, time.monotonic() + _VET_SECONDS)
+    return trusted
+
+
 async def check_local_endpoint(base_url: str) -> None:
     url = f"{base_url.rstrip('/')}/models"
     settings = get_settings()
-    headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"}
+    trusted = await vet_local_base_url(base_url)
+    headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"} if trusted else {}
     try:
-        async with httpx.AsyncClient(timeout=settings.local_llm_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.local_llm_timeout_seconds, follow_redirects=False
+        ) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
     except Exception as exc:
-        raise LLMProviderError(f"Cannot reach an OpenAI-compatible local LLM at {url}: {exc}") from exc
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        raise LLMProviderError(
+            "Cannot reach an OpenAI-compatible LLM at that address"
+            + (f" (HTTP {status})." if status else ".")
+        ) from exc

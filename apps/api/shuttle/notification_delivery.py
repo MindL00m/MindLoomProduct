@@ -17,18 +17,6 @@ from weaver.microsoft_teams import _teams_token
 from core.provider_http import request_with_backoff
 
 
-async def _connection_user(org_id: str, provider: str) -> str | None:
-    factory = get_session_factory()
-    async with factory() as session:
-        return (
-            await session.execute(text("""
-                SELECT user_id FROM app_connections
-                WHERE org_id=:org AND provider=:provider
-                ORDER BY updated_at DESC LIMIT 1
-            """), {"org": org_id, "provider": provider})
-        ).scalar_one_or_none()
-
-
 async def _record(
     *,
     org_id: str,
@@ -301,8 +289,7 @@ async def send_user_email(
     raise RuntimeError("Connect Google Workspace or Microsoft 365 to send email.")
 
 
-async def _send_gmail(org_id: str, recipient: str, question: str) -> str:
-    user_id = await _connection_user(org_id, "google_workspace")
+async def _send_gmail(org_id: str, recipient: str, question: str, user_id: str | None) -> str:
     if not user_id:
         raise RuntimeError("Google Workspace is not connected.")
     return await _gmail_send_raw(
@@ -314,8 +301,7 @@ async def _send_gmail(org_id: str, recipient: str, question: str) -> str:
     )
 
 
-async def _send_outlook(org_id: str, recipient: str, question: str) -> str:
-    user_id = await _connection_user(org_id, "microsoft_teams")
+async def _send_outlook(org_id: str, recipient: str, question: str, user_id: str | None) -> str:
     if not user_id:
         raise RuntimeError("Microsoft 365 is not connected.")
     token, _ = await _teams_token(org_id, user_id)
@@ -339,8 +325,7 @@ async def _send_outlook(org_id: str, recipient: str, question: str) -> str:
     return "accepted"
 
 
-async def _send_teams(org_id: str, recipient: str, question: str) -> str:
-    user_id = await _connection_user(org_id, "microsoft_teams")
+async def _send_teams(org_id: str, recipient: str, question: str, user_id: str | None) -> str:
     if not user_id:
         raise RuntimeError("Microsoft 365 is not connected.")
     token, _ = await _teams_token(org_id, user_id)
@@ -396,11 +381,17 @@ async def _send_teams(org_id: str, recipient: str, question: str) -> str:
 
 
 async def deliver_expert_request(
-    *, org_id: str, review_id: str, recipient: str, question: str
+    *, org_id: str, review_id: str, recipient: str, question: str,
+    sender_user_id: str | None = None,
 ) -> dict[str, str]:
-    """Attempt every configured channel and persist each independent result."""
+    """Notify the expert from the asker's own connected accounts.
 
-    channels: list[tuple[str, Callable[[str, str, str], Awaitable[str]]]] = [
+    Never from another member's mailbox or Teams account: that would let anyone
+    send messages in a colleague's name. Without the asker's connection the
+    in-app Expert Message is the notification.
+    """
+
+    channels: list[tuple[str, Callable[..., Awaitable[str]]]] = [
         ("gmail", _send_gmail),
         ("outlook", _send_outlook),
         ("teams", _send_teams),
@@ -408,7 +399,7 @@ async def deliver_expert_request(
     outcomes: dict[str, str] = {}
     for channel, sender in channels:
         try:
-            message_id = await sender(org_id, recipient, question)
+            message_id = await sender(org_id, recipient, question, sender_user_id)
             outcomes[channel] = "delivered"
             await _record(
                 org_id=org_id, review_id=review_id, channel=channel,

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { safeHref } from "@/lib/safeHref";
 import {
   Activity,
   ArrowUp,
@@ -95,7 +96,7 @@ export function citationRenderer(sources: Source[], web: WebResult[] = []): Cita
       return (
         <a
           key={key}
-          href={result.url}
+          href={safeHref(result.url)}
           target="_blank"
           rel="noopener noreferrer nofollow"
           title={`Web: ${result.title}`}
@@ -1172,7 +1173,7 @@ export function WebSources({ results }: { results: WebResult[] }) {
             </span>
             <div className="min-w-0 flex-1">
               <a
-                href={result.url}
+                href={safeHref(result.url)}
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 className="flex items-center gap-1 text-sm font-medium text-primary hover:underline"
@@ -1349,7 +1350,7 @@ function MeetingCard({
         <div className="flex shrink-0 gap-2">
           {result.meet_link && (
             <a
-              href={result.meet_link}
+              href={safeHref(result.meet_link)}
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
@@ -1359,7 +1360,7 @@ function MeetingCard({
           )}
           {result.html_link && (
             <a
-              href={result.html_link}
+              href={safeHref(result.html_link)}
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
@@ -2173,7 +2174,7 @@ function ProposedPullRequestCard({
         </p>
         {prUrl && (
           <a
-            href={prUrl}
+            href={safeHref(prUrl)}
             target="_blank"
             rel="noreferrer"
             className="mt-2 inline-block text-xs font-medium text-primary hover:underline"

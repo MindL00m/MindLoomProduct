@@ -41,6 +41,13 @@ class BrowserAnchor(BaseModel):
     @classmethod
     def _origin_and_path(cls, value: str) -> str:
         parts = urlsplit(value.strip())
+        host = (parts.hostname or "").lower()
+        local = host in {"localhost", "127.0.0.1"} or host.endswith(".localhost")
+        # The extension opens this URL and clicks on it, so only real web pages.
+        if parts.scheme != "https" and not (parts.scheme == "http" and local):
+            raise ValueError("Browser steps must be on an https:// page.")
+        if not host or parts.username or parts.password:
+            raise ValueError("Browser steps need a plain web address.")
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
     @field_validator("href")
@@ -55,7 +62,8 @@ class CaptureCreate(BaseModel):
 
     id: str
     timestamp: int
-    data_url: str = Field(alias="dataUrl")
+    # A screenshot as a data URL; capped so one request cannot exhaust memory.
+    data_url: str = Field(alias="dataUrl", max_length=20_000_000)
     url: str = ""
     tab_title: str = Field(default="", alias="tabTitle")
     browser_anchor: Optional[BrowserAnchor] = Field(default=None, alias="browserAnchor")
@@ -594,6 +602,17 @@ class DocumentMetadataInput(BaseModel):
     visibility: Optional[ContentVisibility] = None
     source_url: Optional[str] = None
 
+    @field_validator("source_url")
+    @classmethod
+    def _web_link_only(cls, value: Optional[str]) -> Optional[str]:
+        """A source link is shown as a clickable link, so only http(s) addresses."""
+
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        if urlsplit(cleaned).scheme.lower() not in {"http", "https"}:
+            raise ValueError("source_url must be an http:// or https:// link.")
+        return cleaned
 
 class DerivedFrom(BaseModel):
     """Locator for the slice of a ``Document`` a chunk was derived from.

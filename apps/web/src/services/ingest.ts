@@ -34,9 +34,14 @@ async function detail(res: Response, fallback: string): Promise<string> {
 }
 
 /** Upload a PDF for structure-aware chunking + ingestion. */
-export async function uploadPdf(file: File): Promise<{ job_id: string }> {
+/** Upload a PDF to the knowledge graph; private to you unless shared with the organization. */
+export async function uploadPdf(
+  file: File,
+  visibility: "private" | "organization" = "private",
+): Promise<{ job_id: string }> {
   const form = new FormData();
   form.append("file", file);
+  form.append("visibility", visibility);
   const res = await apiFetch("/ingest/pdf", {
     method: "POST",
     body: form,

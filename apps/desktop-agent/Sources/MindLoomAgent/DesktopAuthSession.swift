@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import Security
 
 struct DesktopAuthResult {
     var accessToken: String
@@ -34,6 +35,11 @@ final class DesktopAuthSession {
     private var continuation: CheckedContinuation<DesktopAuthResult, Error>?
     private let queue = DispatchQueue(label: "com.mindloom.desktop-auth")
     private var finished = false
+    /// One-time value the web page must echo back, so only the page this app opened
+    /// can complete sign-in (no other web page or local process can inject a token).
+    private var expectedState = ""
+    /// Only the MindLoom web app may call the callback from a browser.
+    private var allowedOrigin = ""
 
     func signIn(webBase: String, apiBase: String, timeoutSeconds: TimeInterval = 180) async throws -> DesktopAuthResult {
         let port = try startListener()
@@ -43,9 +49,21 @@ final class DesktopAuthSession {
         guard var urlComponents = URLComponents(string: base + "/desktop-auth") else {
             throw DesktopAuthError.invalidWebBase
         }
+        var random = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else {
+            throw DesktopAuthError.invalidWebBase
+        }
+        expectedState = Data(random).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        if let web = URLComponents(string: base), let scheme = web.scheme, let host = web.host {
+            allowedOrigin = "\(scheme)://\(host)" + (web.port.map { ":\($0)" } ?? "")
+        }
+        // The page always uses its own API; the token never travels in a URL.
         urlComponents.queryItems = [
             URLQueryItem(name: "port", value: String(port)),
-            URLQueryItem(name: "api", value: apiBase),
+            URLQueryItem(name: "state", value: expectedState),
         ]
         guard let url = urlComponents.url else { throw DesktopAuthError.invalidWebBase }
         NSLog("[MindLoom] Desktop auth listening on http://127.0.0.1:%u — opening %@", port, url.absoluteString)
@@ -223,24 +241,31 @@ final class DesktopAuthSession {
             return
         }
 
-        let fields: [String: String]
-        if method == "POST" {
-            fields = parseJSONBody(body) ?? [:]
-        } else if method == "GET" {
-            fields = parseQuery(pathAndQuery)
-        } else {
+        guard method == "POST" else {
             respond(clientFD: clientFD, status: 405, body: "Method not allowed", extraHeaders: corsHeaders())
             return
         }
+        let origin = lines.dropFirst().compactMap { line -> String? in
+            let s = String(line)
+            guard s.lowercased().hasPrefix("origin:") else { return nil }
+            return s.dropFirst("origin:".count).trimmingCharacters(in: .whitespaces)
+        }.first
+        if let origin, !allowedOrigin.isEmpty, origin != allowedOrigin {
+            respond(clientFD: clientFD, status: 403, body: "Forbidden origin")
+            return
+        }
+        let fields = parseJSONBody(body) ?? [:]
 
+        // Wrong or missing values get a 400 but do not end the sign-in, so a stray
+        // request cannot cancel it either.
         guard
+            constantTimeEquals(fields["state"] ?? "", expectedState),
             let token = fields["access_token"]?.trimmingCharacters(in: .whitespacesAndNewlines),
             !token.isEmpty,
             let orgId = fields["org_id"], !orgId.isEmpty,
             let userId = fields["user_id"], !userId.isEmpty
         else {
-            respond(clientFD: clientFD, status: 400, body: "Missing token", extraHeaders: corsHeaders())
-            fail(.invalidCallback)
+            respond(clientFD: clientFD, status: 400, body: "Invalid sign-in", extraHeaders: corsHeaders())
             return
         }
         let email = fields["email"] ?? ""
@@ -261,10 +286,19 @@ final class DesktopAuthSession {
         succeed(DesktopAuthResult(accessToken: token, orgId: orgId, userId: userId, email: email))
     }
 
+    private func constantTimeEquals(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.utf8), y = Array(b.utf8)
+        guard !y.isEmpty, x.count == y.count else { return false }
+        var diff: UInt8 = 0
+        for i in 0..<x.count { diff |= x[i] ^ y[i] }
+        return diff == 0
+    }
+
     private func corsHeaders() -> [String] {
         [
-            "Access-Control-Allow-Origin: *",
-            "Access-Control-Allow-Methods: GET, POST, OPTIONS",
+            "Access-Control-Allow-Origin: \(allowedOrigin.isEmpty ? "null" : allowedOrigin)",
+            "Vary: Origin",
+            "Access-Control-Allow-Methods: POST, OPTIONS",
             "Access-Control-Allow-Headers: Content-Type",
             "Access-Control-Max-Age: 600",
         ]

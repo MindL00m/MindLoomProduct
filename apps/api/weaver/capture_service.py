@@ -196,7 +196,7 @@ async def save_capture(
     session_factory = get_session_factory()
     async with session_factory() as session:
         async with session.begin():
-            await session.execute(
+            stored = (await session.execute(
                 text(
                     """
                     INSERT INTO captures (
@@ -220,6 +220,9 @@ async def save_capture(
                         session_id = EXCLUDED.session_id,
                         note = EXCLUDED.note,
                         redactions_json = EXCLUDED.redactions_json
+                    WHERE captures.org_id = EXCLUDED.org_id
+                      AND captures.user_id = EXCLUDED.user_id
+                    RETURNING capture_id
                     """
                 ),
                 {
@@ -240,11 +243,24 @@ async def save_capture(
                     "note": record.note,
                     "redactions_json": json.dumps(record.redactions),
                 },
-            )
+            )).first()
+            if stored is None:
+                raise ValueError("That capture id belongs to someone else; use a new id.")
     return record
 
 
-async def list_captures(*, org_id: str | None = None) -> list[dict[str, Any]]:
+async def list_captures(
+    *, org_id: str | None = None, user_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Captures in an org; with ``user_id`` only that person's own."""
+
+    rows = await _list_captures(org_id=org_id)
+    if user_id is not None:
+        rows = [r for r in rows if str(r.get("user_id") or "") == user_id]
+    return rows
+
+
+async def _list_captures(*, org_id: str | None = None) -> list[dict[str, Any]]:
     if _memory is not None:
         rows = list(_memory["captures"].values())
         if org_id is not None:
@@ -369,16 +385,17 @@ async def save_activity_session(
     session_factory = get_session_factory()
     async with session_factory() as session:
         async with session.begin():
-            await session.execute(
+            stored = (await session.execute(
                 text(
                     """
                     INSERT INTO activity_sessions (session_id, org_id, user_id, payload_json)
                     VALUES (:session_id, :org_id, :user_id, :payload_json)
                     ON CONFLICT (session_id) DO UPDATE SET
-                        org_id = EXCLUDED.org_id,
-                        user_id = EXCLUDED.user_id,
                         payload_json = EXCLUDED.payload_json,
                         updated_at = now()
+                    WHERE activity_sessions.org_id = EXCLUDED.org_id
+                      AND activity_sessions.user_id = EXCLUDED.user_id
+                    RETURNING session_id
                     """
                 ),
                 {
@@ -387,13 +404,21 @@ async def save_activity_session(
                     "user_id": user_id,
                     "payload_json": json.dumps(dumped),
                 },
-            )
+            )).first()
+            if stored is None:
+                raise ValueError("That session id belongs to someone else; use a new id.")
     return record
 
 
-async def list_activity_sessions(*, org_id: str | None = None) -> list[dict[str, Any]]:
+async def list_activity_sessions(
+    *, org_id: str | None = None, user_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Activity sessions, newest first; with ``user_id`` only that person's own."""
+
     if _memory is not None:
         rows = list(_memory["activity"].values())
+        if user_id is not None:
+            rows = [r for r in rows if str(r.get("user_id") or r.get("userId") or "") == user_id]
         if org_id is not None:
             rows = [
                 r
@@ -419,14 +444,15 @@ async def list_activity_sessions(*, org_id: str | None = None) -> list[dict[str,
             result = await session.execute(
                 text(
                     "SELECT payload_json FROM activity_sessions "
-                    "WHERE org_id = :org_id ORDER BY received_at DESC"
+                    "WHERE org_id = :org_id AND (CAST(:user_id AS TEXT) IS NULL OR user_id = :user_id) "
+                    "ORDER BY received_at DESC"
                 ),
-                {"org_id": org_id},
+                {"org_id": org_id, "user_id": user_id},
             )
         rows = [json.loads(r[0]) for r in result.all()]
 
     _, _, _, _, path = _legacy_paths()
-    if path.exists():
+    if path.exists() and user_id is None:
         latest: dict[str, dict[str, Any]] = {
             str(r.get("sessionId") or r.get("session_id")): r for r in rows
         }
@@ -446,8 +472,10 @@ async def list_activity_sessions(*, org_id: str | None = None) -> list[dict[str,
     return rows
 
 
-async def _get_activity_session(session_id: str, *, org_id: str) -> ActivitySessionRecord:
-    for row in await list_activity_sessions(org_id=org_id):
+async def _get_activity_session(
+    session_id: str, *, org_id: str, user_id: str | None = None
+) -> ActivitySessionRecord:
+    for row in await list_activity_sessions(org_id=org_id, user_id=user_id):
         sid = str(row.get("sessionId") or row.get("session_id") or "")
         if sid == session_id:
             return ActivitySessionRecord.model_validate(row)
@@ -665,8 +693,8 @@ async def _persist_summary(payload: dict[str, Any]) -> None:
                     INSERT INTO capture_summaries (capture_id, org_id, payload_json)
                     VALUES (:capture_id, :org_id, :payload_json)
                     ON CONFLICT (capture_id) DO UPDATE SET
-                        org_id = EXCLUDED.org_id,
                         payload_json = EXCLUDED.payload_json
+                    WHERE capture_summaries.org_id = EXCLUDED.org_id
                     """
                 ),
                 {
@@ -821,10 +849,16 @@ async def _persist_skill(draft: SkillFileDraft) -> None:
             )
 
 
-async def analyze_capture_session(session_id: str, *, org_id: str) -> SkillFileDraft:
+async def analyze_capture_session(
+    session_id: str, *, org_id: str, user_id: str | None = None
+) -> SkillFileDraft:
+    """Draft a Skill File from a capture session. With ``user_id`` (every HTTP caller)
+    only that person's own screenshots are used, so nobody can analyze, or slip steps
+    into, someone else's session."""
+
     captures = [
         CaptureRecord.model_validate(row)
-        for row in await list_captures(org_id=org_id)
+        for row in await list_captures(org_id=org_id, user_id=user_id)
         if row.get("session_id") == session_id
     ]
     captures.sort(key=lambda item: item.timestamp)
@@ -966,14 +1000,22 @@ def _heuristic_activity_skill(session: ActivitySessionRecord, *, org_id: str) ->
     )
 
 
-async def analyze_activity_session(session_id: str, *, org_id: str) -> SkillFileDraft:
-    """Draft a Skill File from desktop activity task summaries (text-only, no vision)."""
+async def analyze_activity_session(
+    session_id: str, *, org_id: str, user_id: str | None = None
+) -> SkillFileDraft:
+    """Draft a Skill File from desktop activity task summaries (text-only, no vision).
 
+    With ``user_id`` the session must be the caller's own."""
+
+    if user_id is not None:
+        await _get_activity_session(session_id, org_id=org_id, user_id=user_id)
     existing = await find_skill_for_session(org_id=org_id, session_id=session_id)
     if existing:
+        if user_id is not None and not can_view_skill(existing, user_id):
+            raise ValueError("No activity session was found for this session id.")
         return SkillFileDraft.model_validate(existing)
 
-    session = await _get_activity_session(session_id, org_id=org_id)
+    session = await _get_activity_session(session_id, org_id=org_id, user_id=user_id)
     settings = get_settings()
     try:
         if not (settings.openai_api_key or "").strip():
@@ -1111,6 +1153,15 @@ async def create_skill_file_from_expert_answer(
     return draft
 
 
+async def _is_admin(org_id: str, user_id: str) -> bool:
+    if _memory is not None:
+        return False
+    from keeper.auth import get_user_by_id
+
+    user = await get_user_by_id(org_id, user_id)
+    return bool(user and user.role == "admin")
+
+
 class SkillAccessError(PermissionError):
     """Raised when a caller may not view or mutate a skill."""
 
@@ -1129,12 +1180,13 @@ async def update_skill_file(
         raise ValueError("Skill File was not found.")
     changing_visibility = update.visibility is not None
     if not can_mutate_skill(
-        current_data, actor_user_id, changing_visibility=changing_visibility
+        current_data, actor_user_id, changing_visibility=changing_visibility,
+        is_admin=await _is_admin(org_id, actor_user_id),
     ):
         raise SkillAccessError(
             "Only the creator can change visibility."
             if changing_visibility
-            else "You do not have permission to edit this Skill File."
+            else "Only the person who created this Skill File, or an admin, can edit it."
         )
     current = SkillFileDraft.model_validate(current_data)
     updates = update.model_dump(exclude_none=True)
@@ -1275,12 +1327,13 @@ async def review_skill_file(
         raise ValueError("Skill File was not found.")
     changing_visibility = review.visibility is not None
     if not can_mutate_skill(
-        current_data, actor_user_id, changing_visibility=changing_visibility
+        current_data, actor_user_id, changing_visibility=changing_visibility,
+        is_admin=await _is_admin(org_id, actor_user_id),
     ):
         raise SkillAccessError(
             "Only the creator can change visibility."
             if changing_visibility
-            else "You do not have permission to review this Skill File."
+            else "Only the person who created this Skill File, or an admin, can review it."
         )
     current = SkillFileDraft.model_validate(current_data)
     updates = review.model_dump(exclude_none=True)

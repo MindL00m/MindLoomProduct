@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { safeHref } from "@/lib/safeHref";
 import {
   ChevronRight,
   Download,
@@ -380,7 +381,7 @@ function DriveFileView({ item, onOpenInFiles }: { item: DriveItem; onOpenInFiles
           </button>
           {item.web_view_link && (
             <a
-              href={item.web_view_link}
+              href={safeHref(item.web_view_link)}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
@@ -594,7 +595,7 @@ function EmailAttachmentView({ id, onOpenInFiles }: { id: string; onOpenInFiles:
           </button>
           {detail.email_url && (
             <a
-              href={detail.email_url}
+              href={safeHref(detail.email_url)}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"

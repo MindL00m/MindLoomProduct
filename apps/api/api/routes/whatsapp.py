@@ -9,6 +9,8 @@ from weaver.integrations import require_user_context
 from core.models import DocumentMetadataInput
 from weaver.whatsapp import preview_export
 
+from core.uploads import MAX_CHAT_EXPORT_BYTES, read_upload
+
 router = APIRouter(prefix="/integrations/whatsapp", tags=["whatsapp"])
 
 
@@ -21,7 +23,7 @@ async def preview(
     filename = file.filename or "whatsapp.txt"
     if not filename.lower().endswith(".txt"):
         raise HTTPException(status_code=400, detail="WhatsApp exports must be .txt files.")
-    data = await file.read()
+    data = await read_upload(file, MAX_CHAT_EXPORT_BYTES)
     if not data:
         raise HTTPException(status_code=400, detail="WhatsApp export is empty.")
     try:
@@ -41,7 +43,7 @@ async def import_export(
     filename = file.filename or "whatsapp.txt"
     if not filename.lower().endswith(".txt"):
         raise HTTPException(status_code=400, detail="WhatsApp exports must be .txt files.")
-    data = await file.read()
+    data = await read_upload(file, MAX_CHAT_EXPORT_BYTES)
     if not data:
         raise HTTPException(status_code=400, detail="WhatsApp export is empty.")
     try:

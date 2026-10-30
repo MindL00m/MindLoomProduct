@@ -25,12 +25,14 @@ def _truncate(text: str) -> str:
 
 
 def _extract_pdf(data: bytes) -> str:
-    doc = fitz.open(stream=data, filetype="pdf")
-    try:
-        pages = [page.get_text("text") for page in doc]
-        return _truncate("\n\n".join(p.strip() for p in pages if p.strip()))
-    finally:
-        doc.close()
+    """Page text with tables kept as Markdown tables (see ``brain.pdf_reader``).
+
+    Scanned pages need OCR, which is async; ``brain.media_text`` adds it.
+    """
+
+    from brain.pdf_reader import read_pdf_text
+
+    return _truncate(read_pdf_text(data).text())
 
 
 def _extract_json(data: bytes) -> str:
@@ -165,6 +167,10 @@ def extract_file_text(filename: str, data: bytes) -> str:
     """Return extracted text for PDF, JSON (incl. conversations), or plain text."""
 
     name = (filename or "upload").lower()
+    if name.endswith((".docx", ".xlsx", ".pptx")):
+        from brain.archives import check_ooxml
+
+        check_ooxml(data)
     if name.endswith(".pdf") or data[:4] == b"%PDF":
         return _extract_pdf(data)
     if name.endswith(".json"):

@@ -910,7 +910,10 @@ def visibility_for_policy(
         return [source_account.lower()]
     if row.access_mode == "organization":
         return [f"org:{org_id}"]
-    return [
+    tokens = [
         *(f"user:{user_id}" for user_id in json.loads(row.allowed_user_ids)),
         *(f"department:{name.lower()}" for name in json.loads(row.allowed_departments)),
     ]
+    # An empty list would mean "everyone in the org"; "selected" with nobody chosen
+    # must stay with the connected account instead.
+    return [source_account.lower(), *tokens] if tokens else [source_account.lower()]

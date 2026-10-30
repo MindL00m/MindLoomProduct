@@ -239,7 +239,7 @@ def _shift_formula(formula: str, after_row: int, extra: int, item_row: int) -> s
 def _fill_xlsx(data: bytes, values: dict[str, Any]) -> bytes:
     import openpyxl
 
-    from loombot.file_builders import cell_value
+    from loombot.file_builders import set_untrusted_cell
 
     workbook = openpyxl.load_workbook(io.BytesIO(data))
     for sheet in workbook.worksheets:
@@ -272,7 +272,8 @@ def _fill_xlsx(data: bytes, values: dict[str, Any]) -> bytes:
                     elif isinstance(value, str):
                         whole = PLACEHOLDER.fullmatch(value.strip())
                         rendered = _replace(value, values, item if items else {}, list_name)
-                        cell.value = cell_value(rendered) if whole else rendered
+                        # Filled values come from documents or a model: never formulas.
+                        set_untrusted_cell(cell, rendered)
                     else:
                         cell.value = value
             row_index += max(len(items), 1)
@@ -281,7 +282,7 @@ def _fill_xlsx(data: bytes, values: dict[str, Any]) -> bytes:
                 if isinstance(cell.value, str) and PLACEHOLDER.search(cell.value):
                     whole = PLACEHOLDER.fullmatch(cell.value.strip())
                     rendered = _replace(cell.value, values)
-                    cell.value = cell_value(rendered) if whole and rendered != cell.value else rendered
+                    set_untrusted_cell(cell, rendered)
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
@@ -341,6 +342,13 @@ def _fill_text(content: str, values: dict[str, Any]) -> str:
     return "".join(out)
 
 
+def _csv_fill(cell: str, values: dict[str, Any], item: dict | None = None, list_name: str | None = None) -> str:
+    from loombot.file_builders import csv_safe
+
+    rendered = _replace(cell, values, item, list_name)
+    return csv_safe(rendered) if rendered != cell else rendered
+
+
 def _fill_csv(content: str, values: dict[str, Any]) -> str:
     rows = list(csv.reader(io.StringIO(content)))
     out: list[list[str]] = []
@@ -348,9 +356,9 @@ def _fill_csv(content: str, values: dict[str, Any]) -> str:
         list_name = next((_list_in(cell) for cell in row if _list_in(cell)), None)
         if list_name:
             for item in _items(values, list_name):
-                out.append([_replace(cell, values, item, list_name) for cell in row])
+                out.append([_csv_fill(cell, values, item, list_name) for cell in row])
         else:
-            out.append([_replace(cell, values) for cell in row])
+            out.append([_csv_fill(cell, values) for cell in row])
     buffer = io.StringIO()
     csv.writer(buffer, lineterminator="\n").writerows(out)
     return buffer.getvalue()

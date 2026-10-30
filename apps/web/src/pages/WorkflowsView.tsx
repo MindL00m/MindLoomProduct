@@ -27,6 +27,7 @@ import { useSession } from "@/store/session";
 import { cn } from "@/lib/utils";
 import { RecurringWorkflows } from "@/components/RecurringWorkflows";
 import { SkillRunControls } from "@/components/SkillRunControls";
+import { SkillAutomation } from "@/components/SkillAutomation";
 import { dashboardHref } from "@/lib/navigation";
 
 function statusStyles(status: SkillFile["status"]): string {
@@ -473,7 +474,10 @@ export default function WorkflowsView() {
                 </div>
 
                 {skill.status === "approved" && (
-                  <SkillRunControls skill={skill} initialRun={activeRuns[skill.skill_id]} />
+                  <>
+                    <SkillAutomation skill={skill} isOwner={isOwner} />
+                    <SkillRunControls skill={skill} initialRun={activeRuns[skill.skill_id]} />
+                  </>
                 )}
 
                 {skill.status === "proposed" && (

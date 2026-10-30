@@ -1,6 +1,6 @@
 /** Desktop agent sign-in bridge: Google → MindLoom JWT → localhost callback. */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { WizardCard } from "@/components/WizardCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
@@ -17,54 +17,51 @@ type BridgeSession = {
   email: string;
 };
 
+/**
+ * The Mac app opens this page with the port of its local callback and a one-time
+ * ``state`` it generated. The page only ever talks to this deployment's API, sends
+ * the session only after the person clicks, and echoes ``state`` so the app accepts
+ * nothing it did not ask for. Tokens never go in a URL.
+ */
 function readQuery() {
   const params = new URLSearchParams(window.location.search);
   const port = Number(params.get("port") || "");
-  const api = (params.get("api") || API_BASE).trim();
-  return { port, api };
+  const state = params.get("state") || "";
+  return { port, state: /^[A-Za-z0-9_-]{16,128}$/.test(state) ? state : "" };
 }
 
-async function sendToAgent(port: number, session: BridgeSession): Promise<void> {
+async function sendToAgent(port: number, state: string, session: BridgeSession): Promise<void> {
   const payload = {
     access_token: session.accessToken,
     org_id: session.orgId,
     user_id: session.userId,
     email: session.email,
+    state,
   };
-
-  // Prefer POST JSON (avoids URL length / parsing issues). CORS is enabled on the agent.
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/callback`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      mode: "cors",
-    });
-    if (res.ok) return;
-  } catch {
-    /* fall through to navigation */
+  const res = await fetch(`http://127.0.0.1:${port}/callback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    mode: "cors",
+  });
+  if (!res.ok) {
+    throw new Error("MindLoom Capture did not accept the sign-in. Start sign-in again from the app.");
   }
-
-  const qs = new URLSearchParams(payload);
-  window.location.href = `http://127.0.0.1:${port}/callback?${qs.toString()}`;
 }
 
 export default function DesktopAuth() {
   const setSession = useSession((s) => s.setSession);
   const accessToken = useSession((s) => s.accessToken);
   const email = useSession((s) => s.email);
-  const orgId = useSession((s) => s.orgId);
-  const userId = useSession((s) => s.userId);
   const isAuthenticated = useSession((s) => s.isAuthenticated);
 
-  const { port, api } = useMemo(() => readQuery(), []);
+  const { port, state } = useMemo(() => readQuery(), []);
+  const api = API_BASE;
   const [hydrated, setHydrated] = useState(() => useSession.persist.hasHydrated());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const autoTried = useRef(false);
-
-  const portValid = Number.isInteger(port) && port > 0 && port < 65536;
+  const portValid = Number.isInteger(port) && port > 1023 && port < 65536 && Boolean(state);
 
   useEffect(() => {
     if (hydrated) return;
@@ -81,7 +78,7 @@ export default function DesktopAuth() {
     setLoading(true);
     setError(null);
     try {
-      await sendToAgent(port, session);
+      await sendToAgent(port, state, session);
       setDone(true);
     } catch (err) {
       setError(
@@ -92,30 +89,6 @@ export default function DesktopAuth() {
       setLoading(false);
     }
   }
-
-  // Re-validate the browser JWT against this API (SESSION_SECRET / empty local DB
-  // make a leftover Railway or pre-recreate token fail with 401 on upload).
-  useEffect(() => {
-    if (!hydrated || !portValid || done || autoTried.current) return;
-    if (!isAuthenticated || !accessToken || !orgId || !userId) return;
-    autoTried.current = true;
-    void (async () => {
-      try {
-        const fresh = await getFreshSession();
-        const mapped = toClientSession(fresh);
-        setSession(mapped);
-        await completeWithSession({
-          accessToken: mapped.accessToken,
-          orgId: mapped.orgId,
-          userId: mapped.userId,
-          email: mapped.email || "",
-        });
-      } catch {
-        useSession.getState().clearSession();
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot after hydration
-  }, [hydrated, portValid, done, isAuthenticated, accessToken, orgId, userId, email]);
 
   async function handleUseCurrentSession() {
     setLoading(true);
@@ -185,7 +158,9 @@ export default function DesktopAuth() {
       >
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            The agent starts a local callback and appends <code>?port=…</code> to this URL.
+            The agent starts a local callback and opens this page with its port and a one-time
+            code. If you opened this link from anywhere else, close it. If the app is open,
+            update MindLoom Capture to the latest version.
           </p>
           <div className="flex flex-col gap-2">
             <Link to="/download" className="text-sm underline underline-offset-2">
@@ -242,8 +217,8 @@ export default function DesktopAuth() {
         </PrimaryButton>
 
         <p className="text-xs text-muted-foreground">
-          Callback port <span className="font-mono">{port}</span> · API{" "}
-          <span className="font-mono">{api}</span>
+          Only continue if you just clicked Sign in in MindLoom Capture on this Mac. Your
+          session goes to the app on port <span className="font-mono">{port}</span>.
         </p>
       </div>
     </WizardCard>

@@ -23,6 +23,8 @@ from loombot.workspaces import (
     update_card_state,
 )
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
@@ -123,7 +125,7 @@ async def add_workspace_members(
     )
 
 
-@router.post("/{workspace_id}/members/by-email")
+@router.post("/{workspace_id}/members/by-email", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def add_members_by_email(
     workspace_id: str,
     request: InviteByEmailInput,
@@ -180,7 +182,7 @@ async def messages(
     return await list_workspace_messages(*ctx, workspace_id)
 
 
-@router.post("/{workspace_id}/messages")
+@router.post("/{workspace_id}/messages", dependencies=[rate_limit(actions_limit, "actions")])
 async def send_message(
     workspace_id: str,
     request: SendWorkspaceMessageInput,
@@ -237,7 +239,7 @@ async def share_files(
     return {"shared": linked, "files": await workspace_files.list_workspace_files(*ctx, workspace_id)}
 
 
-@router.post("/{workspace_id}/files/upload", status_code=201)
+@router.post("/{workspace_id}/files/upload", status_code=201, dependencies=[rate_limit(actions_limit, "actions")])
 async def upload_workspace_file(
     workspace_id: str,
     file: UploadFile = File(...),

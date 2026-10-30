@@ -3,7 +3,10 @@
 Pipeline:
 
     PDF bytes
-      -> extract text + layout metadata (font size / bold / page) per line
+      -> extract text + layout metadata (font size / bold / page) per line, in
+         reading order (two-column pages left column first), with each table
+         kept whole as one Markdown table and scanned pages taken from OCR
+         (see ``brain.pdf_reader``)
       -> estimate the body font size, then detect headings by font-size / bold
          heuristics
           -> headings found  -> chunk by heading hierarchy (one section per
@@ -77,45 +80,55 @@ def _span_is_bold(span: dict) -> bool:
     return "bold" in str(span.get("font", "")).lower()
 
 
-def _extract_lines(doc: "fitz.Document") -> tuple[str, list[_Line]]:
+def _extract_lines(
+    doc: "fitz.Document", ocr_pages: dict[int, str] | None = None
+) -> tuple[str, list[_Line]]:
     """Extract text lines with layout metadata and their char offsets.
 
     Returns the full extracted text (lines joined by newlines) and the per-line
     metadata; the two share a single coordinate space so a line's
-    ``char_start``/``char_end`` index directly into the full text.
+    ``char_start``/``char_end`` index directly into the full text. A table is
+    one "line" holding its Markdown, so chunking never splits a table row. Lines
+    from OCR or tables carry size 0: they are body text, never headings.
     """
+
+    from brain.pdf_reader import _inside, page_layout
 
     lines: list[_Line] = []
     parts: list[str] = []
     offset = 0
 
-    for page_index in range(doc.page_count):
-        page = doc[page_index]
-        data = page.get_text("dict")
-        for block in data.get("blocks", []):
-            if block.get("type") != 0:  # 0 == text block
+    def add(text: str, page: int, size: float, bold: bool) -> None:
+        nonlocal offset
+        start, end = offset, offset + len(text)
+        lines.append(_Line(text=text, page=page, size=size, bold=bold, char_start=start, char_end=end))
+        parts.append(text)
+        offset = end + 1  # +1 for the newline joining lines
+
+    from brain.pdf_reader import MAX_PAGES
+
+    for page_index in range(min(doc.page_count, MAX_PAGES)):
+        number = page_index + 1
+        if ocr_pages and number in ocr_pages:
+            for raw in ocr_pages[number].splitlines():
+                if raw.strip():
+                    add(raw.strip(), number, 0.0, False)
+            continue
+        layout = page_layout(doc[page_index])
+        tables = [item.bbox for item in layout if item.kind == "table"]
+        for item in layout:
+            if item.kind == "table":
+                add(item.text, number, 0.0, False)
                 continue
-            for line in block.get("lines", []):
+            for line in (item.block or {}).get("lines", []):
+                if any(_inside(tuple(line["bbox"]), area) for area in tables):
+                    continue
                 spans = line.get("spans", [])
                 text = "".join(span.get("text", "") for span in spans).strip()
                 if not text:
                     continue
                 size = max((span.get("size", 0.0) for span in spans), default=0.0)
-                bold = any(_span_is_bold(span) for span in spans)
-                start = offset
-                end = offset + len(text)
-                lines.append(
-                    _Line(
-                        text=text,
-                        page=page_index + 1,
-                        size=round(size, 1),
-                        bold=bold,
-                        char_start=start,
-                        char_end=end,
-                    )
-                )
-                parts.append(text)
-                offset = end + 1  # +1 for the newline joining lines
+                add(text, number, round(size, 1), any(_span_is_bold(span) for span in spans))
 
     return "\n".join(parts), lines
 
@@ -123,9 +136,9 @@ def _extract_lines(doc: "fitz.Document") -> tuple[str, list[_Line]]:
 def _body_font_size(lines: list[_Line]) -> float:
     """Estimate the dominant body font size (mode over longer, body-like lines)."""
 
-    counter = Counter(line.size for line in lines if len(line.text) > 15)
+    counter = Counter(line.size for line in lines if len(line.text) > 15 and line.size > 0)
     if not counter:
-        counter = Counter(line.size for line in lines)
+        counter = Counter(line.size for line in lines if line.size > 0)
     return counter.most_common(1)[0][0] if counter else 0.0
 
 
@@ -137,7 +150,7 @@ def _is_heading(line: _Line, body_size: float) -> bool:
     """
 
     words = len(line.text.split())
-    if words == 0 or words > _MAX_HEADING_WORDS:
+    if words == 0 or words > _MAX_HEADING_WORDS or line.size <= 0 or body_size <= 0:
         return False
     larger = line.size >= body_size * _HEADING_SIZE_RATIO
     bold_heading = line.bold and line.size >= body_size * 1.03
@@ -301,6 +314,7 @@ def chunk_pdf(
     *,
     target_tokens: int | None = None,
     overlap_sentences: int = _DEFAULT_OVERLAP_SENTENCES,
+    ocr_pages: dict[int, str] | None = None,
 ) -> list[PdfChunk]:
     """Chunk a PDF into structure-aware :class:`PdfChunk` objects.
 
@@ -310,6 +324,8 @@ def chunk_pdf(
             ``chunk_max_tokens``).
         overlap_sentences: Sentences of overlap between adjacent chunks when a
             section/document is split by size.
+        ocr_pages: Text of scanned pages read by OCR, by 1-based page number;
+            used in place of those pages' (missing) text layer.
 
     Returns:
         Ordered chunks, each carrying its page and character span. Empty for a
@@ -318,9 +334,11 @@ def chunk_pdf(
 
     target = target_tokens or get_settings().chunk_max_tokens
 
-    doc = fitz.open(stream=data, filetype="pdf")
+    from brain.pdf_reader import open_pdf
+
+    doc = open_pdf(data)
     try:
-        full_text, lines = _extract_lines(doc)
+        full_text, lines = _extract_lines(doc, ocr_pages)
     finally:
         doc.close()
 

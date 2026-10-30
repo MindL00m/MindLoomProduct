@@ -21,6 +21,8 @@ from weaver.zoom_workspace import (
     validate_zoom_webhook,
 )
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
 router = APIRouter(tags=["zoom"])
 
 
@@ -47,10 +49,14 @@ async def connect_dev(
 
 @router.get("/integrations/zoom/callback")
 async def callback(code: str, state: str) -> RedirectResponse:
-    return RedirectResponse(await handle_zoom_callback(code, state))
+    from weaver.integrations import deferred_oauth_save
+
+    with deferred_oauth_save() as parked:
+        url = await handle_zoom_callback(code, state)
+    return RedirectResponse(f"{url}&oauth_code={parked['code']}" if parked.get("code") else url)
 
 
-@router.post("/integrations/zoom/sync")
+@router.post("/integrations/zoom/sync", dependencies=[rate_limit(actions_limit, "actions")])
 async def sync_now(
     ctx: tuple[str, str] = Depends(require_user_context),
 ) -> dict[str, str]:
@@ -70,17 +76,23 @@ async def webhook(
     x_zm_signature: str = Header(default="", alias="x-zm-signature"),
 ) -> dict:
     body = await request.body()
+    if len(body) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Webhook body too large.")
+    secret = get_settings().zoom_webhook_secret_token
+    if not secret:
+        raise HTTPException(status_code=503, detail="Zoom webhooks are not configured.")
+    # Every request, including Zoom's URL validation, must be signed and fresh.
+    # Answering unsigned validation requests turned this endpoint into a signing
+    # oracle for forged events.
+    if not validate_zoom_webhook(body, x_zm_request_timestamp, x_zm_signature):
+        raise HTTPException(status_code=401, detail="Invalid Zoom webhook signature.")
     payload = __import__("json").loads(body)
     if payload.get("event") == "endpoint.url_validation":
         plain = str(payload.get("payload", {}).get("plainToken") or "")
-        encrypted = hmac.new(
-            get_settings().zoom_webhook_secret_token.encode(),
-            plain.encode(),
-            hashlib.sha256,
-        ).hexdigest()
+        if not plain or len(plain) > 128 or ":" in plain:
+            raise HTTPException(status_code=400, detail="Invalid plainToken.")
+        encrypted = hmac.new(secret.encode(), plain.encode(), hashlib.sha256).hexdigest()
         return {"plainToken": plain, "encryptedToken": encrypted}
-    if not validate_zoom_webhook(body, x_zm_request_timestamp, x_zm_signature):
-        raise HTTPException(status_code=401, detail="Invalid Zoom webhook signature.")
     if payload.get("event") not in {
         "recording.completed",
         "recording.transcript_completed",

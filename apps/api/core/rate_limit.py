@@ -40,7 +40,7 @@ def _storage_uri() -> str | None:
 
 def _build_limiter() -> Limiter:
     storage_uri = _storage_uri()
-    app_env = os.environ.get("APP_ENV", "development").strip().lower()
+    app_env = os.environ.get("APP_ENV", "production").strip().lower()
     try:
         return Limiter(
             key_func=_client_key,
@@ -121,3 +121,36 @@ def captures_limit() -> str:
 
 def ingest_limit() -> str:
     return os.environ.get("RATE_LIMIT_INGEST", "20/minute").strip() or "20/minute"
+
+
+def actions_limit() -> str:
+    """LLM-heavy actions: workspace @Loombot, templates, documents, syncs."""
+
+    return os.environ.get("RATE_LIMIT_ACTIONS", "30/minute").strip() or "30/minute"
+
+
+def outbound_limit() -> str:
+    """Anything that sends email, invites or meetings from someone's account."""
+
+    return os.environ.get("RATE_LIMIT_OUTBOUND", "10/minute;200/day").strip() or "10/minute;200/day"
+
+
+def rate_limit(limit_fn: Callable[[], str], scope: str) -> Any:
+    """A route dependency enforcing ``limit_fn()`` per signed-in user (or IP).
+
+    Works on any route without a ``request`` parameter, unlike the decorator, and
+    shares the limiter's Redis storage. Use as ``dependencies=[rate_limit(...)]``.
+    """
+
+    from fastapi import Depends, HTTPException
+    from limits import parse_many
+
+    async def check(request: Request) -> None:
+        key = _client_key(request)
+        for item in parse_many(limit_fn()):
+            if not limiter.limiter.hit(item, scope, key):
+                raise HTTPException(
+                    status_code=429, detail="Too many requests. Please wait a moment and try again."
+                )
+
+    return Depends(check)

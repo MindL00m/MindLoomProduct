@@ -507,7 +507,14 @@ async def run_pdf_ingestion(
             duration_seconds=round(time.perf_counter() - start, 3),
         )
 
-    pdf_chunks = chunk_pdf(data)
+    from brain.pdf_reader import read_pdf
+
+    # Scanned pages are read with OCR first, so they are chunked like any other page.
+    read = await read_pdf(data, label=source_label)
+    ocr_pages = {page.number: page.text for page in read.pages if page.method == "ocr"}
+    for note in read.notes:
+        logger.info("PDF %s: %s", doc.document_id, note)
+    pdf_chunks = chunk_pdf(data, ocr_pages=ocr_pages)
     logger.info("PDF %s produced %d chunks", doc.document_id, len(pdf_chunks))
 
     now = datetime.now(timezone.utc)
@@ -583,6 +590,8 @@ async def run_pdf_ingestion_background(
     org_id: str,
     visible_to: list[str],
     job_store: dict[str, JobStatus],
+    *,
+    uploaded_by: str | None = None,
 ) -> None:
     """Run :func:`run_pdf_ingestion` as a background job, updating ``job_store``."""
 
@@ -602,6 +611,7 @@ async def run_pdf_ingestion_background(
             source_label=filename or "PDF upload",
             original_filename=filename,
             visible_to=visible_to,
+            uploaded_by=uploaded_by,
         )
         job.status = "complete"
         job.progress = "Ingestion complete"

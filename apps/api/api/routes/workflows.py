@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from keeper.auth import require_user_context
 from shuttle import recurring_emails
 
+from core.rate_limit import actions_limit, outbound_limit, rate_limit
+
 router = APIRouter(prefix="/workflows/recurring-emails", tags=["workflows"])
 
 Unit = Literal["minutes", "hours", "days", "weeks"]
@@ -42,7 +44,7 @@ async def list_workflows(ctx: tuple[str, str] = Depends(require_user_context)) -
     return await recurring_emails.list_recurring_emails(*ctx)
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[rate_limit(outbound_limit, "outbound")])
 async def create_workflow(
     body: CreateRecurringEmail,
     ctx: tuple[str, str] = Depends(require_user_context),
@@ -82,7 +84,7 @@ async def update_workflow(
     )
 
 
-@router.post("/{workflow_id}/send-now")
+@router.post("/{workflow_id}/send-now", dependencies=[rate_limit(outbound_limit, "outbound")])
 async def send_workflow_now(
     workflow_id: str, ctx: tuple[str, str] = Depends(require_user_context)
 ) -> dict:

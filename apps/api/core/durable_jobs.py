@@ -157,6 +157,7 @@ async def execute(message: dict[str, Any]) -> None:
                 org_id,
                 list(payload.get("visible_to") or []),
                 local,
+                uploaded_by=payload.get("uploaded_by"),
             )
         elif kind == "document":
             from brain.document_ingestion import run_document_ingestion_background
@@ -270,6 +271,7 @@ async def execute(message: dict[str, Any]) -> None:
                 review_id=str(payload["review_id"]),
                 recipient=str(payload["recipient"]),
                 question=str(payload["question"]),
+                sender_user_id=payload.get("sender_user_id"),
             )
             local[job_id].status = "complete"
             local[job_id].progress = (
@@ -282,6 +284,12 @@ async def execute(message: dict[str, Any]) -> None:
             count = await backfill_install(str(payload["install_id"]), int(payload.get("days") or 7))
             local[job_id].status = "complete"
             local[job_id].progress = f"Slack backfill complete: {count} thread(s)"
+        elif kind == "skill_automation":
+            from shuttle.skill_automation import advance
+
+            await advance(org_id, str(payload["user_id"]), str(payload["run_id"]))
+            local[job_id].status = "complete"
+            local[job_id].progress = "Automation step finished"
         elif kind == "expert_thread_ingest":
             from keeper.review_workflows import ingest_expert_thread
 

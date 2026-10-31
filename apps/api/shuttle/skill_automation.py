@@ -16,8 +16,10 @@ Safety:
   that changes something) pauses the run for the person to **Approve** or
   **Reject**, unless they turned on auto-approve for a skill they own.
 - Steps that need a value nobody gave pause and **ask** the person.
-- Steps only possible by clicking in another app are **handed to the Mac app or
-  Chrome extension** (the existing Skill Run), and the run waits for them.
+- Steps only possible in another app are **handed to the Mac app**, which operates
+  the apps the person allowed for this automation through Accessibility (a device
+  task, ``shuttle/device_tasks.py``), and the run waits for it. With no apps allowed
+  the person does those steps and clicks Continue.
 - Tool results, emails, web pages and documents are data; instructions inside
   them are never followed. HTTP calls only reach public addresses.
 
@@ -151,12 +153,15 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "hand_off_to_device",
         "description": (
-            "For steps that can only be done by clicking in another app or website: hand the "
-            "skill to the MindLoom Mac app / Chrome extension, which walks those steps, and "
-            "wait until the person says they are done."
+            "For steps that can only be done in another app on the person's Mac: the MindLoom "
+            "Mac app operates the apps allowed for this automation (or the person does the "
+            "steps), and the run waits for the result."
         ),
         "parameters": {"type": "object", "properties": {
             "steps": {"type": "string", "description": "Which steps need doing there."},
+            "details": {"type": "string", "description": (
+                "Exact values to enter (names, amounts, dates, file names) and what done looks like."
+            )},
         }, "required": ["steps"]},
     }},
     {"type": "function", "function": {
@@ -194,6 +199,7 @@ Return a JSON object:
               "required": true|false, "example": example value}}],
   "steps": [{{"step": the skill step, "tool": the tool that does it, or "ask_user" or
              "hand_off_to_device", "how": one sentence}}],
+  "apps": [names of the Mac apps the hand_off_to_device steps use, e.g. "Numbers"],
   "automatable": "full" | "partial" | "manual",
   "notes": one sentence on limits, e.g. steps that need clicking in a desktop app}}
 Rules: inputs are values that change from run to run (names, dates, amounts,
@@ -215,7 +221,8 @@ Rules:
   addresses, amounts or dates.
 - send_email, create_meeting and changing http_request calls wait for approval;
   if one is rejected, adapt or finish.
-- Steps that need clicking in another app: call hand_off_to_device once for them.
+- Steps that need another app on the person's Mac: call hand_off_to_device once for
+  them, with the exact values to enter in details. Its result says what happened there.
 - When everything is done (or cannot be done), call finish with a short summary.
 - {_UNTRUSTED}
 """
@@ -250,7 +257,7 @@ def _skill_text(skill: Any) -> str:
 
 def _row(row: Any) -> dict[str, Any]:
     out = dict(row)
-    for key in ("plan", "default_inputs", "inputs", "log", "pending"):
+    for key in ("plan", "default_inputs", "inputs", "log", "pending", "device_apps"):
         if key in out and isinstance(out[key], str):
             try:
                 out[key] = json.loads(out[key])
@@ -292,6 +299,7 @@ async def prepare_automation(org_id: str, user_id: str, skill_id: str) -> dict[s
              "how": str(s.get("how") or "")[:300]}
             for s in (plan.get("steps") or []) if isinstance(s, dict)
         ][:40],
+        "apps": [str(a)[:60] for a in (plan.get("apps") or []) if isinstance(a, str) and a.strip()][:10],
         "automatable": plan.get("automatable") if plan.get("automatable") in {"full", "partial", "manual"} else "partial",
         "notes": str(plan.get("notes") or "")[:300],
     }
@@ -312,9 +320,10 @@ async def update_automation_settings(
     org_id: str, user_id: str, skill_id: str, *,
     auto_approve: bool | None = None, interval_value: int | None = None,
     interval_unit: str | None = None, schedule: bool | None = None,
-    default_inputs: dict[str, Any] | None = None,
+    default_inputs: dict[str, Any] | None = None, device_apps: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Auto-approve (own skills only), a repeating schedule, and inputs for scheduled runs."""
+    """Auto-approve (own skills only), a repeating schedule, inputs for scheduled runs,
+    and the Mac apps MindLoom may operate for this automation."""
 
     skill = await _skill(org_id, user_id, skill_id)
     current = await get_automation(org_id, user_id, skill_id)
@@ -329,6 +338,17 @@ async def update_automation_settings(
             )
         sets.append("auto_approve=:auto")
         params["auto"] = auto_approve
+    if device_apps is not None:
+        from shuttle.device_tasks import clean_apps, is_denied_app
+
+        denied = [a for a in device_apps if is_denied_app(str(a))]
+        if denied:
+            raise HTTPException(
+                status_code=422,
+                detail=f"MindLoom never operates {', '.join(denied)}: it holds passwords or system settings.",
+            )
+        sets.append("device_apps=:apps")
+        params["apps"] = json.dumps(clean_apps(device_apps))
     if default_inputs is not None:
         sets.append("default_inputs=:inputs")
         params["inputs"] = json.dumps({k: str(v)[:2000] for k, v in default_inputs.items()})
@@ -374,7 +394,17 @@ def _public_run(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def get_run(org_id: str, user_id: str, run_id: str) -> dict[str, Any]:
-    return _public_run(await _load_run(org_id, user_id, run_id))
+    run = _public_run(await _load_run(org_id, user_id, run_id))
+    task_id = (run.get("pending") or {}).get("device_task_id")
+    run["device_task"] = None
+    if task_id:
+        from shuttle import device_tasks
+
+        try:
+            run["device_task"] = await device_tasks.get_task(org_id, user_id, task_id)
+        except HTTPException:
+            pass
+    return run
 
 
 async def list_runs(org_id: str, user_id: str, skill_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
@@ -671,7 +701,8 @@ def _result_message(call_id: str, result: Any) -> dict[str, Any]:
 
 async def _drain(
     run: dict[str, Any], calls: list[dict[str, Any]], auto_approve: bool,
-    allowed_hosts: set[str] | None = None,
+    allowed_hosts: set[str] | None = None, device_apps: list[str] | None = None,
+    skill_text: str = "", person: str = "the person",
 ) -> bool:
     """Run queued tool calls in order. Returns False when the run paused or ended."""
 
@@ -696,16 +727,18 @@ async def _drain(
             run["messages"] = json.dumps(messages)
             return False
         if name == "hand_off_to_device":
-            from weaver.skill_runs import create_skill_run
+            task = None
+            if device_apps:
+                from shuttle import device_tasks
 
-            device_run = None
-            try:
-                device_run = await create_skill_run(run["skill_id"], org_id=run["org_id"], user_id=run["user_id"])
-            except Exception as exc:  # noqa: BLE001 - e.g. no guide steps; the person does it by hand
-                logger.info("Device hand-off unavailable: %s", exc)
+                task = await device_tasks.create_task(
+                    run, title=str(args.get("steps") or "Steps on your Mac")[:200],
+                    goal=_device_goal(run, args, skill_text), allowed_apps=device_apps,
+                    auto_approve=auto_approve, person=person,
+                )
             run.update(status="waiting_device", pending=json.dumps({
-                "calls": calls, "steps": args.get("steps"),
-                "device_run_id": device_run.run_id if device_run else None,
+                "calls": calls, "steps": args.get("steps"), "details": args.get("details"),
+                "device_task_id": task["task_id"] if task else None,
             }))
             _log(run, {"kind": "device", "tool": name, "status": "pending", "summary": str(args.get("steps"))[:500]})
             run["messages"] = json.dumps(messages)
@@ -730,6 +763,16 @@ async def _drain(
     run["messages"] = json.dumps(messages)
     run["pending"] = None
     return run["status"] not in {"completed", "failed", "stopped"}
+
+
+def _device_goal(run: dict[str, Any], args: dict[str, Any], skill_text: str) -> str:
+    inputs = run.get("inputs")
+    inputs = json.loads(inputs) if isinstance(inputs, str) else inputs or {}
+    return (
+        f"{skill_text}\n\nInputs for this run: {json.dumps(inputs, ensure_ascii=False) if inputs else '(none)'}"
+        f"\n\nDo these steps on the Mac now: {str(args.get('steps') or '')[:4000]}"
+        + (f"\nDetails: {str(args.get('details'))[:4000]}" if args.get("details") else "")
+    )
 
 
 async def _model_round(run: dict[str, Any]) -> list[dict[str, Any]]:
@@ -771,9 +814,13 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
     allowed_hosts = hosts_named_in(
         _skill_text(skill), json.dumps((automation or {}).get("plan") or {})
     )
+    device = {
+        "device_apps": (automation or {}).get("device_apps") or [], "skill_text": _skill_text(skill),
+        "person": await _person_name(org_id, user_id),
+    }
     try:
         pending = json.loads(run["pending"]) if run.get("pending") else None
-        if pending and not await _drain(run, pending.get("calls") or [], auto_approve, allowed_hosts):
+        if pending and not await _drain(run, pending.get("calls") or [], auto_approve, allowed_hosts, **device):
             return await _store(run)
         while run["status"] == "running":
             if run.get("rounds", 0) >= MAX_ROUNDS:
@@ -786,7 +833,7 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
                 last = json.loads(run["messages"])[-1].get("content") or "Done."
                 run.update(status="completed", summary=str(last)[:2000])
                 break
-            if not await _drain(run, calls, auto_approve, allowed_hosts):
+            if not await _drain(run, calls, auto_approve, allowed_hosts, **device):
                 break
             if await _stopped(run["run_id"]):
                 run["status"] = "stopped"
@@ -866,8 +913,11 @@ async def respond(
             messages.append(_result_message(call["id"], {"answer": answer.strip()[:4000]}))
             _log(run, {"kind": "input", "tool": "ask_user", "status": "ok", "summary": answer.strip()[:500]})
         elif status == "waiting_device" and action == "continue":
-            messages.append(_result_message(call["id"], {"done": True, "note": (answer or "").strip()[:2000]}))
+            messages.append(_result_message(call["id"], {"done": True, "by": "the person", "note": (answer or "").strip()[:2000]}))
             _log(run, {"kind": "device", "tool": "hand_off_to_device", "status": "ok", "summary": "Marked done"})
+            from shuttle import device_tasks
+
+            await device_tasks.stop_for_run(run_id, "Done by the person")
         else:
             raise HTTPException(status_code=409, detail="That reply does not fit what the run is waiting for.")
         run.update(messages=json.dumps(messages), status="queued",
@@ -887,7 +937,36 @@ async def stop_run(org_id: str, user_id: str, run_id: str) -> dict[str, Any]:
             run.update(status="stopped", pending=None)
             _log(run, {"kind": "stop", "status": "ok", "summary": "Stopped by the person"})
             await _save_run(session, run)
+    from shuttle import device_tasks
+
+    await device_tasks.stop_for_run(run_id, "Stopped by the person")
     return await get_run(org_id, user_id, run_id)
+
+
+async def continue_after_device(
+    org_id: str, user_id: str, run_id: str, *, task_id: str, result: dict[str, Any],
+) -> None:
+    """A device task ended: give its result to the hand_off_to_device call and continue."""
+
+    from core.durable_jobs import enqueue
+
+    factory = get_session_factory()
+    async with factory() as session, session.begin():
+        run = await _load_run(org_id, user_id, run_id, lock_session=session)
+        pending = json.loads(run["pending"]) if run.get("pending") else None
+        if run["status"] != "waiting_device" or not pending or pending.get("device_task_id") != task_id:
+            raise HTTPException(status_code=409, detail="This run is not waiting for that task.")
+        calls = pending.get("calls") or []
+        messages = json.loads(run["messages"])
+        messages.append(_result_message(calls[0]["id"], {"on_the_mac": result}))
+        ok = result.get("status") == "completed" and result.get("outcome") != "not_done"
+        _log(run, {"kind": "device", "tool": "hand_off_to_device", "status": "ok" if ok else "error",
+                   "summary": str(result.get("summary") or "")[:500]})
+        run.update(messages=json.dumps(messages), status="queued",
+                   pending=json.dumps({"calls": calls[1:]}) if len(calls) > 1 else None)
+        await _save_run(session, run)
+    await enqueue("skill_automation", org_id=org_id, conversation_id=run["skill_id"],
+                  payload={"run_id": run_id, "user_id": user_id})
 
 
 # --- Schedules --------------------------------------------------------------------------

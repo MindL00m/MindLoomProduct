@@ -20,6 +20,7 @@ final class GuideController {
     var onRunNext: (() -> Void)?
     var onRunStop: (() -> Void)?
     var onRunClose: (() -> Void)?
+    var onAgentChoice: ((AgentChoice) -> Void)?
 
     init(engine: CaptureEngine, library: GuideLibrary) {
         self.engine = engine
@@ -33,6 +34,7 @@ final class GuideController {
         overlay.onRunNext = { [weak self] in self?.onRunNext?() }
         overlay.onRunStop = { [weak self] in self?.onRunStop?() }
         overlay.onRunClose = { [weak self] in self?.onRunClose?() }
+        overlay.onAgentChoice = { [weak self] choice in self?.onAgentChoice?(choice) }
 
         engine.onGuideEvent = { [weak self] event in self?.handle(event) }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -96,6 +98,9 @@ final class GuideController {
     func showRunFinished(title: String, status: SkillRunStatus, message: String?) {
         overlay.showRunFinished(title: title, status: status, message: message)
     }
+
+    /// The automation runner draws its own cards on the run overlay.
+    var agentOverlay: GuideOverlay { overlay }
 
     func endRun(hideOverlay: Bool) {
         isRunActive = false

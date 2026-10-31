@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+if let flag = CommandLine.arguments.firstIndex(of: "--driver-selftest") {
+    MainActor.assumeIsolated {
+        DriverSelfTest.runAndExit(Array(CommandLine.arguments.dropFirst(flag + 1)))
+    }
+}
+
 let appDelegate = AppDelegate()
 let app = NSApplication.shared
 app.delegate = appDelegate

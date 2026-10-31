@@ -1,4 +1,5 @@
 import Foundation
+import DriverCore
 import GuideCore
 
 enum APIClientError: Error, LocalizedError {
@@ -121,6 +122,50 @@ final class APIClient {
     @discardableResult
     func stopSkillRun(_ runId: String) async throws -> SkillRun {
         try await sendRun("POST", "/captures/skill-runs/\(pathComponent(runId))/stop")
+    }
+
+    // MARK: - Device tasks
+
+    func listDeviceTasks(status: DeviceTaskStatus) async throws -> [DeviceTask] {
+        try await sendRun("GET", "/captures/device-tasks?status=\(status.rawValue)")
+    }
+
+    func getDeviceTask(_ taskId: String) async throws -> DeviceTask {
+        try await sendRun("GET", "/captures/device-tasks/\(pathComponent(taskId))")
+    }
+
+    func claimDeviceTask(_ taskId: String) async throws -> DeviceTask {
+        try await sendRun("POST", "/captures/device-tasks/\(pathComponent(taskId))/claim")
+    }
+
+    /// The current screen and the last action's result in; the next action out.
+    func stepDeviceTask(
+        _ taskId: String, observation: DeviceObservation, result: DeviceActionResult?
+    ) async throws -> DeviceStepResponse {
+        struct Body: Encodable {
+            var observation: DeviceObservation
+            var result: DeviceActionResult?
+        }
+        return try await sendRun(
+            "POST", "/captures/device-tasks/\(pathComponent(taskId))/step",
+            body: try JSONEncoder().encode(Body(observation: observation, result: result))
+        )
+    }
+
+    /// approve, reject, done, cant or takeover.
+    @discardableResult
+    func replyDeviceTask(_ taskId: String, action: String, note: String? = nil) async throws -> DeviceTask {
+        var body: [String: Any] = ["action": action]
+        if let note { body["note"] = String(note.prefix(2000)) }
+        return try await sendRun(
+            "POST", "/captures/device-tasks/\(pathComponent(taskId))/reply",
+            body: try JSONSerialization.data(withJSONObject: body)
+        )
+    }
+
+    @discardableResult
+    func stopDeviceTask(_ taskId: String) async throws -> DeviceTask {
+        try await sendRun("POST", "/captures/device-tasks/\(pathComponent(taskId))/stop")
     }
 
     private func sendRun<T: Decodable>(_ method: String, _ path: String, body: Data? = nil) async throws -> T {

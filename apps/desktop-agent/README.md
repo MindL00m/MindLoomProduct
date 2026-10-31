@@ -12,7 +12,7 @@ Privacy-focused menu-bar agent that captures **structured Accessibility interact
 
 ## Requirements
 
-- macOS 13+
+- macOS 15+
 - Swift 5.9+ / Xcode Command Line Tools (or Xcode)
 - Loom API running (e.g. `docker compose up` → `http://localhost:8000`)
 - Accessibility permission for the **packaged** `Loom Capture.app` (not a raw `swift run` binary)
@@ -192,6 +192,43 @@ as an executable:
 ```bash
 swift run GuideCoreChecks
 ```
+
+## Automations on this Mac (device tasks)
+
+When an automation run (web: **Run with MindLoom**) reaches steps in another app, it
+creates a device task for the apps allowed under **On your Mac**. Loom Capture picks
+it up and does those steps itself:
+
+- **Consent first.** The first task asks whether MindLoom may work on this Mac.
+- **Only the allowed apps.** Never System Settings, Keychain Access, Passwords, Terminal,
+  password managers or other system tools, even if allowed (`ActionPolicy`).
+- **Background-first.** Reading uses an Accessibility outline. Buttons and fields are
+  pressed and filled through AX, and keys and typing are posted to the app's process,
+  so your cursor and front app stay yours. Menu commands, and actions marked
+  `foreground`, bring the app forward after a countdown you can refuse, then put your
+  app back.
+- **Approvals.** Anything that sends, submits, deletes, pays or can't be undone waits
+  for **Approve**, on the overlay or the web page. The Mac checks this again
+  (`ActionGate`), including Return on a "Send"-style default button.
+- **No passwords.** Secure fields are never read or typed into, and nothing is typed
+  while Secure Event Input is on. Those go to you: **Done** / **I can't**.
+- **You're in control.** Typing or clicking in the app Loom is working in pauses it
+  until **Resume**. **Stop**, or **⌃⌥⌘.** from anywhere, stops the task and its whole run.
+
+While a task runs, the outline of the allowed app is sent to MindLoom to choose each
+step. Capture-mode privacy (allowlist, no field values) is unchanged.
+
+Checks:
+
+```bash
+swift run DriverCoreChecks          # policy, outline, key combos, the action gate
+./scripts/driver-selftest.sh        # real AX against a fixture app (needs Accessibility)
+```
+
+`driver-selftest.sh` builds the **Loom Fixture** app and launches the packaged Loom
+Capture with `--driver-selftest`. It checks reading, background set-value, press and
+checkbox, the approval and password gates, menus in front, and that your app stays in
+front.
 
 ## Smoke test
 

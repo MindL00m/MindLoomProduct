@@ -454,6 +454,16 @@ Legacy .doc, .xls and .ppt, ZIP, and images uploaded directly are not supported.
 - **Skill Runs (HEAD):**
   - The API only records state. The Mac app or extension performs the steps and reports each one.
   - A run waits on `needs_value` rather than typing values.
+- **Device tasks (`shuttle/device_tasks.py`, `apps/desktop-agent/Sources/DriverCore`, `LoomDriver.swift`, `DeviceTaskRunner.swift`):**
+  - `hand_off_to_device` in an automation run creates a `device_tasks` row for the apps the person allowed (`skill_automations.device_apps`). With none allowed, the person does the steps.
+  - The Mac polls `GET /captures/device-tasks?status=pending` and claims a task created in the last 30 minutes. It then loops on `POST /captures/device-tasks/{id}/step`. Each call sends a numbered Accessibility outline of the app plus the last action's result, and gets back one action.
+  - The model loop runs on the server: org model, `DRIVER_TOOLS`, at most 80 actions. Only the last 2 screens stay in the conversation.
+  - **Approvals:** irreversible actions pause in `needs_approval` when the model flags them or the control's label or key looks irreversible.
+  - **Mac-side gate:** the Mac's `ActionGate` repeats the checks against the live screen before acting. It refuses unapproved irreversible actions (including Return on an irreversible default button), password fields, Secure Event Input, a target whose label changed, and apps that aren't allowed or are on the deny list.
+  - **Background-first:** AX press and set-value, keys and typing via `CGEvent.postToPid`, and AX menu presses. Menu commands and `foreground: true` actions activate the app after a countdown, then restore the previous app. Real input in the target app pauses the run.
+  - **Hand-back:** when the task ends, `skill_automation.continue_after_device` gives the result to the waiting `hand_off_to_device` call and requeues the run.
+  - **Safety lists:** Python and Swift keep the same lists, and a test checks they match.
+  - **Self-test:** `apps/desktop-agent/scripts/driver-selftest.sh` checks the driver against a fixture app with real AX.
 
 ---
 

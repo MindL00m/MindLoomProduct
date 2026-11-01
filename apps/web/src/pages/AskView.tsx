@@ -23,6 +23,7 @@ import {
   Undo2,
   Users,
   UserRound,
+  Workflow as WorkflowIcon,
   X,
 } from "lucide-react";
 import {
@@ -39,6 +40,7 @@ import {
   type ProposedPullRequest,
   type ProposedMeeting,
   type ProposedRecurringEmail,
+  type ProposedWorkflow,
   type ProposedWorkspace,
   type QueryResponse,
   type Source,
@@ -62,6 +64,8 @@ import {
   userTimezone,
   type IntervalUnit,
 } from "@/services/workflows";
+import { createWorkflow } from "@/services/skillFiles";
+import { dashboardHref } from "@/lib/navigation";
 import { FileKindIcon } from "@/components/FileKindIcon";
 import { FilePickerModal } from "@/components/FilePicker";
 import { ChangeList } from "@/pages/FileViewers";
@@ -219,6 +223,7 @@ export default function AskView() {
           : undefined,
         recurringState: response.proposed_recurring_email ? "pending" : undefined,
         meetingState: response.proposed_meeting ? "pending" : undefined,
+        workflowState: response.proposed_workflow ? "pending" : undefined,
       });
     } catch (err) {
       updateTurn(convId, turnId, {
@@ -1043,6 +1048,16 @@ export function AnswerView({
         />
       )}
 
+      {response.proposed_workflow && (
+        <WorkflowCard
+          proposal={response.proposed_workflow}
+          state={state.workflowState}
+          result={state.workflowResult}
+          error={state.workflowError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
       {(response.file_changes?.length ?? 0) > 0 && (
         <FileChangesCard
           changes={response.file_changes!}
@@ -1735,6 +1750,201 @@ function RecurringEmailCard({
           type="button"
           disabled={sending}
           onClick={() => onPatch({ recurringState: "cancelled" })}
+          className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowCard({
+  proposal,
+  state,
+  result,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedWorkflow;
+  state?: Turn["workflowState"];
+  result?: Turn["workflowResult"];
+  error?: string;
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const status = state ?? "pending";
+  const [title, setTitle] = useState(proposal.title);
+  const [steps, setSteps] = useState(proposal.steps.join("\n"));
+  const [repeat, setRepeat] = useState(Boolean(proposal.interval_value && proposal.interval_unit));
+  const [value, setValue] = useState(proposal.interval_value ?? 1);
+  const [unit, setUnit] = useState<IntervalUnit>(proposal.interval_unit ?? "days");
+  const [autoApprove, setAutoApprove] = useState(false);
+  const stepList = steps.split("\n").map((s) => s.trim()).filter(Boolean);
+  const tooFrequent = repeat && value * UNIT_MS[unit] < 15 * 60_000;
+
+  async function create() {
+    onPatch({ workflowState: "sending", workflowError: undefined });
+    try {
+      const created = await createWorkflow({
+        title: title.trim(),
+        purpose: proposal.purpose,
+        steps: stepList,
+        important_fields: proposal.important_fields,
+        warnings: proposal.warnings,
+        decision_guidance: proposal.decision_guidance,
+        interval_value: repeat ? value : null,
+        interval_unit: repeat ? unit : null,
+        auto_approve: proposal.sends_email && autoApprove,
+      });
+      onPatch({
+        workflowState: "created",
+        workflowError: undefined,
+        workflowResult: {
+          title: created.skill.title,
+          repeats: repeat ? formatInterval(value, unit) : null,
+          warning: created.warning,
+        },
+      });
+    } catch (err) {
+      onPatch({
+        workflowState: "pending",
+        workflowError: err instanceof Error ? err.message : "Could not create the workflow.",
+      });
+    }
+  }
+
+  if (status === "cancelled") {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">
+        Workflow discarded.
+      </div>
+    );
+  }
+
+  if (status === "created") {
+    return (
+      <div className="flex flex-wrap items-start gap-3 rounded-md border-2 border-primary/40 bg-brand-50 px-4 py-3 text-sm">
+        <WorkflowIcon className="mt-0.5 size-4 shrink-0 text-primary" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">Created workflow: {result?.title ?? title}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {result?.repeats
+              ? `Runs ${result.repeats} on its own. You can also run it now from Workflows.`
+              : "Runs when you start it from Workflows, where you can also set it to repeat."}
+          </p>
+          {result?.warning && <p className="mt-1 text-xs text-amber-800">{result.warning}</p>}
+        </div>
+        <a
+          href={dashboardHref("shuttle")}
+          className="shrink-0 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium hover:bg-muted/60"
+        >
+          Open in Workflows
+        </a>
+      </div>
+    );
+  }
+
+  const sending = status === "sending";
+  const inputClass = "mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground";
+  return (
+    <div data-testid="workflow-card" className="rounded-lg border-2 border-primary bg-brand-50 px-4 py-3 text-sm shadow-sm">
+      <p className="flex items-center gap-2 font-semibold text-foreground">
+        <WorkflowIcon className="size-4 text-primary" /> New workflow
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        MindLoom will follow these steps each time the workflow runs. Nothing is saved until you choose
+        Create workflow.
+      </p>
+
+      <label className="mt-3 block text-xs font-medium text-muted-foreground">
+        Name
+        <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputClass} />
+      </label>
+      <label className="mt-2 block text-xs font-medium text-muted-foreground">
+        Steps (one per line)
+        <textarea
+          value={steps}
+          onChange={(e) => setSteps(e.target.value)}
+          rows={Math.min(10, Math.max(4, stepList.length + 1))}
+          className={inputClass}
+        />
+      </label>
+      {proposal.decision_guidance.length > 0 && (
+        <div className="mt-2 text-xs text-muted-foreground">
+          <p className="font-medium">Rules</p>
+          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+            {proposal.decision_guidance.map((rule, i) => (
+              <li key={i}>{rule}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <fieldset className="mt-3 space-y-1.5 text-xs">
+        <legend className="font-medium text-muted-foreground">How it runs</legend>
+        <label className="flex items-center gap-2">
+          <input type="radio" checked={!repeat} onChange={() => setRepeat(false)} />
+          Only when I run it
+        </label>
+        <label className="flex flex-wrap items-center gap-2">
+          <input type="radio" checked={repeat} onChange={() => setRepeat(true)} />
+          Automatically every
+          <input
+            type="number"
+            min={1}
+            value={value}
+            onChange={(e) => {
+              setValue(Math.max(1, Number(e.target.value) || 1));
+              setRepeat(true);
+            }}
+            className="w-16 rounded border border-border bg-card px-1.5 py-1"
+          />
+          <select
+            value={unit}
+            onChange={(e) => {
+              setUnit(e.target.value as IntervalUnit);
+              setRepeat(true);
+            }}
+            className="rounded border border-border bg-card px-1.5 py-1"
+          >
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+            <option value="weeks">weeks</option>
+          </select>
+        </label>
+        {tooFrequent && <p className="text-destructive">Workflows can run at most every 15 minutes.</p>}
+      </fieldset>
+
+      {proposal.sends_email && (
+        <label className="mt-3 flex items-start gap-2 text-xs font-medium text-foreground">
+          <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} className="mt-0.5" />
+          <span>
+            Send its emails without asking me first
+            <span className="block font-normal text-muted-foreground">
+              Otherwise each run waits on the Workflows page until you approve the email. Every action is
+              logged either way.
+            </span>
+          </span>
+        </label>
+      )}
+
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={sending || tooFrequent || !title.trim() || stepList.length === 0}
+          onClick={() => void create()}
+          className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="size-3.5 animate-spin" /> : <WorkflowIcon className="size-3.5" />}
+          {sending ? "Creating…" : "Create workflow"}
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          onClick={() => onPatch({ workflowState: "cancelled" })}
           className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
         >
           Cancel

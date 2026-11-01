@@ -31,6 +31,7 @@ from core.models import (
     ProposedMeeting,
     ProposedPullRequest,
     ProposedRecurringEmail,
+    ProposedWorkflow,
     ProposedWorkspace,
     ProposedWorkspaceMember,
     ProposedWorkspaceUnmatched,
@@ -117,6 +118,29 @@ Recurring email rules:
   rewritten from MindLoom's knowledge before every send and your body is a template.
 - propose_recurring_email schedules nothing. The user reviews and approves it in
   a card, and it then appears under Workflows. Never say it is scheduled or sent.
+
+Workflow rules:
+- When the user asks to create, make, set up, build, or save a workflow or an
+  automation (a task MindLoom should be able to run again, once or on a schedule),
+  call propose_workflow. Do not do the task now: do not search mail, write files,
+  or draft emails for it. Call lookup_person only to find the address of someone
+  the workflow emails when the user did not give it.
+- Write steps MindLoom can follow on its own, one action each, carrying every exact
+  value from the request: sender addresses, file names, column headers, recipients,
+  and the exact email subject and body in quotes. For example: "Search the inbox for
+  emails from priya@acme.com with invoices", "Read each invoice (email body and
+  attachments) and note the item, date, vendor name and amount", "Read Invoices.csv
+  and skip invoices it already lists", "Add one row per new invoice to Invoices.csv
+  with columns Item, Date, Vendor, Amount (create the file with that header row if
+  it does not exist)", "Send an email to priya@acme.com with subject 'Invoice
+  update!' and body 'Your invoice email has been processed'".
+- Put edge cases in decision_guidance, e.g. send the email only when at least one
+  new invoice was added, and ask instead of guessing a missing amount.
+- Pass interval_value and interval_unit only when the user asked for it to repeat
+  (hourly, daily, every Monday). The user can still choose on the card.
+- propose_workflow saves nothing. The user reviews the steps in a card and clicks
+  Create workflow; it then appears under Workflows, where it can run once or repeat
+  on its own. Never say the workflow was created or has run.
 
 GitHub rules:
 - GitHub tools use this user's Apps connector, not a server token. They may only
@@ -1201,6 +1225,41 @@ _TOOLS.append({
     },
 })
 
+_TOOLS.append({
+    "type": "function",
+    "function": {
+        "name": "propose_workflow",
+        "description": (
+            "Draft a reusable workflow (a Skill File MindLoom can run by itself, once or "
+            "on a schedule) from the user's description. Saves nothing: the user "
+            "confirms it in a card."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short name, e.g. 'Log Amey's invoices'."},
+                "purpose": {"type": "string", "description": "One sentence on what it does."},
+                "steps": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Ordered steps, one action each, with every exact value.",
+                },
+                "important_fields": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Values the workflow reads or writes, e.g. 'Amount: the invoice total'.",
+                },
+                "warnings": {"type": "array", "items": {"type": "string"}},
+                "decision_guidance": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "What to do in edge cases (nothing new, missing values).",
+                },
+                "interval_value": {"type": "integer", "description": "Only when the user asked for it to repeat."},
+                "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days", "weeks"]},
+            },
+            "required": ["title", "steps"],
+        },
+    },
+})
+
 _WEB_SEARCH_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -1255,6 +1314,8 @@ _MEETING_TOOLS = {"find_meeting_times", "propose_meeting"}
 # Earlier tool names, still accepted so older conversations and tests keep working.
 _FILE_TOOL_ALIASES = {"list_csv_files": "list_files", "read_csv_file": "read_file"}
 _FILE_TOOL_NAMES = _FILE_TOOLS | set(_FILE_TOOL_ALIASES)
+# Drafting a workflow must not do its task now, so only these tools are offered.
+_WORKFLOW_TOOLS = {"propose_workflow", "lookup_person", "list_files"}
 
 
 @dataclass
@@ -1278,6 +1339,7 @@ class _TurnOutputs:
     """Cards and web results tools produce during one turn."""
 
     meetings: list[ProposedMeeting] = field(default_factory=list)
+    workflows: list[ProposedWorkflow] = field(default_factory=list)
     web_results: list[WebResult] = field(default_factory=list)
     web_queries: list[str] = field(default_factory=list)
     members_added: list[str] = field(default_factory=list)
@@ -1994,6 +2056,24 @@ def _wants_recurring(question: str) -> bool:
     return bool(_RECURRING.search(lowered) and _SEND_WORDS.search(lowered))
 
 
+_WORKFLOW_REQUEST = re.compile(
+    r"\b(?:create|make|set\s*up|build|save|add|draft|write|start|automate)\b.{0,40}?"
+    r"\b(?:workflows?|automations?|skill\s*files?)\b"
+    r"|\bautomate\b"
+)
+_HOW_TO = re.compile(r"^(?:how|what|where|why|which|who)\b|\bhow (?:do|can|would|should) (?:i|we)\b")
+
+
+def _wants_workflow(question: str) -> bool:
+    """A request to save a task as a workflow, not a question about workflows."""
+
+    lowered = " ".join(question.lower().split())
+    return bool(_WORKFLOW_REQUEST.search(lowered)) and not _HOW_TO.search(lowered)
+
+
+_SENDS_EMAIL = re.compile(r"\b(?:send|reply|forward)\b")
+
+
 def _wants_messaging(question: str) -> bool:
     lowered = " ".join(question.lower().split())
     if any(pattern.search(lowered) for pattern in _MESSAGING_PATTERNS):
@@ -2505,6 +2585,45 @@ async def _propose_github_pr(
     }, proposal
 
 
+def _lines(value: Any, limit: int = 40) -> list[str]:
+    items = value if isinstance(value, list) else [value] if value else []
+    return [" ".join(str(item).split())[:1000] for item in items if str(item).strip()][:limit]
+
+
+def _propose_workflow(arguments: dict[str, Any], outputs: _TurnOutputs) -> dict[str, Any]:
+    from shuttle.recurring_emails import describe_interval, interval_of
+
+    title = " ".join(str(arguments.get("title") or "").split())[:200]
+    steps = _lines(arguments.get("steps"))
+    if not title or not steps:
+        return {"error": "title and at least one step are required."}
+    value, unit = arguments.get("interval_value"), str(arguments.get("interval_unit") or "").strip().lower()
+    repeats = None
+    if value and unit:
+        interval_of(int(value), unit)  # a clear error for the model when invalid
+        repeats = describe_interval(int(value), unit)
+    else:
+        value, unit = None, None
+    draft = ProposedWorkflow(
+        title=title,
+        purpose=" ".join(str(arguments.get("purpose") or "").split())[:2000],
+        steps=steps,
+        important_fields=_lines(arguments.get("important_fields")),
+        warnings=_lines(arguments.get("warnings")),
+        decision_guidance=_lines(arguments.get("decision_guidance")),
+        interval_value=int(value) if value else None,
+        interval_unit=unit or None,
+        sends_email=any(_SENDS_EMAIL.search(step.lower()) for step in steps),
+    )
+    outputs.workflows.append(draft)
+    return {
+        "drafted": True,
+        "steps": len(steps),
+        "repeats": repeats or "only when the user runs it (they can add a schedule on the card)",
+        "note": "Nothing is saved until the user clicks Create workflow on the card.",
+    }
+
+
 async def _run_tool(
     *,
     name: str,
@@ -2853,6 +2972,9 @@ async def _run_tool(
             "note": "Nothing is scheduled until the user approves the card.",
         }, None, None, None, None
 
+    if name == "propose_workflow":
+        return _propose_workflow(arguments, outputs), None, None, None, None
+
     if name == "track_status":
         from lens.status_trackers import create_tracker
 
@@ -3103,6 +3225,22 @@ async def _safe_run_tool(**kwargs: Any) -> tuple[
         )
 
 
+def _workflow_answer(workflow: ProposedWorkflow) -> str:
+    from shuttle.recurring_emails import describe_interval
+
+    when = (
+        f"It is set to run {describe_interval(workflow.interval_value, workflow.interval_unit)}; "
+        "you can change that on the card."
+        if workflow.interval_value and workflow.interval_unit
+        else "Choose whether it runs only when you start it or repeats on its own."
+    )
+    return (
+        f"I drafted the workflow **{workflow.title}** with {len(workflow.steps)} "
+        f"step{'s' if len(workflow.steps) != 1 else ''}. Review the steps below. {when} "
+        "Nothing is saved until you click Create workflow; it then appears under Workflows."
+    )
+
+
 def _workspace_answer(workspace: ProposedWorkspace) -> str:
     answer = (
         f"I prepared a workspace draft for **{workspace.name}**. "
@@ -3165,6 +3303,7 @@ Decide whether the request needs tools, which act on live data or take actions:
   change CSVs, create or change TXT and Word (DOCX) documents, keep CSVs updated
 - create_updated_document: make an updated copy of a file from MindLoom's memory
 - propose_recurring_email: schedule an email that repeats at a fixed interval
+- propose_workflow: save a task as a workflow MindLoom can run itself, once or on a schedule
 - find_meeting_times, propose_meeting: schedule meetings on Google Calendar
 {extra_tools}Questions about company knowledge, policies, people, or past discussions need no
 tools: retrieved context answers them. Use tools when the request involves the
@@ -3552,25 +3691,31 @@ async def _run_agent(
 ) -> QueryResponse:
     """Answer via RAG, using tools for messaging, GitHub, workspaces, files, meetings, or data."""
 
-    wants_recurring = _wants_recurring(question)
-    wants_meeting = _wants_meeting(question)
-    wants_msg = _wants_messaging(question) or wants_recurring
-    wants_gh = _wants_github(question)
-    wants_ws = _wants_workspace(question)
-    wants_data = _wants_data(question)
-    wants_web = web_enabled and _wants_web(question)
+    # A workflow describes a task for later: its emails, files and schedule belong in
+    # the workflow, so none of the do-it-now intents apply.
+    wants_workflow = _wants_workflow(question)
+    wants_recurring = _wants_recurring(question) and not wants_workflow
+    wants_meeting = _wants_meeting(question) and not wants_workflow
+    wants_msg = (_wants_messaging(question) or wants_recurring) and not wants_workflow
+    wants_gh = _wants_github(question) and not wants_workflow
+    wants_ws = _wants_workspace(question) and not wants_workflow
+    wants_data = _wants_data(question) and not wants_workflow
+    wants_web = web_enabled and _wants_web(question) and not wants_workflow
     wants_members = (
         workspace is not None and workspace.kind != "org_wide"
         and bool(_ADD_MEMBERS.search(" ".join(question.lower().split())))
     )
     user_files = await _user_files(org_id, user_id)
     attached = [str(n) for n in (attached_file_names or []) if str(n).strip()][:10]
-    wants_files = _wants_files(question, [f["name"] for f in user_files], history, attached)
+    wants_files = (
+        _wants_files(question, [f["name"] for f in user_files], history, attached)
+        and not wants_workflow
+    )
     plan: list[str] = []
     client: LLMClientAdapter | None = None
     if not any((
         wants_msg, wants_gh, wants_ws, wants_data, wants_files, wants_meeting, wants_web,
-        wants_members,
+        wants_members, wants_workflow,
     )):
         # No keyword matched. Let a short planning call decide whether the request
         # needs tools (e.g. "update the prices from priya@x.com") before falling
@@ -3623,6 +3768,8 @@ async def _run_agent(
         *([_WEB_SEARCH_TOOL] if web_enabled else []),
         *([_WORKSPACE_MEMBERS_TOOL] if workspace is not None and workspace.kind != "org_wide" else []),
     ]
+    if wants_workflow:
+        tools = [t for t in tools if t["function"]["name"] in _WORKFLOW_TOOLS]
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -3671,6 +3818,7 @@ async def _run_agent(
             "status_tracker": tracker_out[-1] if tracker_out else None,
             "proposed_recurring_email": recurring_out[-1] if recurring_out else None,
             "proposed_meeting": outputs.meetings[-1] if outputs.meetings else None,
+            "proposed_workflow": outputs.workflows[-1] if outputs.workflows else None,
             "web_search_used": bool(outputs.web_results),
             "web_search_query": "; ".join(outputs.web_queries) or None,
             "web_results": list(outputs.web_results),
@@ -3723,7 +3871,7 @@ async def _run_agent(
         # Knowledge answers already use explicit retrieval then prompting. Actions
         # that require structured arguments fail safely instead of being guessed.
         if any((wants_gh, wants_ws, wants_data, wants_files, wants_recurring, wants_meeting,
-                wants_web, wants_members)):
+                wants_web, wants_members, wants_workflow)):
             base.answer += (
                 "\n\nThe active local model is configured without structured tool "
                 "calling, so I could not use connectors, Files, Google Calendar, or the "
@@ -3797,6 +3945,8 @@ async def _run_agent(
                 )
             elif not answer and ws_proposal is not None:
                 answer = _workspace_answer(ws_proposal)
+            elif not answer and outputs.workflows:
+                answer = _workflow_answer(outputs.workflows[-1])
             elif not answer:
                 answer = (choice.content or "").strip() or base.answer
             sources = (
@@ -3806,7 +3956,7 @@ async def _run_agent(
             )
             if (
                 used_files or used_email or tracker_out or recurring_out or outputs.meetings
-                or outputs.web_results
+                or outputs.web_results or outputs.workflows
             ) and not used_github:
                 sources = _only_cited(answer, sources)
             return QueryResponse(
@@ -3908,6 +4058,8 @@ async def _run_agent(
             and not meeting_pending
         ):
             break
+        if outputs.workflows and wants_workflow:
+            break
 
     if one_off_messaging and not recurring_out:
         proposal, email_proposal = await _ensure_proposals(
@@ -3969,6 +4121,13 @@ async def _run_agent(
             proposed_message=None,
             proposed_pull_request=None,
             proposed_workspace=ws_proposal,
+        )
+
+    if outputs.workflows:
+        return QueryResponse(
+            **_extras(), answer=_workflow_answer(outputs.workflows[-1]), sources=[],
+            expert=None, expert_request_created=False, confidence="high",
+            routed=False, routed_reason=None,
         )
 
     # Tool rounds ran out (or stopped) with results the model has not answered yet.

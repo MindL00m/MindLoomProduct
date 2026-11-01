@@ -157,6 +157,11 @@ final class DesktopAuthSession {
             }
         }
         guard client >= 0 else { return }
+        // A browser that connects and never finishes its request must not sit on this
+        // queue: the sign-in timeout is queued here too, and a blocked read leaves the
+        // agent on "Waiting for browser…" indefinitely.
+        var timeout = timeval(tv_sec: 8, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         queue.async { [weak self] in
             self?.handle(clientFD: client)
         }
@@ -187,6 +192,7 @@ final class DesktopAuthSession {
             let n = read(clientFD, &chunk, chunk.count)
             if n < 0 {
                 if errno == EINTR { continue }
+                respond(clientFD: clientFD, status: 408, body: "Request timed out", extraHeaders: corsHeaders())
                 return
             }
             if n == 0 { break }
@@ -196,7 +202,7 @@ final class DesktopAuthSession {
         }
 
         guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
-            respond(clientFD: clientFD, status: 400, body: "Bad request")
+            respond(clientFD: clientFD, status: 400, body: "Bad request", extraHeaders: corsHeaders())
             return
         }
         let headerData = buffer.subdata(in: buffer.startIndex..<headerEnd.lowerBound)
@@ -205,12 +211,12 @@ final class DesktopAuthSession {
 
         let lines = headerText.split(separator: "\r\n", omittingEmptySubsequences: false)
         guard let requestLine = lines.first else {
-            respond(clientFD: clientFD, status: 400, body: "Bad request")
+            respond(clientFD: clientFD, status: 400, body: "Bad request", extraHeaders: corsHeaders())
             return
         }
         let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else {
-            respond(clientFD: clientFD, status: 400, body: "Bad request")
+            respond(clientFD: clientFD, status: 400, body: "Bad request", extraHeaders: corsHeaders())
             return
         }
         let method = String(parts[0]).uppercased()
@@ -251,7 +257,8 @@ final class DesktopAuthSession {
             return s.dropFirst("origin:".count).trimmingCharacters(in: .whitespaces)
         }.first
         if let origin, !allowedOrigin.isEmpty, origin != allowedOrigin {
-            respond(clientFD: clientFD, status: 403, body: "Forbidden origin")
+            NSLog("[MindLoom] Desktop auth rejected origin %@ (expected %@)", origin, allowedOrigin)
+            respond(clientFD: clientFD, status: 403, body: "Forbidden origin", extraHeaders: corsHeaders(origin: origin))
             return
         }
         let fields = parseJSONBody(body) ?? [:]
@@ -294,12 +301,16 @@ final class DesktopAuthSession {
         return diff == 0
     }
 
-    private func corsHeaders() -> [String] {
-        [
-            "Access-Control-Allow-Origin: \(allowedOrigin.isEmpty ? "null" : allowedOrigin)",
+    /// `https://app.mindloomai.org` calling `http://127.0.0.1` is a private-network
+    /// request. Chrome drops it unless the preflight opts in with this header.
+    private func corsHeaders(origin: String? = nil) -> [String] {
+        let allow = origin ?? (allowedOrigin.isEmpty ? "null" : allowedOrigin)
+        return [
+            "Access-Control-Allow-Origin: \(allow)",
             "Vary: Origin",
             "Access-Control-Allow-Methods: POST, OPTIONS",
             "Access-Control-Allow-Headers: Content-Type",
+            "Access-Control-Allow-Private-Network: true",
             "Access-Control-Max-Age: 600",
         ]
     }
@@ -345,7 +356,9 @@ final class DesktopAuthSession {
         case 204: reason = "No Content"
         case 400: reason = "Bad Request"
         case 404: reason = "Not Found"
+        case 403: reason = "Forbidden"
         case 405: reason = "Method Not Allowed"
+        case 408: reason = "Request Timeout"
         default: reason = "Error"
         }
         let data = Data(body.utf8)

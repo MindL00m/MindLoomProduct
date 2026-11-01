@@ -188,7 +188,7 @@ class ActivitySessionRecord(ActivitySessionCreate):
     model_config = {"populate_by_name": True}
 
 
-SkillSource = Literal["browser", "desktop_ax", "expert"]
+SkillSource = Literal["browser", "desktop_ax", "expert", "ask"]
 ContentVisibility = Literal["private", "organization"]
 
 
@@ -287,6 +287,24 @@ class SkillFileReview(BaseModel):
     decision_guidance: Optional[list[str]] = None
     expert_notes: str = ""
     visibility: Optional[ContentVisibility] = None
+
+
+IntervalUnit = Literal["minutes", "hours", "days", "weeks"]
+
+
+class SkillFileCreate(BaseModel):
+    """A workflow the person described in Ask and confirmed on its card."""
+
+    title: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(default="", max_length=2000)
+    application: str = Field(default="MindLoom", max_length=120)
+    steps: list[str] = Field(min_length=1, max_length=40)
+    important_fields: list[str] = Field(default_factory=list, max_length=40)
+    warnings: list[str] = Field(default_factory=list, max_length=40)
+    decision_guidance: list[str] = Field(default_factory=list, max_length=40)
+    interval_value: Optional[int] = Field(default=None, ge=1, le=100_000)
+    interval_unit: Optional[IntervalUnit] = None
+    auto_approve: bool = False
 
 
 class SkillFileUpdate(BaseModel):
@@ -1115,6 +1133,23 @@ class ProposedRecurringEmail(BaseModel):
     candidates: list[MessageablePerson] = Field(default_factory=list)
 
 
+class ProposedWorkflow(BaseModel):
+    """A workflow Ask drafted from the person's description; nothing is saved until they confirm."""
+
+    title: str
+    purpose: str = ""
+    application: str = "MindLoom"
+    steps: list[str] = Field(default_factory=list)
+    important_fields: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    decision_guidance: list[str] = Field(default_factory=list)
+    interval_value: Optional[int] = Field(
+        default=None, description="Set when the person asked for it to repeat on its own."
+    )
+    interval_unit: Optional[Literal["minutes", "hours", "days", "weeks"]] = None
+    sends_email: bool = False
+
+
 class StatusTrackerCard(BaseModel):
     """A status tracker Ask started (or found) for the user this turn."""
 
@@ -1222,6 +1257,10 @@ class QueryResponse(BaseModel):
     proposed_meeting: Optional[ProposedMeeting] = Field(
         default=None,
         description="Google Calendar meeting awaiting the user's approval.",
+    )
+    proposed_workflow: Optional[ProposedWorkflow] = Field(
+        default=None,
+        description="Workflow (Skill File) Ask drafted; created when the user confirms the card.",
     )
     web_search_used: bool = Field(
         default=False,

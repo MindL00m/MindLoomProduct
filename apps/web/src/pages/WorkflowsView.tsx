@@ -238,8 +238,8 @@ export default function WorkflowsView() {
         <div>
           <h2 className="text-lg font-semibold text-foreground">Automated workflows</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Recurring emails you set up in Ask, plus Skill Files drafted from MindLoom Capture sessions on a Mac or in Chrome.
-            Approving a workflow publishes it to the knowledge graph so Ask can answer questions about it.
+            Recurring emails and workflows you set up in Ask, plus Skill Files drafted from MindLoom Capture sessions on a
+            Mac or in Chrome. Run any approved workflow once, or have it run itself on a schedule.
             {proposedCount > 0
               ? ` ${proposedCount} awaiting approval.`
               : ""}
@@ -261,13 +261,17 @@ export default function WorkflowsView() {
       <RecurringWorkflows />
 
       <h3 className="border-t border-border pt-5 text-base font-semibold text-foreground">
-        Captured workflows
+        Workflows
       </h3>
 
       <p className="text-sm text-muted-foreground">
         Need a new workflow?{" "}
+        <Link to={dashboardHref("ask")} className="font-medium text-primary hover:underline">
+          Describe it in Ask
+        </Link>{" "}
+        (for example "Create a workflow to log invoices from priya@acme.com in Invoices.csv"), or{" "}
         <Link to={dashboardHref("capture")} className="font-medium text-primary hover:underline">
-          Record one with MindLoom Capture
+          record one with MindLoom Capture
         </Link>
         .
       </p>
@@ -335,8 +339,8 @@ export default function WorkflowsView() {
           <Workflow className="mx-auto size-8 text-muted-foreground" />
           <p className="mt-3 text-sm font-medium text-foreground">No workflow skills yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Upload a desktop capture session (skill drafts are created automatically), or capture
-            from the Chrome extension.
+            Describe one in Ask, upload a desktop capture session (skill drafts are created
+            automatically), or capture from the Chrome extension.
           </p>
         </div>
       ) : skills.length === 0 ? null : (
@@ -476,7 +480,9 @@ export default function WorkflowsView() {
                 {skill.status === "approved" && (
                   <>
                     <SkillAutomation skill={skill} isOwner={isOwner} />
-                    <SkillRunControls skill={skill} initialRun={activeRuns[skill.skill_id]} />
+                    {skill.source !== "ask" && (
+                      <SkillRunControls skill={skill} initialRun={activeRuns[skill.skill_id]} />
+                    )}
                   </>
                 )}
 

@@ -11,7 +11,6 @@ import {
   Monitor,
   Play,
   RefreshCw,
-  Settings2,
   Square,
   X,
   Zap,
@@ -32,6 +31,7 @@ import {
   type DeviceTask,
 } from "@/services/automations";
 import type { SkillFile } from "@/services/skillFiles";
+import { formatInterval, type IntervalUnit } from "@/services/workflows";
 import { cn } from "@/lib/utils";
 
 const POLL_MS = 2_000;
@@ -73,7 +73,6 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<"" | "plan" | "start" | "reply" | "settings">("");
   const [error, setError] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
 
   const load = useCallback(async () => {
     const data = await getAutomation(skill.skill_id);
@@ -84,8 +83,8 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
   }, [skill.skill_id]);
 
   useEffect(() => {
-    if (open) void load().catch((err: Error) => setError(err.message));
-  }, [open, load]);
+    void load().catch((err: Error) => setError(err.message));
+  }, [load]);
 
   const active = Boolean(run && ACTIVE_RUN.includes(run.status));
   useEffect(() => {
@@ -122,7 +121,17 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
         </button>
         {active && !open && (
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" /> running
+            <Loader2 className="size-3 animate-spin" />
+            {run && run.status !== "queued" && run.status !== "running" ? STATUS_TEXT[run.status].toLowerCase() : "running"}
+          </span>
+        )}
+        {automation?.next_run_at && automation.interval_value && automation.interval_unit && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary"
+            title={`Next run ${new Date(automation.next_run_at).toLocaleString()}`}
+          >
+            <Clock className="size-3" />
+            Runs {formatInterval(automation.interval_value, automation.interval_unit as IntervalUnit)}
           </span>
         )}
       </div>
@@ -222,7 +231,7 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
                   className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground disabled:opacity-50"
                 >
                   {busy === "start" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-                  Run now
+                  Run once
                 </button>
                 <button
                   type="button"
@@ -232,26 +241,17 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
                 >
                   <RefreshCw className="size-3.5" /> Re-plan
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setShowSettings((v) => !v)}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium"
-                >
-                  <Settings2 className="size-3.5" /> Schedule & approvals
-                </button>
               </div>
 
-              {showSettings && (
-                <AutomationSettings
-                  automation={automation}
-                  isOwner={isOwner}
-                  inputs={inputs}
-                  busy={busy === "settings"}
-                  onSave={(settings) =>
-                    void act("settings", async () => setAutomation(await updateAutomation(skill.skill_id, settings)))
-                  }
-                />
-              )}
+              <AutomationSettings
+                automation={automation}
+                isOwner={isOwner}
+                inputs={inputs}
+                busy={busy === "settings"}
+                onSave={(settings) =>
+                  void act("settings", async () => setAutomation(await updateAutomation(skill.skill_id, settings)))
+                }
+              />
             </>
           )}
 
@@ -356,9 +356,49 @@ function AutomationSettings({
   const [every, setEvery] = useState(String(automation.interval_value ?? 1));
   const [unit, setUnit] = useState(automation.interval_unit ?? "days");
   const scheduled = Boolean(automation.next_run_at);
+  const tooFrequent = (Number(every) || 1) * UNIT_MINUTES[unit as IntervalUnit] < 15;
   return (
-    <div className="space-y-2 rounded-md border border-border bg-background p-3 text-xs">
-      <label className="flex items-start gap-2">
+    <div className="space-y-3 rounded-md border border-border bg-background p-3 text-xs">
+      <div className="space-y-1.5">
+        <p className="flex items-center gap-1.5 font-semibold">
+          <Clock className="size-3.5 text-muted-foreground" /> Run automatically
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span>Every</span>
+          <input
+            value={every}
+            onChange={(e) => setEvery(e.target.value.replace(/\D/g, ""))}
+            className="w-14 rounded border border-border px-1.5 py-1"
+          />
+          <select value={unit} onChange={(e) => setUnit(e.target.value)} className="rounded border border-border px-1.5 py-1">
+            {["minutes", "hours", "days", "weeks"].map((u) => (
+              <option key={u}>{u}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={busy || tooFrequent}
+            onClick={() =>
+              onSave({ schedule: true, interval_value: Number(every) || 1, interval_unit: unit, default_inputs: inputs })
+            }
+            className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-50"
+          >
+            {scheduled ? "Update schedule" : "Turn on"}
+          </button>
+          {scheduled && (
+            <button type="button" disabled={busy} onClick={() => onSave({ schedule: false })} className="rounded-md border border-border px-2.5 py-1">
+              Stop repeating
+            </button>
+          )}
+        </div>
+        {tooFrequent && <p className="text-destructive">Workflows can run at most every 15 minutes.</p>}
+        <p className="text-muted-foreground">
+          {scheduled
+            ? `On: runs ${formatInterval(automation.interval_value ?? 1, (automation.interval_unit ?? "days") as IntervalUnit)}, next ${new Date(automation.next_run_at!).toLocaleString()}, with the inputs above. Each run only handles what is new since the last one.`
+            : "Off: it runs only when you click Run once."}
+        </p>
+      </div>
+      <label className="flex items-start gap-2 border-t border-border pt-3">
         <input
           type="checkbox"
           checked={automation.auto_approve}
@@ -375,44 +415,16 @@ function AutomationSettings({
           </span>
         </span>
       </label>
-      <div className="flex flex-wrap items-center gap-2">
-        <Clock className="size-3.5 text-muted-foreground" />
-        <span>Run every</span>
-        <input
-          value={every}
-          onChange={(e) => setEvery(e.target.value.replace(/\D/g, ""))}
-          className="w-14 rounded border border-border px-1.5 py-1"
-        />
-        <select value={unit} onChange={(e) => setUnit(e.target.value)} className="rounded border border-border px-1.5 py-1">
-          {["minutes", "hours", "days", "weeks"].map((u) => (
-            <option key={u}>{u}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() =>
-            onSave({ schedule: true, interval_value: Number(every) || 1, interval_unit: unit, default_inputs: inputs })
-          }
-          className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground disabled:opacity-50"
-        >
-          {scheduled ? "Update schedule" : "Schedule"}
-        </button>
-        {scheduled && (
-          <button type="button" disabled={busy} onClick={() => onSave({ schedule: false })} className="rounded-md border border-border px-2.5 py-1">
-            Stop schedule
-          </button>
-        )}
-      </div>
-      {scheduled && (
+      {scheduled && !automation.auto_approve && (
         <p className="text-muted-foreground">
-          Next run {new Date(automation.next_run_at!).toLocaleString()}, with the inputs above. Scheduled
-          runs still wait for your approval unless auto-approve is on.
+          Runs that send email or book meetings wait here for your approval until you turn this on.
         </p>
       )}
     </div>
   );
 }
+
+const UNIT_MINUTES: Record<IntervalUnit, number> = { minutes: 1, hours: 60, days: 1440, weeks: 10080 };
 
 const STATUS_TEXT: Record<AutomationRun["status"], string> = {
   queued: "Starting…",

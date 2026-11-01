@@ -762,6 +762,8 @@ def _draft_note(response: Any) -> str:
         labels.append("a workspace")
     if getattr(response, "proposed_pull_request", None):
         labels.append("a pull request")
+    if getattr(response, "proposed_workflow", None):
+        labels.append("a workflow")
     if not labels:
         return ""
     base = get_settings().frontend_url.rstrip("/")

@@ -41,6 +41,7 @@ from core.models import (
     GuideSummary,
     IncomingMessage,
     Participant,
+    SkillFileCreate,
     SkillFileDraft,
     SkillFileReview,
     SkillFileUpdate,
@@ -1153,6 +1154,49 @@ async def create_skill_file_from_expert_answer(
     return draft
 
 
+def _clean_lines(items: list[str], limit: int = 40) -> list[str]:
+    return [" ".join(str(item).split())[:1000] for item in items if str(item).strip()][:limit]
+
+
+async def create_skill_file_from_ask(
+    body: SkillFileCreate, *, org_id: str, user_id: str
+) -> SkillFileDraft:
+    """Save a workflow the person described in Ask. They wrote it and confirmed it,
+    so it is approved straight away and private to them until they share it."""
+
+    steps = _clean_lines(body.steps)
+    if not steps:
+        raise ValueError("A workflow needs at least one step.")
+    title = " ".join(body.title.split())
+    if not title:
+        raise ValueError("Give the workflow a name.")
+    now = datetime.now(timezone.utc)
+    draft = SkillFileDraft(
+        skill_id=str(uuid4()),
+        session_id=f"ask:{uuid4()}",
+        title=title[:200],
+        purpose=body.purpose.strip(),
+        application=body.application.strip() or "MindLoom",
+        steps=steps,
+        important_fields=_clean_lines(body.important_fields),
+        warnings=_clean_lines(body.warnings),
+        decision_guidance=_clean_lines(body.decision_guidance),
+        source="ask",
+        status="approved",
+        visibility="private",
+        created_at=now,
+        updated_at=now,
+        org_id=org_id,
+        created_by=user_id,
+    )
+    await _persist_skill(draft)
+    try:
+        await publish_skill_to_knowledge_graph(draft)
+    except Exception:  # noqa: BLE001 - the workflow runs without being searchable in Ask
+        logger.warning("Could not publish Ask workflow %s to the knowledge graph", draft.skill_id, exc_info=True)
+    return draft
+
+
 async def _is_admin(org_id: str, user_id: str) -> bool:
     if _memory is not None:
         return False
@@ -1212,6 +1256,7 @@ def format_skill_for_knowledge_graph(skill: SkillFileDraft) -> str:
         "browser": "Browser capture",
         "desktop_ax": "Desktop capture",
         "expert": "Expert answer",
+        "ask": "Described in Ask",
     }.get(skill.source, skill.source or "Workflow")
 
     lines = [

@@ -1,6 +1,7 @@
 import { apiFetch } from "@/lib/api";
+import type { Automation } from "@/services/automations";
 
-export type SkillSource = "browser" | "desktop_ax" | "expert";
+export type SkillSource = "browser" | "desktop_ax" | "expert" | "ask";
 export type ContentVisibility = "private" | "organization";
 
 /** Matchable control identity; keys are snake_case or camelCase depending on the endpoint. */
@@ -83,6 +84,7 @@ export function isExtensionSkill(skill: SkillFile): boolean {
 export function skillSourceLabel(skill: SkillFile): string {
   if (skill.source === "desktop_ax") return "Desktop";
   if (skill.source === "expert") return "Expert";
+  if (skill.source === "ask") return "Ask";
   return "Browser";
 }
 
@@ -173,6 +175,35 @@ export async function updateSkillFile(
       /* keep default */
     }
     throw new Error(detail);
+  }
+  return response.json();
+}
+
+export interface NewWorkflow {
+  title: string;
+  purpose: string;
+  steps: string[];
+  important_fields: string[];
+  warnings: string[];
+  decision_guidance: string[];
+  /** Both set to repeat on a schedule; both null to run only when started. */
+  interval_value: number | null;
+  interval_unit: "minutes" | "hours" | "days" | "weeks" | null;
+  auto_approve: boolean;
+}
+
+/** Save a workflow described in Ask; it is planned and, if asked, scheduled straight away. */
+export async function createWorkflow(
+  workflow: NewWorkflow,
+): Promise<{ skill: SkillFile; automation: Automation | null; warning?: string }> {
+  const response = await apiFetch("/captures/skill-files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(workflow),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(typeof body.detail === "string" ? body.detail : "Could not create the workflow.");
   }
   return response.json();
 }

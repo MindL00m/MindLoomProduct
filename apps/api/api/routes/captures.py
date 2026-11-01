@@ -1,5 +1,6 @@
 """Browser and desktop activity capture HTTP routes."""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
@@ -9,6 +10,7 @@ from weaver.capture_service import (
     SkillAccessError,
     analyze_activity_session,
     analyze_capture_session,
+    create_skill_file_from_ask,
     ensure_activity_skill,
     get_guide,
     list_activity_sessions,
@@ -38,6 +40,7 @@ from core.models import (
     CaptureCreate,
     CaptureRecord,
     GuideSummary,
+    SkillFileCreate,
     SkillFileDraft,
     SkillFileReview,
     SkillFileUpdate,
@@ -50,6 +53,7 @@ from core.models import (
 from core.rate_limit import captures_limit, device_step_limit, limit
 
 router = APIRouter(prefix="/captures", tags=["browser captures"])
+logger = logging.getLogger(__name__)
 
 
 def _skill_http_error(exc: Exception) -> HTTPException:
@@ -340,6 +344,45 @@ class AutomationReplyInput(BaseModel):
     arguments: dict | None = None
     answer: str | None = Field(default=None, max_length=4000)
     reason: str | None = Field(default=None, max_length=500)
+
+
+@router.post("/skill-files", status_code=201)
+@limit(captures_limit)
+async def create_skill_file(
+    request: Request, body: Annotated[SkillFileCreate, Body()],
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """Save a workflow described in Ask, plan its automation, and apply the person's
+    choice of running it by hand or on a repeating schedule."""
+
+    org_id, user_id = ctx
+    if (body.interval_value is None) != (body.interval_unit is None):
+        raise HTTPException(status_code=422, detail="Give both how often and the unit, or neither.")
+    if body.interval_value is not None:
+        from shuttle.recurring_emails import interval_of
+
+        interval_of(body.interval_value, body.interval_unit)  # 422 before anything is saved
+    try:
+        skill = await create_skill_file_from_ask(body, org_id=org_id, user_id=user_id)
+    except ValueError as exc:
+        raise _skill_http_error(exc) from exc
+    try:
+        automation = await skill_automation.prepare_automation(org_id, user_id, skill.skill_id)
+    except Exception:  # noqa: BLE001 - the workflow is saved; it can be planned from Workflows
+        logger.warning("Could not plan the automation for Ask workflow %s", skill.skill_id, exc_info=True)
+        return {
+            "skill": skill.model_dump(mode="json"), "automation": None,
+            "warning": "The workflow is saved, but MindLoom could not plan it yet. "
+                       "Open it in Workflows and choose Plan the automation.",
+        }
+    if body.auto_approve or body.interval_value is not None:
+        automation = await skill_automation.update_automation_settings(
+            org_id, user_id, skill.skill_id,
+            auto_approve=body.auto_approve or None,
+            schedule=True if body.interval_value is not None else None,
+            interval_value=body.interval_value, interval_unit=body.interval_unit,
+        )
+    return {"skill": skill.model_dump(mode="json"), "automation": automation}
 
 
 @router.get("/skill-files/{skill_id}/automation")

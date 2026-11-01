@@ -1,6 +1,6 @@
 /** Desktop agent sign-in bridge: Google → MindLoom JWT → localhost callback. */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { WizardCard } from "@/components/WizardCard";
 import { PrimaryButton } from "@/components/PrimaryButton";
@@ -38,12 +38,25 @@ async function sendToAgent(port: number, state: string, session: BridgeSession):
     email: session.email,
     state,
   };
-  const res = await fetch(`http://127.0.0.1:${port}/callback`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    mode: "cors",
-  });
+  let res: Response;
+  try {
+    // targetAddressSpace tells Chrome this public page means to call the loopback
+    // listener. The app answers the preflight with Access-Control-Allow-Private-Network.
+    res = await fetch(`http://127.0.0.1:${port}/callback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      mode: "cors",
+      targetAddressSpace: "loopback",
+    } as RequestInit & { targetAddressSpace: "loopback" });
+  } catch {
+    throw new Error(
+      "The browser blocked the handoff to MindLoom Capture. Allow local-network access for this site if Chrome asks, then click Sign in again in the app.",
+    );
+  }
+  if (res.status === 403) {
+    throw new Error("This page is not the site MindLoom Capture opened. Start sign-in again from the app.");
+  }
   if (!res.ok) {
     throw new Error("MindLoom Capture did not accept the sign-in. Start sign-in again from the app.");
   }
@@ -54,6 +67,8 @@ export default function DesktopAuth() {
   const accessToken = useSession((s) => s.accessToken);
   const email = useSession((s) => s.email);
   const isAuthenticated = useSession((s) => s.isAuthenticated);
+  const autoSent = useRef(false);
+  const delivered = useRef(false);
 
   const { port, state } = useMemo(() => readQuery(), []);
   const api = API_BASE;
@@ -75,12 +90,15 @@ export default function DesktopAuth() {
       setError("Missing or invalid callback port. Start sign-in from the MindLoom Capture agent.");
       return;
     }
+    if (delivered.current) return;
     setLoading(true);
     setError(null);
     try {
       await sendToAgent(port, state, session);
+      delivered.current = true;
       setDone(true);
     } catch (err) {
+      if (delivered.current) return;
       setError(
         err instanceof Error
           ? err.message
@@ -109,6 +127,12 @@ export default function DesktopAuth() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (autoSent.current || !hydrated || !portValid || done || !isAuthenticated || !accessToken) return;
+    autoSent.current = true;
+    void handleUseCurrentSession();
+  }, [hydrated, portValid, done, isAuthenticated, accessToken]);
 
   async function handleGoogleSignIn() {
     setLoading(true);

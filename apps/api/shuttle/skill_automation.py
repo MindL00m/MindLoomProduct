@@ -223,6 +223,13 @@ Rules:
   if one is rejected, adapt or finish.
 - Steps that need another app on the person's Mac: call hand_off_to_device once for
   them, with the exact values to enter in details. Its result says what happened there.
+- This skill may run again and again. Never handle the same item twice: before adding
+  rows for emails, invoices, orders or similar, read the file and skip items it already
+  lists. When the first message says when the last run finished, only handle items that
+  arrived after it. If the skill handles incoming items and none are new, do not send
+  emails that report on them; finish and say nothing new was found.
+- To add rows to a CSV that does not exist yet, create it with write_csv_file, header
+  row first.
 - When everything is done (or cannot be done), call finish with a short summary.
 - {_UNTRUSTED}
 """
@@ -459,10 +466,16 @@ async def start_run(
         timezone=timezone_name or "UTC",
     )
     plan = automation.get("plan") or {}
+    last = await _last_completed_start(automation["automation_id"])
     first = (
         f"{_skill_text(skill)}\n\nAutomation plan:\n{json.dumps(plan, ensure_ascii=False)[:6000]}\n\n"
         f"Inputs for this run: {json.dumps(given, ensure_ascii=False) if given else '(none given)'}"
         + (f"\nMissing required inputs (ask for them): {', '.join(missing)}" if missing else "")
+        + (
+            f"\nThe last run finished successfully; it started at {last.isoformat()}. "
+            "Items that arrived before then were already handled."
+            if last else "\nThis is the first run of this automation."
+        )
     )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": first}]
     factory = get_session_factory()
@@ -481,6 +494,21 @@ async def start_run(
     await enqueue("skill_automation", org_id=org_id, conversation_id=skill.title[:200],
                   payload={"run_id": run_id, "user_id": user_id})
     return await get_run(org_id, user_id, run_id)
+
+
+async def _last_completed_start(automation_id: str) -> datetime | None:
+    """When the latest completed run started: items older than that were handled."""
+
+    factory = get_session_factory()
+    async with factory() as session:
+        value = (await session.execute(text("""
+            SELECT created_at FROM skill_automation_runs
+            WHERE automation_id=:id AND status='completed'
+            ORDER BY created_at DESC LIMIT 1
+        """), {"id": automation_id})).scalar_one_or_none()
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 async def _person_name(org_id: str, user_id: str) -> str:
@@ -555,7 +583,10 @@ async def _update_spreadsheet(org_id: str, user_id: str, args: dict[str, Any]) -
 
     found = await files_service.find_file_by_name(org_id, user_id, str(args.get("name") or ""))
     if found is None or found["kind"] not in {"csv", "xlsx"}:
-        return {"error": "No CSV or Excel file with that name. Call list_files."}
+        return {"error": (
+            "No CSV or Excel file with that name. Call list_files; to start a new CSV, "
+            "call write_csv_file with the header row and the rows."
+        )}
     if found["kind"] == "csv":
         content, added, updated = apply_changes(found["content"], args.get("append_rows"), args.get("update_cells"))
         if added or updated:

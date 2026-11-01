@@ -151,6 +151,21 @@ export interface ProposedRecurringEmail {
   candidates: { user_id?: string; name: string; email: string }[];
 }
 
+/** A workflow (Skill File) Ask drafted from a description; saved only when the user confirms. */
+export interface ProposedWorkflow {
+  title: string;
+  purpose: string;
+  application: string;
+  steps: string[];
+  important_fields: string[];
+  warnings: string[];
+  decision_guidance: string[];
+  /** Set when the user asked for it to repeat on its own. */
+  interval_value?: number | null;
+  interval_unit?: "minutes" | "hours" | "days" | "weeks" | null;
+  sends_email: boolean;
+}
+
 /** A self-updating status tracker Ask started (or found) for a request. */
 export interface StatusTrackerCard {
   tracker_id: string;
@@ -216,6 +231,7 @@ export interface QueryResponse {
   status_tracker?: StatusTrackerCard | null;
   proposed_recurring_email?: ProposedRecurringEmail | null;
   proposed_meeting?: ProposedMeeting | null;
+  proposed_workflow?: ProposedWorkflow | null;
   /** True when any part of the answer came from a public web search. */
   web_search_used?: boolean;
   web_search_query?: string | null;

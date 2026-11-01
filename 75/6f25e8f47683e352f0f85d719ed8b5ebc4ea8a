@@ -1,0 +1,115 @@
+apps/api/weaver/capture_service.py
+  s_13f9ccd5f75888::t_9040d7c8be42f7 1259
+  s_13f9ccd5f75888::t_2f31e210a2b4bb 44
+  s_13f9ccd5f75888::t_9ec2158f8e9b67 1157-1199
+apps/web/src/store/chat.ts
+  s_13f9ccd5f75888::t_e4cbee3d75255d 39-42
+apps/web/src/components/SkillAutomation.tsx
+  s_13f9ccd5f75888::t_38ea5fe6d94373 124-134
+  s_13f9ccd5f75888::t_663338bb71228d 234,246-254
+  s_13f9ccd5f75888::t_2a47b8990b0df6 418,420,427
+  s_13f9ccd5f75888::t_f72f33c2a91a47 34
+  s_13f9ccd5f75888::t_028cbee92f1fc5 359,361-401
+  s_13f9ccd5f75888::t_07bbc1151883a7 86-87
+  s_13f9ccd5f75888::t_51e170dd8df167 428
+apps/web/src/services/skillFiles.ts
+  s_13f9ccd5f75888::t_8e9958508a3f3e 182-210
+  s_13f9ccd5f75888::t_603ea4ebb30a78 2
+  s_13f9ccd5f75888::t_e6a4f1c94da7e3 4
+  s_13f9ccd5f75888::t_e03459d20ca2a4 87
+apps/desktop-agent/Sources/MindLoomAgent/DesktopAuthSession.swift
+  s_13f9ccd5f75888::t_72a0e13ed637f5 359,361
+  s_13f9ccd5f75888::t_1f509f0fc36757 160-164
+  s_13f9ccd5f75888::t_a51ca3323fbe1a 214,219
+  s_13f9ccd5f75888::t_d2aef885c49214 260-261
+  s_13f9ccd5f75888::t_af9e50cb072a13 304-309,313
+  s_13f9ccd5f75888::t_0b5466cb1d0980 195
+  s_13f9ccd5f75888::t_d1020dafcaff11 205
+apps/api/core/models.py
+  s_13f9ccd5f75888::t_b2060acf3acf7c 1261-1264
+  s_13f9ccd5f75888::t_8daee1970a8cea 292-309
+  s_13f9ccd5f75888::t_357760cef94658 1136-1152
+  s_13f9ccd5f75888::t_a62245f7151018 191
+apps/web/src/pages/WorkflowsView.tsx
+  s_13f9ccd5f75888::t_df5e6ca078331c 483-485
+  s_13f9ccd5f75888::t_175f204762f654 241-242
+  s_13f9ccd5f75888::t_e89fd65864322f 264,269-272,274
+  s_13f9ccd5f75888::t_17d1c62a477fec 342-343
+apps/web/src/pages/DesktopAuth.tsx
+  s_13f9ccd5f75888::t_9b85d3b31422ca 3
+  s_13f9ccd5f75888::t_f3a311ba435aca 93,98,101
+  s_13f9ccd5f75888::t_4210369fe4c836 70
+  s_13f9ccd5f75888::t_f5219053ba2cf9 131-136
+  s_13f9ccd5f75888::t_2bc5175d171cfa 41-59
+  s_13f9ccd5f75888::t_d90163ee2b4528 71
+apps/api/shuttle/skill_automation.py
+  s_13f9ccd5f75888::t_b11ac37d90d5a4 499-513
+  s_13f9ccd5f75888::t_0288f681c4dbd2 586-589
+  s_13f9ccd5f75888::t_42557fd0620ee3 229-230
+  s_13f9ccd5f75888::t_ffaa0491a2c81a 226-228,231-232
+  s_13f9ccd5f75888::t_765ae1d9f56c1b 469,474-478
+apps/api/weaver/slack.py
+  s_13f9ccd5f75888::t_6435fbadf448e6 765-766
+apps/api/api/routes/captures.py
+  s_13f9ccd5f75888::t_6bf465c0159322 369-377
+  s_13f9ccd5f75888::t_6c8c1d5e2ec5d3 364
+  s_13f9ccd5f75888::t_78a2df1f2b814f 349-363,365-368,378-387
+  s_13f9ccd5f75888::t_7d9daf6c834044 43
+  s_13f9ccd5f75888::t_5a0d6d7cb8fd89 56
+  s_13f9ccd5f75888::t_f2e918372cdd13 3
+  s_13f9ccd5f75888::t_3d979e49deb107 13
+apps/api/tests/test_ask_workflows.py
+  s_13f9ccd5f75888::t_ba6f1dc55d3f73 1-147
+apps/web/src/services/ask.ts
+  s_13f9ccd5f75888::t_5cbeeae41c5530 154-168
+  s_13f9ccd5f75888::t_a2cd7f60e019b7 234
+apps/api/loombot/ask_agent.py
+  s_13f9ccd5f75888::t_fbc20c9801b5a2 3959
+  s_13f9ccd5f75888::t_a75160b4a8bddc 4061-4062
+  s_13f9ccd5f75888::t_afbc782cc61d98 1342
+  s_13f9ccd5f75888::t_cd4d817e590df0 122-144
+  s_13f9ccd5f75888::t_6ebf1951e698e8 4126-4132
+  s_13f9ccd5f75888::t_9c311e81248f5b 3771-3772
+  s_13f9ccd5f75888::t_4b4964c1194945 34
+  s_13f9ccd5f75888::t_3efb154b28ac2f 3710-3713,3718
+  s_13f9ccd5f75888::t_25b853b04b2a41 1228-1262
+  s_13f9ccd5f75888::t_5f85984d700591 3694-3703
+  s_13f9ccd5f75888::t_1d9abd6f2f6779 2059-2073,2075-2076
+  s_13f9ccd5f75888::t_93967f5a044c0f 3306
+  s_13f9ccd5f75888::t_42f01aee412691 3874
+  s_13f9ccd5f75888::t_25cef88a6e49bc 2975-2977
+  s_13f9ccd5f75888::t_d8e68f50a4d9af 3228-3243
+  s_13f9ccd5f75888::t_46d14a9908dc10 2074
+  s_13f9ccd5f75888::t_39dbb6b050c72e 1317-1318
+  s_13f9ccd5f75888::t_13160bac9bc50a 3948-3949
+  s_13f9ccd5f75888::t_9e052524a112b4 3821
+  s_13f9ccd5f75888::t_e2b5a3aaec46e5 2588-2626
+apps/web/src/pages/AskView.tsx
+  s_13f9ccd5f75888::t_7b8aff6e80557b 1762-1956
+  s_13f9ccd5f75888::t_585ac421b920d9 67-68
+  s_13f9ccd5f75888::t_818d855964fc4a 43
+  s_13f9ccd5f75888::t_95a06eb0c02781 26
+  s_13f9ccd5f75888::t_05560a542bc4fa 226
+  s_13f9ccd5f75888::t_ff4d9d228506f8 1051-1060
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "756f25e8f47683e352f0f85d719ed8b5ebc4ea8a",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_13f9ccd5f75888": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "8e9bd63c-e479-4bb0-b91d-5645f5b5a680",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

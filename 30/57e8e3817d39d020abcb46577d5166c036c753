@@ -1,0 +1,48 @@
+apps/web/src/services/skillFiles.ts
+  s_13f9ccd5f75888::t_491f420aca1326 211-221
+apps/api/tests/test_ask_workflows.py
+  s_13f9ccd5f75888::t_546bd7471bc5fc 151-153
+  s_13f9ccd5f75888::t_0b83e2cb816371 126-150,154-197
+apps/web/src/pages/WorkflowsView.tsx
+  s_13f9ccd5f75888::t_001a9b4c32ff36 218-222,235-244
+  s_13f9ccd5f75888::t_ce712a4e4ae1ec 518-519
+  s_13f9ccd5f75888::t_2933cd03978a33 7,12
+  s_13f9ccd5f75888::t_81b34b6eaf3e92 502-512,515-517,520-542
+  s_13f9ccd5f75888::t_c471f4f74ec0b7 104-105
+  s_13f9ccd5f75888::t_c8efd49a53b585 245-247
+  s_13f9ccd5f75888::t_85732c78d4a68c 543
+apps/api/weaver/capture_service.py
+  s_13f9ccd5f75888::t_f10f9f0c196558 1364-1368,1373-1406,1413-1440
+  s_13f9ccd5f75888::t_1118a41e2e6966 1363,1369-1372
+  s_13f9ccd5f75888::t_15af059e8e2809 1407-1412
+  s_13f9ccd5f75888::t_23b11d39ac42c4 1451-1452,1463-1466
+apps/api/api/routes/captures.py
+  s_13f9ccd5f75888::t_de373b4b204507 182,186-198
+  s_13f9ccd5f75888::t_83889b502691c1 22
+  s_13f9ccd5f75888::t_0580cc27e2e48f 14
+  s_13f9ccd5f75888::t_1258ddeaaff418 6
+  s_13f9ccd5f75888::t_d0009099d82148 199-200
+apps/web/src/pages/ExpertMessages.tsx
+  s_13f9ccd5f75888::t_2bb728edd65a34 151-153,158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3057e8e3817d39d020abcb46577d5166c036c753",
+  "prompts": {},
+  "humans": {
+    "h_24b7364a271272": {
+      "author": "NotALynx <soham.usind@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_13f9ccd5f75888": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "8e9bd63c-e479-4bb0-b91d-5645f5b5a680",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "NotALynx <soham.usind@gmail.com>"
+    }
+  }
+}

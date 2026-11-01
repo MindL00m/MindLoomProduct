@@ -3,7 +3,7 @@
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
 
 from keeper.auth import require_user_context
 from weaver.capture_service import (
@@ -11,6 +11,7 @@ from weaver.capture_service import (
     analyze_activity_session,
     analyze_capture_session,
     create_skill_file_from_ask,
+    delete_skill_file,
     ensure_activity_skill,
     get_guide,
     list_activity_sessions,
@@ -18,6 +19,7 @@ from weaver.capture_service import (
     list_guides,
     list_skill_files,
     list_summaries,
+    purge_rejected_skills,
     review_skill_file,
     save_activity_session,
     save_capture,
@@ -177,7 +179,23 @@ async def skill_files(
     ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> list[dict[str, object]]:
     org_id, user_id = ctx
+    await purge_rejected_skills(org_id)
     return await list_skill_files(org_id=org_id, viewer_user_id=user_id)
+
+
+@router.delete("/skill-files/{skill_id}", status_code=204)
+async def delete_skill(
+    skill_id: str,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> Response:
+    """Delete a workflow with its automation, schedule, run history and Ask search entry."""
+
+    org_id, user_id = ctx
+    try:
+        await delete_skill_file(skill_id, org_id=org_id, actor_user_id=user_id)
+    except (ValueError, SkillAccessError) as exc:
+        raise _skill_http_error(exc) from exc
+    return Response(status_code=204)
 
 
 @router.patch("/skill-files/{skill_id}", response_model=SkillFileDraft)

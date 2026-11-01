@@ -208,6 +208,17 @@ export async function createWorkflow(
   return response.json();
 }
 
+/** Delete a workflow with its schedule, run history and Ask search entry. */
+export async function deleteSkillFile(skillId: string): Promise<void> {
+  const response = await apiFetch(`/captures/skill-files/${encodeURIComponent(skillId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    throw new Error(typeof body.detail === "string" ? body.detail : "Could not delete this workflow.");
+  }
+}
+
 export async function reviewSkillFile(
   skill: SkillFile,
   status: "approved" | "rejected",

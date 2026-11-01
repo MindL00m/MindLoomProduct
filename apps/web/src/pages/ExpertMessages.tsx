@@ -148,12 +148,14 @@ export default function ExpertMessages({
     try {
       const updated = await reviewSkillFile(activeSkill, status);
       setSkills((rows) =>
-        rows.map((skill) => skill.skill_id === updated.skill_id ? updated : skill),
+        updated.status === "rejected"
+          ? rows.filter((skill) => skill.skill_id !== updated.skill_id)
+          : rows.map((skill) => skill.skill_id === updated.skill_id ? updated : skill),
       );
       setNotice(
         status === "approved"
           ? "Knowledge approved and published."
-          : "Knowledge draft rejected.",
+          : "Knowledge draft rejected and deleted.",
       );
     } finally {
       setBusy(false);

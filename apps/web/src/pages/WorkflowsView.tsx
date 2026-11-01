@@ -4,10 +4,12 @@ import {
   Eye,
   Loader2,
   RefreshCw,
+  Trash2,
   Workflow,
   X,
 } from "lucide-react";
 import {
+  deleteSkillFile,
   isExtensionSkill,
   listActivitySessions,
   listSkillFiles,
@@ -99,6 +101,8 @@ function formatSkillDocument(skill: SkillFile): string {
 
 export default function WorkflowsView() {
   const userId = useSession((state) => state.userId);
+  const isAdmin = useSession((state) => state.role === "admin");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [skills, setSkills] = useState<SkillFile[]>([]);
   const [pendingSessions, setPendingSessions] = useState<ActivitySession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -211,6 +215,11 @@ export default function WorkflowsView() {
         await updateSkillFile(skill.skill_id, { title: titled.title });
       }
       const updated = await reviewSkillFile(titled, status);
+      if (updated.status === "rejected") {
+        // Rejected workflows are deleted on the server.
+        await load();
+        return;
+      }
       setSkills((rows) =>
         rows.map((row) => (row.skill_id === updated.skill_id ? updated : row)),
       );
@@ -218,6 +227,21 @@ export default function WorkflowsView() {
       if (viewing?.skill_id === updated.skill_id) setViewing(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not review skill.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function remove(skill: SkillFile) {
+    setBusyId(skill.skill_id);
+    setError(null);
+    try {
+      await deleteSkillFile(skill.skill_id);
+      setConfirmDelete(null);
+      if (viewing?.skill_id === skill.skill_id) setViewing(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete this workflow.");
     } finally {
       setBusyId(null);
     }
@@ -475,7 +499,47 @@ export default function WorkflowsView() {
                     <Eye className="size-3.5" />
                     View full skill file
                   </button>
+                  {(isOwner || isAdmin) && confirmDelete !== skill.skill_id && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setConfirmDelete(skill.skill_id)}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-40"
+                    >
+                      <Trash2 className="size-3.5" />
+                      Delete
+                    </button>
+                  )}
                 </div>
+
+                {confirmDelete === skill.skill_id && (
+                  <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2.5">
+                    <p className="text-xs text-foreground">
+                      Delete "{skill.title}"{visibility === "organization" ? " for everyone" : ""}? Its
+                      schedule, run history and Ask search
+                      entry are removed too. This cannot be undone.
+                    </p>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void remove(skill)}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground disabled:opacity-50"
+                      >
+                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                        Delete workflow
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => setConfirmDelete(null)}
+                        className="rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground disabled:opacity-50"
+                      >
+                        Keep it
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {skill.status === "approved" && (
                   <>

@@ -123,6 +123,78 @@ async def test_workflow_schedule_is_validated() -> None:
     assert not outputs.workflows[0].sends_email
 
 
+@pytest.fixture
+def memory_skills(monkeypatch):
+    unpublished: list[str] = []
+
+    async def publish(skill):
+        return None
+
+    async def unpublish(skill):
+        unpublished.append(skill.skill_id)
+
+    capture_service.use_memory_store(True)
+    monkeypatch.setattr(capture_service, "publish_skill_to_knowledge_graph", publish)
+    monkeypatch.setattr(capture_service, "unpublish_skill_from_knowledge_graph", unpublish)
+    yield unpublished
+    capture_service.use_memory_store(False)
+
+
+async def _ask_skill(user: str = "user-a"):
+    return await capture_service.create_skill_file_from_ask(
+        SkillFileCreate(title="Log invoices", steps=_invoice_steps()), org_id="org-a", user_id=user,
+    )
+
+
+async def test_deleting_a_workflow_removes_it(memory_skills) -> None:
+    skill = await _ask_skill()
+    with pytest.raises(ValueError, match="not found"):  # private: others cannot see it at all
+        await capture_service.delete_skill_file(skill.skill_id, org_id="org-a", actor_user_id="user-b")
+    capture_service._memory["skills"][skill.skill_id]["visibility"] = "organization"
+    with pytest.raises(capture_service.SkillAccessError):
+        await capture_service.delete_skill_file(skill.skill_id, org_id="org-a", actor_user_id="user-b")
+
+    await capture_service.delete_skill_file(skill.skill_id, org_id="org-a", actor_user_id="user-a")
+
+    assert memory_skills == [skill.skill_id]
+    assert await capture_service.list_skill_files(org_id="org-a") == []
+    with pytest.raises(ValueError, match="not found"):
+        await capture_service.delete_skill_file(skill.skill_id, org_id="org-a", actor_user_id="user-a")
+
+
+async def test_rejecting_deletes_the_workflow_and_its_desktop_upload(memory_skills) -> None:
+    from datetime import datetime, timezone
+
+    from core.models import SkillFileDraft, SkillFileReview
+
+    now = datetime.now(timezone.utc)
+    capture_service._memory["activity"]["sess-1"] = {"sessionId": "sess-1", "orgId": "org-a"}
+    draft = SkillFileDraft(
+        skill_id="sk-1", session_id="sess-1", title="Desktop flow", purpose="", application="Numbers",
+        steps=["Open Numbers"], source="desktop_ax", created_at=now, updated_at=now,
+        org_id="org-a", created_by="user-a",
+    )
+    await capture_service._persist_skill(draft)
+
+    result = await capture_service.review_skill_file(
+        "sk-1", SkillFileReview(status="rejected", visibility="private"),
+        org_id="org-a", actor_user_id="user-a",
+    )
+
+    assert result.status == "rejected"
+    assert await capture_service.list_skill_files(org_id="org-a") == []
+    assert await capture_service.list_activity_sessions(org_id="org-a") == []
+
+
+async def test_previously_rejected_workflows_are_purged(memory_skills) -> None:
+    kept = await _ask_skill()
+    old = await _ask_skill()
+    capture_service._memory["skills"][old.skill_id]["status"] = "rejected"
+
+    assert await capture_service.purge_rejected_skills("org-a") == 1
+    assert [r["skill_id"] for r in await capture_service.list_skill_files(org_id="org-a")] == [kept.skill_id]
+
+
 async def test_ask_workflow_is_saved_approved_and_private(monkeypatch) -> None:
     published: list[str] = []
 

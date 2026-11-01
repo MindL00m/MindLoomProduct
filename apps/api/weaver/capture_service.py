@@ -1360,6 +1360,84 @@ async def unpublish_skill_from_knowledge_graph(skill: SkillFileDraft) -> None:
     await mark_external_source_deleted(skill.org_id, "skill_file", skill.skill_id)
 
 
+def _drop_legacy_rows(path: Path, keys: tuple[str, ...], value: str) -> None:
+    """Legacy JSONL rows fill in for missing DB rows, so a deleted row must go there too."""
+
+    if not path.exists():
+        return
+    lines = path.read_text().splitlines()
+    kept = [
+        line for line in lines
+        if line.strip() and all(json.loads(line).get(key) != value for key in keys)
+    ]
+    if len(kept) != len(lines):
+        path.write_text("\n".join(kept) + ("\n" if kept else ""))
+
+
+async def _remove_skill(skill: SkillFileDraft) -> None:
+    """Delete a Skill File and everything made from it: automations and their runs
+    (device tasks cascade), Mac walk runs, its Ask search entry, and the desktop
+    upload it was drafted from, which would otherwise be offered for drafting again."""
+
+    try:
+        await unpublish_skill_from_knowledge_graph(skill)
+    except Exception:  # noqa: BLE001 - the stored workflow is still removed
+        logger.exception("Failed to unpublish skill %s from knowledge graph", skill.skill_id)
+    from_session = skill.source == "desktop_ax"
+    if _memory is not None:
+        _memory["skills"].pop(skill.skill_id, None)
+        if from_session:
+            _memory["activity"].pop(skill.session_id, None)
+        return
+    params = {"org": skill.org_id, "id": skill.skill_id, "session": skill.session_id}
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        async with session.begin():
+            for statement in (
+                "DELETE FROM skill_automations WHERE org_id=:org AND skill_id=:id",
+                "DELETE FROM skill_runs WHERE org_id=:org AND skill_id=:id",
+                "DELETE FROM skill_files WHERE org_id=:org AND skill_id=:id",
+            ):
+                await session.execute(text(statement), params)
+            if from_session:
+                await session.execute(text(
+                    "DELETE FROM activity_sessions WHERE org_id=:org AND session_id=:session"
+                ), params)
+    _, _, _, skills_path, activity_path = _legacy_paths()
+    try:
+        _drop_legacy_rows(skills_path, ("skill_id",), skill.skill_id)
+        if from_session:
+            _drop_legacy_rows(activity_path, ("sessionId", "session_id"), skill.session_id)
+    except (OSError, ValueError):
+        logger.exception("Could not remove legacy rows for skill %s", skill.skill_id)
+
+
+async def delete_skill_file(skill_id: str, *, org_id: str, actor_user_id: str) -> SkillFileDraft:
+    current_data = await _get_skill_row(skill_id, org_id=org_id)
+    if current_data is None or not can_view_skill(current_data, actor_user_id):
+        raise ValueError("Skill File was not found.")
+    if not can_mutate_skill(current_data, actor_user_id, is_admin=await _is_admin(org_id, actor_user_id)):
+        raise SkillAccessError("Only the person who created this Skill File, or an admin, can delete it.")
+    skill = SkillFileDraft.model_validate(current_data)
+    await _remove_skill(skill)
+    return skill
+
+
+async def purge_rejected_skills(org_id: str) -> int:
+    """Rejected Skill Files are deleted; this clears any left from before that rule."""
+
+    removed = 0
+    for row in await _list_skill_files_raw(org_id=org_id):
+        if row.get("status") != "rejected":
+            continue
+        try:
+            await _remove_skill(SkillFileDraft.model_validate(_normalize_skill_row(row)))
+            removed += 1
+        except Exception:  # noqa: BLE001 - one bad row must not block the others
+            logger.exception("Could not delete rejected skill %s", row.get("skill_id"))
+    return removed
+
+
 async def review_skill_file(
     skill_id: str,
     review: SkillFileReview,
@@ -1370,7 +1448,8 @@ async def review_skill_file(
     current_data = await _get_skill_row(skill_id, org_id=org_id)
     if current_data is None or not can_view_skill(current_data, actor_user_id):
         raise ValueError("Skill File was not found.")
-    changing_visibility = review.visibility is not None
+    rejecting = review.status == "rejected"
+    changing_visibility = review.visibility is not None and not rejecting
     if not can_mutate_skill(
         current_data, actor_user_id, changing_visibility=changing_visibility,
         is_admin=await _is_admin(org_id, actor_user_id),
@@ -1381,6 +1460,10 @@ async def review_skill_file(
             else "Only the person who created this Skill File, or an admin, can review it."
         )
     current = SkillFileDraft.model_validate(current_data)
+    if rejecting:
+        # Rejected workflows are deleted, not kept around.
+        await _remove_skill(current)
+        return current.model_copy(update={"status": "rejected", "updated_at": datetime.now(timezone.utc)})
     updates = review.model_dump(exclude_none=True)
     updates["updated_at"] = datetime.now(timezone.utc)
     if "steps" in updates and current.guide_steps:
@@ -1399,13 +1482,6 @@ async def review_skill_file(
             raise ValueError(
                 f"Could not store this workflow in the knowledge graph: {exc}"
             ) from exc
-    elif updated.status == "rejected":
-        try:
-            await unpublish_skill_from_knowledge_graph(updated)
-        except Exception:  # noqa: BLE001 — rejection should still succeed locally
-            logger.exception(
-                "Failed to unpublish skill %s from knowledge graph", updated.skill_id
-            )
 
     await _persist_skill(updated)
     return updated

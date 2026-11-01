@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engine: CaptureEngine?
     private var guideController: GuideController?
     private var runWalker: SkillRunWalker?
+    private var deviceRunner: DeviceTaskRunner?
+    private var stopHotKey: StopHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Regular policy so the control window is a normal visible app window.
@@ -20,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let library = GuideLibrary(config: config)
         let guides = GuideController(engine: engine, library: library)
         let runs = SkillRunWalker(engine: engine, guides: guides, config: config)
+        let devices = DeviceTaskRunner(guides: guides, config: config)
+        runs.otherRunActive = { [weak devices] in devices?.isActive ?? false }
+        stopHotKey = StopHotKey { [weak devices, weak runs] in
+            devices?.stop()
+            runs?.stop()
+        }
         let panel = ControlPanel(engine: engine, guides: guides, config: config)
         let status = StatusItemController(engine: engine, config: config)
         engine.onStatusChange = { _ in
@@ -30,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             status.reloadConfig(updated)
             library.reloadConfig(updated)
             runs.reloadConfig(updated)
+            devices.reloadConfig(updated)
         }
         library.onChange = {
             panel.refreshGuides()
@@ -37,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.guideController = guides
         self.runWalker = runs
+        self.deviceRunner = devices
         self.controlPanel = panel
         self.statusController = status
         panel.show()

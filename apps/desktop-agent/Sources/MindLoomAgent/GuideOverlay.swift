@@ -8,6 +8,11 @@ enum RunStepPhase: Equatable {
     case waiting(SkillRunWaitReason, detail: String?)
 }
 
+/// A button on an automation card.
+enum AgentChoice: Int {
+    case approve = 1, reject, done, cant, stop, resume, notNow, allow
+}
+
 /// Floating, non-activating panel in the top-right corner that offers and plays guides.
 final class GuideOverlay: NSObject {
     private static let width: CGFloat = 340
@@ -21,6 +26,7 @@ final class GuideOverlay: NSObject {
     var onRunNext: (() -> Void)?
     var onRunStop: (() -> Void)?
     var onRunClose: (() -> Void)?
+    var onAgentChoice: ((AgentChoice) -> Void)?
 
     private let panel: NSPanel
     private var suggestionGuides: [Guide] = []
@@ -172,6 +178,100 @@ final class GuideOverlay: NSObject {
         }
         views.append(LoomButton(title: "Close", style: .primary, target: self, action: #selector(runClose)))
         render(views)
+    }
+
+    // MARK: - Automation (device tasks)
+
+    /// Shown on every automation card, so the person always knows how to stop it.
+    static let stopHint = "Stop anytime: ⌃⌥⌘. (Control-Option-Command-Period)"
+
+    func showAgentWorking(title: String, line: String, step: Int) {
+        render([
+            caption(step > 0 ? "MindLoom is working · Action \(step)" : "MindLoom is working"),
+            muted(title),
+            body(line, weight: .semibold, size: 14),
+            note("Loom works in the background where it can. Keep using your Mac.", color: LoomTheme.mutedForeground),
+            note(Self.stopHint, color: LoomTheme.mutedForeground),
+            agentButton("Stop", .ghost, .stop),
+        ])
+    }
+
+    func showAgentApproval(title: String, description: String, reason: String?) {
+        let heading = caption("Approve this action?")
+        heading.textColor = LoomTheme.warning
+        var views: [NSView] = [heading, muted(title), body(description, weight: .semibold, size: 14)]
+        if let reason, !reason.isEmpty {
+            views.append(note(reason + " It may not be undoable.", color: LoomTheme.warning))
+        }
+        views.append(LoomLayout.row(spacing: 8, views: [
+            agentButton("Reject", .secondary, .reject), agentButton("Approve", .primary, .approve),
+        ]))
+        views.append(agentButton("Stop run", .ghost, .stop))
+        render(views)
+    }
+
+    func showAgentAsk(title: String, instruction: String) {
+        render([
+            caption("Your turn"),
+            muted(title),
+            body(instruction, weight: .semibold, size: 14),
+            note("Do this on your Mac, then click Done. Loom carries on from there.", color: LoomTheme.mutedForeground),
+            LoomLayout.row(spacing: 8, views: [
+                agentButton("I can't", .secondary, .cant), agentButton("Done", .primary, .done),
+            ]),
+            agentButton("Stop run", .ghost, .stop),
+        ])
+    }
+
+    func showAgentCountdown(title: String, appName: String, seconds: Int) {
+        render([
+            caption("Loom needs the screen"),
+            muted(title),
+            body("Bringing \(appName) forward in \(seconds)…", weight: .semibold, size: 14),
+            note("For a few seconds only; Loom puts your app back afterwards. Don't type or click meanwhile.",
+                 color: LoomTheme.mutedForeground),
+            LoomLayout.row(spacing: 8, views: [agentButton("Not now", .secondary, .notNow), agentButton("Stop", .ghost, .stop)]),
+        ])
+    }
+
+    func showAgentPaused(title: String, appName: String) {
+        let heading = caption("Paused")
+        heading.textColor = LoomTheme.warning
+        render([
+            heading,
+            muted(title),
+            body("You're using \(appName), so Loom stopped acting in it.", weight: .semibold, size: 14),
+            note("Click Resume when you're done with \(appName).", color: LoomTheme.mutedForeground),
+            LoomLayout.row(spacing: 8, views: [agentButton("Stop run", .ghost, .stop), agentButton("Resume", .primary, .resume)]),
+        ])
+    }
+
+    func showAgentConsent(apps: [String]) {
+        render([
+            caption("Let MindLoom work on this Mac?"),
+            body("An automation wants MindLoom to operate \(apps.joined(separator: ", ")) for you.", weight: .semibold, size: 14),
+            body("• While a run is going, Loom sends what those apps show (not password fields) to MindLoom to decide each step."),
+            body("• Sending, deleting, paying and anything else that can't be undone waits for your approval."),
+            body("• Loom never types passwords and never touches other apps."),
+            note(Self.stopHint, color: LoomTheme.mutedForeground),
+            LoomLayout.row(spacing: 8, views: [agentButton("Not now", .secondary, .notNow), agentButton("Allow", .primary, .allow)]),
+        ])
+    }
+
+    func showAgentNotice(title: String, message: String) {
+        let heading = caption(title)
+        heading.textColor = LoomTheme.warning
+        render([heading, body(message), LoomButton(title: "Close", style: .ghost, target: self, action: #selector(runClose))])
+    }
+
+    private func agentButton(_ title: String, _ style: LoomButtonStyle, _ choice: AgentChoice) -> LoomButton {
+        let button = LoomButton(title: title, style: style, target: self, action: #selector(agentChose(_:)))
+        button.tag = choice.rawValue
+        return button
+    }
+
+    @objc private func agentChose(_ sender: LoomButton) {
+        if let choice = AgentChoice(rawValue: sender.tag) { onAgentChoice?(choice) }
     }
 
     static func waitText(_ reason: SkillRunWaitReason, detail: String?) -> String {

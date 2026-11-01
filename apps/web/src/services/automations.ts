@@ -13,6 +13,8 @@ export interface AutomationPlan {
   summary: string;
   inputs: AutomationInput[];
   steps: { step: string; tool: string; how: string }[];
+  /** Mac apps the device steps use, as the planner saw them. */
+  apps?: string[];
   automatable: "full" | "partial" | "manual";
   notes: string;
 }
@@ -26,6 +28,8 @@ export interface Automation {
   interval_unit: string | null;
   next_run_at: string | null;
   default_inputs: Record<string, string>;
+  /** Mac apps the person allowed MindLoom to operate for this automation. */
+  device_apps: string[];
 }
 
 export type AutomationRunStatus =
@@ -48,6 +52,40 @@ export interface AutomationLogEntry {
   outcome?: string;
 }
 
+export type DeviceTaskStatus =
+  | "pending"
+  | "running"
+  | "needs_approval"
+  | "needs_person"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+export interface DeviceTaskLogEntry {
+  at: string;
+  kind: "start" | "claim" | "action" | "approval" | "person" | "finish" | "stop";
+  tool?: string;
+  status: "ok" | "error" | "pending" | "rejected";
+  summary?: string;
+  result?: string;
+}
+
+/** Part of a run that the Mac app does in the allowed apps (shuttle/device_tasks.py). */
+export interface DeviceTask {
+  task_id: string;
+  run_id: string;
+  status: DeviceTaskStatus;
+  title: string;
+  allowed_apps: string[];
+  log: DeviceTaskLogEntry[];
+  pending: { instruction?: string; description?: string; reason?: string; tool?: string } | null;
+  summary: string | null;
+  error: string | null;
+  steps: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AutomationRun {
   run_id: string;
   skill_id: string;
@@ -59,8 +97,10 @@ export interface AutomationRun {
     arguments?: Record<string, unknown>;
     question?: string;
     steps?: string;
-    device_run_id?: string | null;
+    details?: string | null;
+    device_task_id?: string | null;
   } | null;
+  device_task?: DeviceTask | null;
   summary: string | null;
   error: string | null;
   trigger: string;
@@ -109,6 +149,7 @@ export function updateAutomation(
     interval_value?: number;
     interval_unit?: string;
     default_inputs?: Record<string, string>;
+    device_apps?: string[];
   },
 ): Promise<Automation> {
   return call(skillPath(skillId), { method: "PATCH", body: JSON.stringify(settings) }, "Could not save.");
@@ -144,4 +185,15 @@ export function replyToAutomationRun(
 
 export function stopAutomationRun(runId: string): Promise<AutomationRun> {
   return call(`/captures/automation-runs/${encodeURIComponent(runId)}/stop`, { method: "POST" });
+}
+
+const devicePath = (taskId: string) => `/captures/device-tasks/${encodeURIComponent(taskId)}`;
+
+/** Approve or reject an action on the Mac, answer an ask (done / cant), or take over. */
+export function replyToDeviceTask(
+  taskId: string,
+  action: "approve" | "reject" | "done" | "cant" | "takeover",
+  note?: string,
+): Promise<DeviceTask> {
+  return call(`${devicePath(taskId)}/reply`, { method: "POST", body: JSON.stringify({ action, note }) }, "Could not send your reply.");
 }

@@ -105,11 +105,11 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.productivity</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>15.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSAccessibilityUsageDescription</key>
-  <string>Loom Capture uses Accessibility to record allowlisted app interaction metadata (not keystroke content) for workflow skill files.</string>
+  <string>Loom Capture uses Accessibility to record allowlisted app interaction metadata (not keystroke content) for workflow skill files, and to operate the apps you allow when you run an automation.</string>
   <key>LoomWebBase</key>
   <string>${WEB_BASE}</string>
   <key>LoomAPIBase</key>

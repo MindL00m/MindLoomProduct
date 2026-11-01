@@ -119,6 +119,12 @@ def captures_limit() -> str:
     return os.environ.get("RATE_LIMIT_CAPTURES", "30/minute").strip() or "30/minute"
 
 
+def device_step_limit() -> str:
+    """The Mac app's turn in a device task: one per action, so a run makes many."""
+
+    return os.environ.get("RATE_LIMIT_DEVICE_STEPS", "120/minute").strip() or "120/minute"
+
+
 def ingest_limit() -> str:
     return os.environ.get("RATE_LIMIT_INGEST", "20/minute").strip() or "20/minute"
 

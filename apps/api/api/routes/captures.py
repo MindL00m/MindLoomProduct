@@ -47,7 +47,7 @@ from core.models import (
     SkillRunDetail,
     SkillRunStatus,
 )
-from core.rate_limit import captures_limit, limit
+from core.rate_limit import captures_limit, device_step_limit, limit
 
 router = APIRouter(prefix="/captures", tags=["browser captures"])
 
@@ -327,6 +327,7 @@ class AutomationSettingsInput(BaseModel):
     interval_value: int | None = Field(default=None, ge=1, le=100_000)
     interval_unit: str | None = None
     default_inputs: dict[str, str] | None = None
+    device_apps: list[str] | None = Field(default=None, max_length=20)
 
 
 class AutomationRunInput(BaseModel):
@@ -370,7 +371,7 @@ async def skill_automation_settings(
     return await skill_automation.update_automation_settings(
         *ctx, skill_id, auto_approve=body.auto_approve, schedule=body.schedule,
         interval_value=body.interval_value, interval_unit=body.interval_unit,
-        default_inputs=body.default_inputs,
+        default_inputs=body.default_inputs, device_apps=body.device_apps,
     )
 
 
@@ -410,3 +411,100 @@ async def stop_automation_run(
     run_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
 ) -> dict:
     return await skill_automation.stop_run(*ctx, run_id)
+
+
+# --- Device tasks: the Mac app operates allowed apps for an automation run --------------
+# The Mac polls, claims, then sends each screen and action result to /step and gets the
+# next action. Approvals and the person's answers come from the web page or the Mac.
+
+from typing import Literal  # noqa: E402
+
+from shuttle import device_tasks  # noqa: E402
+
+
+class DeviceElementInput(BaseModel):
+    ref: str = Field(max_length=12)
+    role: str = Field(default="", max_length=60)
+    label: str = Field(default="", max_length=300)
+    secure: bool = False
+    focused: bool = False
+
+
+class DeviceObservationInput(BaseModel):
+    app: str = Field(default="", max_length=120)
+    bundle_id: str = Field(default="", max_length=200)
+    text: str = Field(default="", max_length=60_000)
+    elements: list[DeviceElementInput] = Field(default_factory=list, max_length=3000)
+    running_apps: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DeviceResultInput(BaseModel):
+    action_id: str = Field(default="", max_length=100)
+    ok: bool
+    detail: str = Field(default="", max_length=2000)
+    changed: bool | None = None
+    blocked: Literal["needs_approval", "secure_field", "app_not_allowed", "declined_foreground"] | None = None
+
+
+class DeviceStepInput(BaseModel):
+    observation: DeviceObservationInput
+    result: DeviceResultInput | None = None
+
+
+class DeviceReplyInput(BaseModel):
+    action: Literal["approve", "reject", "done", "cant", "takeover"]
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.get("/device-tasks")
+async def list_device_tasks(
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    status: Annotated[Literal[
+        "pending", "running", "needs_approval", "needs_person", "completed", "failed", "stopped"
+    ] | None, Query()] = None,
+) -> list[dict]:
+    """The caller's device tasks, newest first; the Mac app polls ``?status=pending``."""
+
+    return await device_tasks.list_tasks(*ctx, status=status)
+
+
+@router.get("/device-tasks/{task_id}")
+async def device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)]) -> dict:
+    return await device_tasks.get_task(*ctx, task_id)
+
+
+@router.post("/device-tasks/{task_id}/claim")
+async def claim_device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)]) -> dict:
+    """The Mac app takes a pending task. A second claim gets 409."""
+
+    return await device_tasks.claim(*ctx, task_id)
+
+
+@router.post("/device-tasks/{task_id}/step")
+@limit(device_step_limit)
+async def device_task_step(
+    request: Request, task_id: str, body: DeviceStepInput,
+    ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """The last action's result and the current screen in; the next action out."""
+
+    return await device_tasks.step(
+        *ctx, task_id, observation=body.observation.model_dump(),
+        result=body.result.model_dump() if body.result else None,
+    )
+
+
+@router.post("/device-tasks/{task_id}/reply")
+async def reply_to_device_task(
+    task_id: str, body: DeviceReplyInput, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+) -> dict:
+    """Approve or reject an action, say an asked step is done (or can't be), or take over."""
+
+    return await device_tasks.reply(*ctx, task_id, action=body.action, note=body.note)
+
+
+@router.post("/device-tasks/{task_id}/stop")
+async def stop_device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)]) -> dict:
+    """Stop the task and the automation run it belongs to."""
+
+    return await device_tasks.stop(*ctx, task_id)

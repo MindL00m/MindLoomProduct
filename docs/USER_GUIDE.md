@@ -204,6 +204,14 @@ After 3 failures in a row a workflow pauses itself ("Paused after errors").
 Skill Files are step-by-step procedures, learned from MindLoom Capture sessions or expert answers.
 - **Review**: proposed Skill Files appear here, and the Workflows badge counts them. Edit, approve or reject them. Approved skills become trusted knowledge.
 - **Run / guide**: an approved skill can be run on your Mac (MindLoom Capture) or in Chrome (the extension). The app walks you through each step and detects when you've done it, for example "4/6 steps auto-detect". It never types values for you; it pauses and asks.
+- **Run with MindLoom**: MindLoom does the skill itself with its tools. For steps in other apps on your Mac, tick the apps under **On your Mac** (for example Mail or Numbers). The MindLoom Capture app then does those steps, mostly in the background, so you can keep working.
+  - The first time, Capture asks whether MindLoom may work on this Mac. While a run is going it sends what the allowed apps show (never password fields) to decide each step.
+  - Anything that sends, submits, deletes, pays or can't be undone waits for **Approve**, on the Mac or on the web page. This is skipped only if you turned on auto-approve for a skill you created.
+  - It never types passwords, two-factor codes or CAPTCHAs, and never touches other apps. For those it shows you what to do, and you click **Done** or **I can't**.
+  - When it needs an app in front (menu commands, for example), it counts down first. Click **Not now** to refuse. It puts your app back afterwards.
+  - If you type or click in the app it's working in, it pauses until you click **Resume**.
+  - **Stop** on the Mac, Stop on the web page, or **⌃⌥⌘.** (Control-Option-Command-Period) stops the whole run at once.
+  - Needs macOS 15 or later, and Accessibility granted to MindLoom Capture.
 
 ---
 

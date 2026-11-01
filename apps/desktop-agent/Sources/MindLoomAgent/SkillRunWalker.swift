@@ -79,8 +79,11 @@ final class SkillRunWalker {
 
     // MARK: - Picking up runs
 
+    /// True while an automation's device task has the overlay; skill runs wait.
+    var otherRunActive: () -> Bool = { false }
+
     private func pollPending() async {
-        guard config.isSignedIn, activeRunId == nil else { return }
+        guard config.isSignedIn, activeRunId == nil, !otherRunActive() else { return }
         let client = APIClient(config: config)
         guard let pending = try? await client.listSkillRuns(status: .pending) else { return }
         let cutoff = Date().addingTimeInterval(-Self.maxPendingAgeSeconds)
@@ -336,7 +339,8 @@ final class SkillRunWalker {
         }
     }
 
-    private func stop() {
+    /// The overlay's Stop and the stop hot key.
+    func stop() {
         guard let runId = activeRunId else { return }
         stopRequested = true
         waitingIndex = nil

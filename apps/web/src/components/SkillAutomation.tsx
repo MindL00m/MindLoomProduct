@@ -22,12 +22,14 @@ import {
   getAutomationRun,
   prepareAutomation,
   replyToAutomationRun,
+  replyToDeviceTask,
   startAutomationRun,
   stopAutomationRun,
   updateAutomation,
   type Automation,
   type AutomationLogEntry,
   type AutomationRun,
+  type DeviceTask,
 } from "@/services/automations";
 import type { SkillFile } from "@/services/skillFiles";
 import { cn } from "@/lib/utils";
@@ -61,8 +63,8 @@ function toolLabel(tool?: string): string {
 /**
  * "Run with MindLoom": MindLoom performs the Skill File itself with its toolbox
  * (knowledge, email, files and spreadsheets, templates, calendar, web, web APIs).
- * Outbound actions wait for Approve; missing values are asked for; steps that
- * need clicking in another app go to the Mac app or Chrome extension.
+ * Outbound actions wait for Approve; missing values are asked for; steps in other
+ * apps are done by the Mac app in the apps the person allowed ("On your Mac").
  */
 export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner: boolean }) {
   const [open, setOpen] = useState(false);
@@ -178,6 +180,20 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
                 {plan?.notes && <p className="mt-1 text-xs text-muted-foreground">{plan.notes}</p>}
               </div>
 
+              {(plan?.steps.some((s) => s.tool === "hand_off_to_device") ||
+                (plan?.apps?.length ?? 0) > 0 ||
+                automation.device_apps.length > 0) && (
+                <DeviceApps
+                  automation={automation}
+                  busy={busy === "settings"}
+                  onSave={(apps) =>
+                    void act("settings", async () =>
+                      setAutomation(await updateAutomation(skill.skill_id, { device_apps: apps })),
+                    )
+                  }
+                />
+              )}
+
               {plan && plan.inputs.length > 0 && (
                 <div className="grid gap-2 sm:grid-cols-2">
                   {plan.inputs.map((input) => (
@@ -246,9 +262,79 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
               busy={busy === "reply"}
               onReply={(reply) => void act("reply", async () => setRun(await replyToAutomationRun(run.run_id, reply)))}
               onStop={() => void act("reply", async () => setRun(await stopAutomationRun(run.run_id)))}
+              onDeviceReply={(taskId, action) =>
+                void act("reply", async () => {
+                  await replyToDeviceTask(taskId, action);
+                  setRun(await getAutomationRun(run.run_id));
+                })
+              }
             />
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** The Mac apps MindLoom may operate for this automation (Loom Capture does the work). */
+function DeviceApps({
+  automation,
+  busy,
+  onSave,
+}: {
+  automation: Automation;
+  busy: boolean;
+  onSave: (apps: string[]) => void;
+}) {
+  const [extra, setExtra] = useState("");
+  const allowed = automation.device_apps;
+  const isAllowed = (app: string) => allowed.some((a) => a.toLowerCase() === app.toLowerCase());
+  const candidates = [...allowed];
+  for (const app of automation.plan.apps ?? []) if (!isAllowed(app)) candidates.push(app);
+  const toggle = (app: string, on: boolean) =>
+    onSave(on ? [...allowed, app] : allowed.filter((a) => a.toLowerCase() !== app.toLowerCase()));
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-background p-3 text-xs">
+      <p className="flex items-center gap-1.5 font-semibold">
+        <Monitor className="size-3.5" /> On your Mac
+      </p>
+      <p className="text-muted-foreground">
+        Let MindLoom do the steps in these apps through the Loom Capture app, in the background where it
+        can. Sending, deleting, paying and anything else that can't be undone waits for your approval. It
+        never types passwords or touches other apps.
+      </p>
+      {candidates.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {candidates.map((app) => (
+            <label key={app} className="inline-flex items-center gap-1.5">
+              <input type="checkbox" checked={isAllowed(app)} disabled={busy} onChange={(e) => toggle(app, e.target.checked)} />
+              {app}
+            </label>
+          ))}
+        </div>
+      )}
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const app = extra.trim();
+          if (app && !isAllowed(app)) onSave([...allowed, app]);
+          setExtra("");
+        }}
+      >
+        <input
+          value={extra}
+          onChange={(e) => setExtra(e.target.value)}
+          placeholder="Another app, e.g. Numbers"
+          maxLength={60}
+          className="w-48 rounded border border-border px-2 py-1"
+        />
+        <button type="submit" disabled={busy || !extra.trim()} className="rounded-md border border-border px-2.5 py-1 disabled:opacity-50">
+          Allow
+        </button>
+      </form>
+      {allowed.length === 0 && (
+        <p className="text-muted-foreground">No apps allowed: you'll do those steps yourself and click Done.</p>
       )}
     </div>
   );
@@ -339,16 +425,20 @@ const STATUS_TEXT: Record<AutomationRun["status"], string> = {
   stopped: "Stopped",
 };
 
+type DeviceReply = Parameters<typeof replyToDeviceTask>[1];
+
 function RunView({
   run,
   busy,
   onReply,
   onStop,
+  onDeviceReply,
 }: {
   run: AutomationRun;
   busy: boolean;
   onReply: (reply: Parameters<typeof replyToAutomationRun>[1]) => void;
   onStop: () => void;
+  onDeviceReply: (taskId: string, action: DeviceReply) => void;
 }) {
   const active = ACTIVE_RUN.includes(run.status);
   return (
@@ -371,24 +461,116 @@ function RunView({
       </ol>
       {run.status === "needs_approval" && run.pending && <ApprovalCard run={run} busy={busy} onReply={onReply} />}
       {run.status === "needs_input" && run.pending && <QuestionCard question={run.pending.question ?? ""} busy={busy} onReply={onReply} />}
-      {run.status === "waiting_device" && (
-        <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
-          <p className="flex items-start gap-1.5">
-            <Monitor className="mt-0.5 size-3.5 shrink-0" />
-            <span>
-              Do these steps on your computer: <b>{run.pending?.steps}</b>
-              {run.pending?.device_run_id
-                ? " The MindLoom Mac app or Chrome extension will guide you through them."
-                : ""}
-            </span>
-          </p>
-          <button type="button" disabled={busy} onClick={() => onReply({ action: "continue" })} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
-            Done, continue
-          </button>
-        </div>
-      )}
+      {run.status === "waiting_device" &&
+        (run.device_task ? (
+          <DeviceTaskCard
+            task={run.device_task}
+            busy={busy}
+            onReply={(action) => onDeviceReply(run.device_task!.task_id, action)}
+            onDoneMyself={() => onReply({ action: "continue" })}
+          />
+        ) : (
+          <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+            <p className="flex items-start gap-1.5">
+              <Monitor className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                Do these steps on your computer: <b>{run.pending?.steps}</b>
+                {run.pending?.details ? <> ({run.pending.details})</> : null}. To let MindLoom do them next
+                time, allow the apps under <b>On your Mac</b>.
+              </span>
+            </p>
+            <button type="button" disabled={busy} onClick={() => onReply({ action: "continue" })} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
+              Done, continue
+            </button>
+          </div>
+        ))}
       {run.summary && !active && <p className="text-xs">{run.summary}</p>}
       {run.error && <p className="text-xs text-destructive">{run.error}</p>}
+    </div>
+  );
+}
+
+const STALE_MS = 2 * 60_000;
+
+/** Live view of the Mac doing its part: what it's doing, and anything waiting on you. */
+function DeviceTaskCard({
+  task,
+  busy,
+  onReply,
+  onDoneMyself,
+}: {
+  task: DeviceTask;
+  busy: boolean;
+  onReply: (action: DeviceReply) => void;
+  onDoneMyself: () => void;
+}) {
+  const apps = task.allowed_apps.join(", ");
+  const quiet = Date.now() - new Date(task.updated_at).getTime() > STALE_MS;
+  const actions = task.log.filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person").slice(-8);
+  return (
+    <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
+      <p className="flex items-start gap-1.5">
+        <Monitor className="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          {task.status === "pending" ? (
+            <>
+              Waiting for Loom Capture on your Mac to start <b>{task.title}</b> in {apps}.
+              {quiet && " Open Loom Capture and sign in; it picks up tasks from the last 30 minutes."}
+            </>
+          ) : task.status === "running" ? (
+            <>
+              MindLoom is working in {apps} on your Mac: <b>{task.title}</b>.
+              {quiet && " Loom Capture hasn't reported for a while; check it's still open."}
+            </>
+          ) : task.status === "needs_approval" ? (
+            <>MindLoom wants to do something on your Mac that may not be undoable.</>
+          ) : task.status === "needs_person" ? (
+            <>MindLoom needs you to do something on your Mac.</>
+          ) : (
+            <>{task.summary || task.error || "Finished on your Mac."}</>
+          )}
+        </span>
+      </p>
+      {actions.length > 0 && (
+        <ol className="space-y-0.5 border-l-2 border-amber-300 pl-2">
+          {actions.map((entry, i) => (
+            <li key={i} className={cn(entry.status === "error" && "text-destructive", entry.status === "rejected" && "line-through")}>
+              {entry.summary}
+              {entry.status === "error" && entry.result ? ` (${entry.result})` : ""}
+            </li>
+          ))}
+        </ol>
+      )}
+      {task.status === "needs_approval" && task.pending && (
+        <div className="space-y-2 rounded-md border-2 border-primary bg-brand-50 p-2">
+          <p className="font-semibold">Approve: {task.pending.description}</p>
+          {task.pending.reason && <p className="text-muted-foreground">{task.pending.reason}</p>}
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => onReply("approve")} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
+              Approve
+            </button>
+            <button type="button" disabled={busy} onClick={() => onReply("reject")} className="rounded-md border border-border bg-background px-2.5 py-1">
+              Reject
+            </button>
+          </div>
+        </div>
+      )}
+      {task.status === "needs_person" && task.pending && (
+        <div className="space-y-2 rounded-md border-2 border-primary bg-brand-50 p-2">
+          <p className="font-semibold">{task.pending.instruction}</p>
+          <div className="flex gap-2">
+            <button type="button" disabled={busy} onClick={() => onReply("done")} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
+              Done
+            </button>
+            <button type="button" disabled={busy} onClick={() => onReply("cant")} className="rounded-md border border-border bg-background px-2.5 py-1">
+              I can't
+            </button>
+          </div>
+        </div>
+      )}
+      <button type="button" disabled={busy} onClick={onDoneMyself} className="text-muted-foreground underline-offset-2 hover:underline">
+        I did these steps myself, continue
+      </button>
     </div>
   );
 }

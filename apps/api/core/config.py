@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str = Field(..., description="API key used for OpenAI embeddings and chat completions.")
+    anthropic_api_key: str = Field(
+        default="",
+        description=(
+            "Optional Claude API key used for organizations that select Claude "
+            "without saving a key of their own."
+        ),
+    )
     local_llm_api_key: str = Field(
         default="local",
         description="Optional bearer token for an OpenAI-compatible local LLM endpoint.",

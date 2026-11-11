@@ -104,10 +104,29 @@ async def test_provider_switches_from_default_openai_to_local(monkeypatch) -> No
     assert (await llm_provider.get_llm_configuration("org")).provider == "openai"
 
     row = {"provider": "local", "base_url": "http://llm/v1", "model": "qwen",
-           "context_window": 8192, "supports_tools": False}
+           "context_window": 8192, "supports_tools": False, "api_key": None}
     monkeypatch.setattr(llm_provider, "get_session_factory", lambda: _factory_for(row))
     config = await llm_provider.get_llm_configuration("org")
     assert (config.provider, config.model, config.context_window) == ("local", "qwen", 8192)
+
+
+@pytest.mark.asyncio
+async def test_an_organization_can_connect_its_own_claude(monkeypatch) -> None:
+    row = {"provider": "anthropic", "base_url": None, "model": None,
+           "context_window": 200_000, "supports_tools": True, "api_key": "sk-ant-test"}
+    monkeypatch.setattr(llm_provider, "get_session_factory", lambda: _factory_for(row))
+    config = await llm_provider.get_llm_configuration("org")
+    assert (config.provider, config.model, config.api_key) == (
+        "anthropic", llm_provider.DEFAULT_ANTHROPIC_MODEL, "sk-ant-test"
+    )
+    # The key never appears when the configuration is logged.
+    assert "sk-ant-test" not in repr(config)
+
+    from core.anthropic_adapter import AnthropicClientAdapter
+
+    client = await llm_provider.get_llm_client("org")
+    assert isinstance(client, AnthropicClientAdapter)
+    assert client.configuration.model == llm_provider.DEFAULT_ANTHROPIC_MODEL
 
 
 @pytest.mark.asyncio
@@ -303,3 +322,27 @@ async def test_adapter_drops_rejected_response_format() -> None:
     )
     assert result == "ok"
     assert "response_format" not in create.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_self_hosted_model_gets_the_organizations_own_token(monkeypatch) -> None:
+    row = {"provider": "local", "base_url": "https://llm.acme.example/v1", "model": "qwen",
+           "context_window": 8192, "supports_tools": True, "api_key": "acme-token"}
+    monkeypatch.setattr(llm_provider, "get_session_factory", lambda: _factory_for(row))
+    monkeypatch.setattr(llm_provider, "get_settings", lambda: SimpleNamespace(
+        local_llm_api_key="operator-token", local_llm_timeout_seconds=5, openai_api_key="sk-platform",
+        openai_request_timeout_seconds=5, local_llm_allowed_hosts="",
+    ))
+
+    async def untrusted(_url):  # a public address the operator has not listed
+        return False
+
+    monkeypatch.setattr(llm_provider, "vet_local_base_url", untrusted)
+    client = await llm_provider.get_llm_client("org")
+    assert client._client.api_key == "acme-token"
+    assert str(client._client.base_url).startswith("https://llm.acme.example/v1")
+
+    # Without its own token, the operator's token still never leaves for an unlisted host.
+    row["api_key"] = None
+    client = await llm_provider.get_llm_client("org")
+    assert client._client.api_key == "not-sent"

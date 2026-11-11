@@ -1,8 +1,11 @@
-"""Organization-selectable chat-completion provider.
+"""Organization-selectable chat-completion provider: the AI connection layer.
 
-Local servers must expose the OpenAI-compatible ``/v1/models`` and
-``/v1/chat/completions`` endpoints. The OpenAI SDK supplies an identical
-response and streaming contract for both providers.
+An organization answers with MindLoom's default OpenAI model, with its own
+OpenAI or Claude (Anthropic) account by saving an API key, or with a
+self-hosted model. Every caller uses ``chat.completions.create`` whichever is
+connected: OpenAI and local servers (which must expose the OpenAI-compatible
+``/v1/models`` and ``/v1/chat/completions`` endpoints) go through the OpenAI
+SDK, and Claude goes through ``core.anthropic_adapter``.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import contextvars
 import json
 import logging
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterator, Literal
 
 import httpx
@@ -24,8 +27,11 @@ from core.database import get_session_factory
 
 logger = logging.getLogger(__name__)
 
-Provider = Literal["openai", "local"]
+Provider = Literal["openai", "anthropic", "local"]
 DEFAULT_OPENAI_MODEL = "gpt-6-luna"
+DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
+# Claude's window is far larger; this bounds what one request can cost.
+ANTHROPIC_CONTEXT_WINDOW = 200_000
 _DEFAULT_OPENAI_MODEL = DEFAULT_OPENAI_MODEL  # backwards-compatible alias
 
 
@@ -43,6 +49,8 @@ class LLMConfiguration:
     reasoning_effort: str | None = "none"
     # Used when ``model`` is rejected as unknown (e.g. a routed tier's model id).
     fallback_model: str | None = None
+    # The organization's own provider key, decrypted. Never serialized or logged.
+    api_key: str | None = field(default=None, repr=False)
 
 
 # A model chosen for the current Ask/workspace turn (see core.model_router). Every
@@ -76,16 +84,21 @@ async def get_llm_configuration(org_id: str) -> LLMConfiguration:
     factory = get_session_factory()
     async with factory() as session:
         row = (await session.execute(text("""
-            SELECT provider, base_url, model, context_window, supports_tools
+            SELECT provider, base_url, model, context_window, supports_tools, api_key
             FROM organization_llm_settings WHERE org_id=:org_id
         """), {"org_id": org_id})).mappings().one_or_none()
     if row is None:
         return LLMConfiguration(model=default_openai_model())
+    from core.token_crypto import decrypt_token
+
+    is_claude = row["provider"] == "anthropic"
     return LLMConfiguration(
         provider=row["provider"], base_url=row["base_url"],
-        model=row["model"] or default_openai_model(),
+        model=row["model"] or (DEFAULT_ANTHROPIC_MODEL if is_claude else default_openai_model()),
         context_window=int(row["context_window"]),
         supports_tools=bool(row["supports_tools"]),
+        reasoning_effort="medium" if is_claude else "none",
+        api_key=decrypt_token(row["api_key"]) or None,
     )
 
 
@@ -300,8 +313,21 @@ class LLMClientAdapter:
         ))
 
 
-async def get_llm_client(org_id: str) -> LLMClientAdapter:
+async def get_llm_client(org_id: str) -> Any:
+    """The chat client for the AI this organization has connected."""
+
     config = await get_llm_configuration(org_id)
+    if config.provider == "anthropic":
+        from anthropic import AsyncAnthropic
+
+        from core.anthropic_adapter import AnthropicClientAdapter
+
+        api_key = config.api_key or get_settings().anthropic_api_key
+        if not api_key:
+            raise LLMProviderError(
+                "Claude is selected but no API key is saved. Add one in AI provider settings."
+            )
+        return AnthropicClientAdapter(AsyncAnthropic(api_key=api_key), config)
     turn = _TURN_MODEL.get()
     if turn is not None and config.provider == "openai":
         model, effort = turn
@@ -315,8 +341,10 @@ async def get_llm_client(org_id: str) -> LLMClientAdapter:
     trusted = await vet_local_base_url(config.base_url or "") if config.provider == "local" else True
     client = AsyncOpenAI(
         api_key=(
-            (settings.local_llm_api_key if trusted else "not-sent")
-            if config.provider == "local" else settings.openai_api_key
+            # The organization's own token for its own endpoint; the operator's
+            # token only ever goes to operator-listed hosts.
+            (config.api_key or (settings.local_llm_api_key if trusted else "not-sent"))
+            if config.provider == "local" else (config.api_key or settings.openai_api_key)
         ),
         base_url=config.base_url if config.provider == "local" else None,
         timeout=(settings.local_llm_timeout_seconds if config.provider == "local" else settings.openai_request_timeout_seconds),
@@ -382,11 +410,14 @@ async def vet_local_base_url(base_url: str) -> bool:
     return trusted
 
 
-async def check_local_endpoint(base_url: str) -> None:
+async def check_local_endpoint(base_url: str, api_key: str | None = None) -> None:
+    """Reach a self-hosted endpoint, with the organization's own token when it has one."""
+
     url = f"{base_url.rstrip('/')}/models"
     settings = get_settings()
     trusted = await vet_local_base_url(base_url)
-    headers = {"Authorization": f"Bearer {settings.local_llm_api_key}"} if trusted else {}
+    token = api_key or (settings.local_llm_api_key if trusted else None)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         async with httpx.AsyncClient(
             timeout=settings.local_llm_timeout_seconds, follow_redirects=False
@@ -396,6 +427,22 @@ async def check_local_endpoint(base_url: str) -> None:
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         raise LLMProviderError(
-            "Cannot reach an OpenAI-compatible LLM at that address"
+            "That address rejected the access token." if status in (401, 403)
+            else "Cannot reach an OpenAI-compatible LLM at that address"
             + (f" (HTTP {status})." if status else ".")
+        ) from exc
+
+
+async def check_openai_key(api_key: str, model: str) -> None:
+    """Confirm an organization's own OpenAI key works and can see ``model``."""
+
+    client = AsyncOpenAI(api_key=api_key, timeout=20.0, max_retries=1)
+    try:
+        await client.models.retrieve(model)
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        raise LLMProviderError(
+            "OpenAI rejected the API key." if status in (401, 403)
+            else f"OpenAI does not have a model named '{model}'." if status == 404
+            else "Could not verify the OpenAI API key. Try again shortly."
         ) from exc

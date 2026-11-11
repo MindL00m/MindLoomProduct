@@ -1,11 +1,15 @@
 import { apiFetch } from "@/lib/api";
 
 export interface LLMSettings {
-  provider: "openai" | "local";
+  provider: "openai" | "anthropic" | "local";
   base_url: string | null;
   model: string;
   context_window: number;
   supports_tools: boolean;
+  /** Whether the organization has saved its own provider key. The key itself is never returned. */
+  has_api_key?: boolean;
+  /** Write-only: a new key to save. Omit to keep the saved one; "" removes it. */
+  api_key?: string | null;
 }
 
 export async function getLLMSettings(): Promise<LLMSettings> {

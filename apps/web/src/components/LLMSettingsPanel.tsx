@@ -5,6 +5,14 @@ import { getLLMSettings, saveLLMSettings, type LLMSettings } from "@/services/ll
 
 /** Keep in sync with DEFAULT_OPENAI_MODEL in apps/api/core/llm_provider.py. */
 export const DEFAULT_OPENAI_MODEL = "gpt-6-luna";
+/** Keep in sync with DEFAULT_ANTHROPIC_MODEL in apps/api/core/llm_provider.py. */
+export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5";
+
+const PROVIDER_DEFAULTS: Record<LLMSettings["provider"], Partial<LLMSettings>> = {
+  openai: { model: DEFAULT_OPENAI_MODEL, context_window: 128000 },
+  anthropic: { model: DEFAULT_ANTHROPIC_MODEL, context_window: 200000, supports_tools: true },
+  local: {},
+};
 
 const defaults: LLMSettings = {
   provider: "openai", base_url: null, model: DEFAULT_OPENAI_MODEL,
@@ -13,6 +21,7 @@ const defaults: LLMSettings = {
 
 export function LLMSettingsPanel() {
   const [settings, setSettings] = useState(defaults);
+  const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -23,8 +32,10 @@ export function LLMSettingsPanel() {
   async function save() {
     setSaving(true); setStatus("Checking provider…");
     try {
-      setSettings(await saveLLMSettings(settings));
-      setStatus("LLM settings saved.");
+      // Only send a key when one was typed, so saving other fields keeps the saved key.
+      setSettings(await saveLLMSettings({ ...settings, api_key: apiKey.trim() || undefined }));
+      setApiKey("");
+      setStatus("AI provider connected and saved.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not save settings.");
     } finally { setSaving(false); }
@@ -32,9 +43,9 @@ export function LLMSettingsPanel() {
 
   return (
     <section className="rounded-lg border border-border bg-card p-5">
-      <h3 className="flex items-center gap-2 text-lg font-semibold"><Bot className="size-5" />Chat model</h3>
-      <p className="mt-1 text-sm text-muted-foreground">Organization-wide provider used by Ask. Local endpoints must expose an OpenAI-compatible API.</p>
-      {settings.provider === "openai" && (
+      <h3 className="flex items-center gap-2 text-lg font-semibold"><Bot className="size-5" />AI provider</h3>
+      <p className="mt-1 text-sm text-muted-foreground">The AI your organization's assistant runs on. Connect your own Claude or OpenAI account with an API key, or your own self-hosted model (vLLM, Ollama, LM Studio, or anything else with an OpenAI-compatible API).</p>
+      {settings.provider === "openai" && !settings.has_api_key && (
         <p className="mt-2 text-sm text-muted-foreground">
           {settings.model === DEFAULT_OPENAI_MODEL
             ? `Automatic: Ask and Workspaces pick a model for each question by difficulty, starting from ${DEFAULT_OPENAI_MODEL}.`
@@ -46,14 +57,21 @@ export function LLMSettingsPanel() {
           <select className="mt-1 w-full rounded-md border border-border bg-background p-2" value={settings.provider}
             onChange={(e) => {
               const provider = e.target.value as LLMSettings["provider"];
-              setSettings({ ...settings, provider, model: provider === "openai" ? DEFAULT_OPENAI_MODEL : settings.model });
+              setApiKey("");
+              setSettings({ ...settings, ...PROVIDER_DEFAULTS[provider], provider, has_api_key: false });
             }}>
-            <option value="openai">OpenAI</option><option value="local">Local / self-hosted</option>
+            <option value="openai">OpenAI</option><option value="anthropic">Claude (Anthropic)</option><option value="local">Local / self-hosted</option>
           </select>
         </label>
         <label className="text-sm font-medium">Model
           <input className="mt-1 w-full rounded-md border border-border bg-background p-2" value={settings.model}
             onChange={(e) => setSettings({ ...settings, model: e.target.value })} />
+        </label>
+        <label className="text-sm font-medium md:col-span-2">{settings.provider === "anthropic" ? "Claude API key" : settings.provider === "local" ? "Access token (optional)" : "OpenAI API key (optional)"}
+            <input type="password" autoComplete="off" className="mt-1 w-full rounded-md border border-border bg-background p-2"
+              placeholder={settings.has_api_key ? "A key is saved. Enter a new one to replace it." : settings.provider === "anthropic" ? "sk-ant-…" : settings.provider === "local" ? "Bearer token your model server expects, if any" : "Leave empty to use MindLoom's OpenAI account"}
+              value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">Stored encrypted and never shown again. It is checked with the provider when you save.</span>
         </label>
         {settings.provider === "local" && <>
           <label className="text-sm font-medium md:col-span-2">Base URL

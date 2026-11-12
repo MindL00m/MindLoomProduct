@@ -46,9 +46,10 @@ DENIED_SITES = frozenset({
 
 ACTION_TOOLS = frozenset({
     "open_url", "switch_tab", "press", "set_value", "select_option", "type_text", "key",
-    "hover", "scroll", "wait", "read", "answer_dialog", "go_back",
+    "hover", "scroll", "wait", "read", "answer_dialog", "go_back", "upload_file", "download_file",
+    "look", "click_at",
 })
-REF_TOOLS = frozenset({"press", "set_value", "select_option", "hover", "read"})
+REF_TOOLS = frozenset({"press", "set_value", "select_option", "hover", "read", "upload_file", "download_file"})
 # While a page dialog (alert / confirm) is open nothing else on the page responds.
 DIALOG_TOOLS = frozenset({"answer_dialog"})
 
@@ -88,7 +89,14 @@ How to act:
 - Fields marked (secure) are passwords, codes or card numbers: never fill them.
   Sign-in pages, two-factor codes and CAPTCHAs are for the person: call ask_person with
   one clear instruction and wait.
-- File uploads and downloads are for the person: call ask_person.
+- Files: upload_file puts a file from the person's MindLoom Files into the page's file
+  chooser (give the ref of the chooser, or of the button or drop area that opens it); the
+  person approves it first. download_file clicks a download or export control and saves
+  what comes down to MindLoom Files, and its result gives the saved name.
+- Pages drawn as a picture (spreadsheets, diagrams, maps, some reports) show few or no
+  controls in the outline. Call look to see the page, then click_at with the x and y of
+  the spot in that picture, and type_text or key to type there. Look again after acting.
+  Use the outline and refs whenever the control is listed: they are exact.
 - Use the exact values you were given. Never guess names, amounts, dates, codes or
   addresses; call ask_person instead.
 - When the steps are done, call done with a short summary that includes every value
@@ -124,6 +132,17 @@ TOOLS: list[dict[str, Any]] = [
           {"seconds": {"type": "number"}}, ["seconds"]),
     _tool("read", "Get the full text of an element (a table, a list, a section), beyond the outline.",
           {"ref": _REF}, ["ref"]),
+    _tool("upload_file", "Attach a file from the person's MindLoom Files to the page (waits for approval).",
+          {"ref": _REF, "file_name": {"type": "string", "description": "The file's name in MindLoom Files."}},
+          ["ref", "file_name"]),
+    _tool("download_file", "Click a download or export control and save the file to MindLoom Files.",
+          {"ref": _REF, "save_as": {"type": "string", "description": "Name to save it under (optional)."},
+           "irreversible": _IRREVERSIBLE}, ["ref"]),
+    _tool("look", "See the page as a picture, for parts drawn on a canvas that the outline does not list.",
+          {}, []),
+    _tool("click_at", "Click a spot in the latest picture from look.",
+          {"x": {"type": "number"}, "y": {"type": "number"}, "double": {"type": "boolean"},
+           "irreversible": _IRREVERSIBLE}, ["x", "y"]),
     _tool("answer_dialog", "Answer the page's dialog (alert or confirm): accept is OK, otherwise Cancel.",
           {"accept": {"type": "boolean"}}, ["accept"]),
     _tool("ask_person", "Pause and ask the person to do one thing in Chrome, then continue.",
@@ -353,7 +372,7 @@ def validate_action(
         if ref not in tabs:
             return f"No tab {ref or '(none)'}. Open tabs: {', '.join(tabs) or 'none'}."
         return None
-    if name in {"wait", "go_back"}:
+    if name in {"wait", "go_back", "look"}:
         return None
     current = str(observation.get("url") or "")
     if not url_allowed(current, allowed):
@@ -370,6 +389,15 @@ def validate_action(
             return "The focused field is a password, code or card field. Never type into it: call ask_person."
     if name in {"set_value", "type_text"} and len(str(args.get("text") or "")) > 20_000:
         return "Text too long (20,000 characters at most)."
+    if name == "upload_file" and not str(args.get("file_name") or "").strip():
+        return "Give the file's name in MindLoom Files."
+    if name == "click_at":
+        try:
+            x, y = float(args.get("x")), float(args.get("y"))
+        except (TypeError, ValueError):
+            return "Give x and y as numbers, in the pixels of the latest picture from look."
+        if not (0 <= x <= 10_000 and 0 <= y <= 10_000):
+            return "x and y must be inside the picture from look."
     if name == "select_option" and not str(args.get("option") or "").strip():
         return "Give the choice's text."
     if name == "scroll" and args.get("direction") not in {"up", "down", "top", "bottom"}:
@@ -393,11 +421,15 @@ def irreversible_reason(
         if args.get("accept") is True and dialog["type"] != "alert":
             return f"The page asks “{dialog['message'][:200]}” and OK may not be undoable"
         return None
-    if name not in {"press", "key"}:
+    if name == "upload_file":
+        return f"It sends “{str(args.get('file_name') or '')[:120]}” from MindLoom Files to this site"
+    if name not in {"press", "key", "download_file", "click_at"}:
         return None
     if args.get("irreversible") is True:
         return "MindLoom marked it as not undoable"
-    if name == "press":
+    if name == "click_at":
+        return None  # the extension checks what is under the spot before it clicks
+    if name in {"press", "download_file"}:
         label = str((elements.get(str(args.get("ref") or "")) or {}).get("label") or "")
         return f"“{label}” looks like it can't be undone" if looks_irreversible(label) else None
     combo = normalize_combo(str(args.get("combo") or ""))
@@ -444,6 +476,14 @@ def describe(
         return f"Wait {args.get('seconds')} s"
     if name == "read":
         return f"Read {target()}"
+    if name == "upload_file":
+        return f"Upload “{str(args.get('file_name') or '')[:120]}” with {target()}"
+    if name == "download_file":
+        return f"Download with {target()}" + (f" as “{str(args.get('save_as'))[:120]}”" if args.get("save_as") else "")
+    if name == "look":
+        return "Look at the page as a picture"
+    if name == "click_at":
+        return f"{'Double-click' if args.get('double') else 'Click'} at ({args.get('x')}, {args.get('y')}) in the picture"
     if name == "answer_dialog":
         dialog = _dialog(observation) or {"message": ""}
         return f"Answer “{dialog['message'][:160]}” with {'OK' if args.get('accept') else 'Cancel'}"

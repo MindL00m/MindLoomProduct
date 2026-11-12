@@ -67,7 +67,7 @@ export type DeviceTaskStatus =
 
 export interface DeviceTaskLogEntry {
   at: string;
-  kind: "start" | "claim" | "action" | "approval" | "person" | "finish" | "stop";
+  kind: "start" | "claim" | "action" | "approval" | "person" | "record" | "finish" | "stop";
   tool?: string;
   status: "ok" | "error" | "pending" | "rejected";
   summary?: string;
@@ -91,6 +91,8 @@ export interface DeviceTask {
   summary: string | null;
   error: string | null;
   steps: number;
+  /** When the task repeats its steps over many records: how many are done. */
+  progress?: { done: number; total: number };
   created_at: string;
   updated_at: string;
 }

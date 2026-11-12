@@ -458,6 +458,15 @@
       if (!elements.some((element) => element.n === n)) registry.delete(n);
     }
 
+    // A page drawn as a picture: the outline can't list what is inside a canvas.
+    const viewport = window.innerWidth * window.innerHeight;
+    const drawn = [...document.querySelectorAll("canvas")].some((canvas) => {
+      if (!visible(canvas)) return false;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0);
+      const height = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+      return width > 0 && height > 0 && width * height > viewport * 0.25;
+    });
     const scroller = document.scrollingElement || document.documentElement;
     const recent = toasts.filter((toast) => Date.now() - toast.at < 20_000).map((toast) => toast.text);
     toasts.length = 0;
@@ -472,6 +481,7 @@
       dropped,
       truncated,
       modal: Boolean(dialog),
+      drawn,
       more: {
         above: scroller.scrollTop > 4,
         below: scroller.scrollTop + window.innerHeight < scroller.scrollHeight - 4,
@@ -547,7 +557,11 @@
     const element = found.element;
     const target = clickTarget(element);
     target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    // A frame, when the tab is drawing; a hidden tab draws none, so never wait on it alone.
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => resolve());
+      setTimeout(resolve, 120);
+    });
     if (!visible(target)) return { ok: false, error: "That control is not visible any more." };
     const rect = target.getBoundingClientRect();
     const x = Math.min(Math.max(rect.left + rect.width / 2, 1), window.innerWidth - 1);
@@ -820,8 +834,104 @@
     subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class", "style", "hidden", "aria-hidden"],
   });
 
+  // --- Files --------------------------------------------------------------------------------
+
+  /** The file chooser this control is, holds, or opens: the nearest one around it. */
+  function fileInputNear(element) {
+    const isChooser = (node) => node instanceof HTMLInputElement && node.type === "file";
+    if (isChooser(element)) return element;
+    if (element instanceof HTMLLabelElement && isChooser(element.control)) return element.control;
+    const inside = element.querySelector?.('input[type="file"]');
+    if (inside) return inside;
+    for (let node = element.parentElement, level = 0; node && level < 6; node = node.parentElement, level += 1) {
+      const found = node.querySelectorAll('input[type="file"]');
+      if (found.length === 1) return found[0];
+      if (found.length > 1) return null; // several choosers here: the ref must name one
+    }
+    const all = document.querySelectorAll('input[type="file"]');
+    return all.length === 1 ? all[0] : null;
+  }
+
+  /** Put a file into the page's file chooser, as if the person had picked it. */
+  function attachFile(n, gen, file) {
+    const found = lookup(n, gen);
+    if (found.error) return { ok: false, error: found.error };
+    const input = fileInputNear(found.element);
+    if (!input) {
+      return { ok: false, error: `No file chooser at ${describeElement(found.element)}. Use the ref of the chooser or of the button that opens it.` };
+    }
+    if (input.disabled) return { ok: false, error: "That file chooser is disabled." };
+    const accept = (input.getAttribute("accept") || "").toLowerCase().split(",").map((part) => part.trim()).filter(Boolean);
+    const extension = `.${file.name.split(".").pop().toLowerCase()}`;
+    const fits = !accept.length || accept.some((rule) =>
+      rule === extension || rule === file.type || (rule.endsWith("/*") && file.type.startsWith(rule.slice(0, -1))));
+    if (!fits) return { ok: false, error: `This chooser only takes ${accept.join(", ")}; “${file.name}” is not one of those.` };
+    const binary = atob(file.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], file.name, { type: file.type || "application/octet-stream" }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+    return { ok: input.files.length === 1, chosen: input.files[0]?.name || "", label: nameOf(found.element) };
+  }
+
+  /** The address a download control points at, when it is a plain link. */
+  function downloadLink(n, gen) {
+    const found = lookup(n, gen);
+    if (found.error) return { ok: false, error: found.error };
+    const link = found.element.closest?.("a[href]");
+    if (!link || !/^https?:$/.test(link.protocol)) return { ok: true, href: "" };
+    return { ok: true, href: link.href, name: link.getAttribute("download") || "" };
+  }
+
+  /** The bytes behind a blob: address the page made for a download, as base64. */
+  async function readBlob(url, limit) {
+    try {
+      const blob = await (await fetch(url)).blob();
+      if (blob.size > limit) return { ok: false, error: "The file is too large." };
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = "";
+      for (let index = 0; index < bytes.length; index += 0x8000) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
+      }
+      return { ok: true, base64: btoa(binary), type: blob.type, size: blob.size };
+    } catch (error) {
+      return { ok: false, error: `The page no longer holds the file (${error?.message || error}).` };
+    }
+  }
+
+  // --- Pages drawn as a picture ---------------------------------------------------------------
+
+  function viewportInfo() {
+    return { width: window.innerWidth, height: window.innerHeight, ratio: window.devicePixelRatio || 1 };
+  }
+
+  /** What is under a spot of the viewport, for the checks before a click by position. */
+  function pointInfo(x, y) {
+    const element = deepElementFromPoint(x, y);
+    if (!element) return { ok: false, error: "That spot is outside the page." };
+    let control = element;
+    for (let node = element, level = 0; node instanceof Element && level < 5; node = composedParent(node), level += 1) {
+      if (isInteractive(node)) {
+        control = node;
+        break;
+      }
+    }
+    return {
+      ok: true,
+      tag: element.tagName.toLowerCase(),
+      frame: element.tagName === "IFRAME" || element.tagName === "FRAME",
+      role: roleOf(control),
+      label: nameOf(control),
+      secure: isSecure(control),
+      disabled: Boolean(control.disabled || control.getAttribute("aria-disabled") === "true"),
+    };
+  }
+
   window.__mindloomDriver = {
     outline: buildOutline, locate, armProbe, probeHit, domClick, focusForTyping, readValue, fillValue,
-    chooseOption, readText, scrollBy, focusInfo, settle,
+    chooseOption, readText, scrollBy, focusInfo, settle, attachFile, downloadLink, readBlob, viewportInfo, pointInfo,
   };
 })();

@@ -15,6 +15,7 @@
 //   the action arrives approved; the same for Enter in a form with such a button and for
 //   OK on a confirm dialog;
 // - password, one-time-code and card fields are never read or typed into;
+// - a file goes from MindLoom Files to a page only when the upload arrives approved;
 // - cancelling Chrome's "started debugging" bar stops the task and its run.
 //
 // Loaded into the service worker by background.js after run-client.js and task-policy.js
@@ -34,6 +35,11 @@ const MAX_TASK_TABS = 8;
 const SCRIPT_TIMEOUT_MS = 8_000;
 const CDP_TIMEOUT_MS = 6_000;
 const READ_LIMIT = 8_000;
+const MAX_UPLOAD_BYTES = 8_000_000; // into a page
+const MAX_DOWNLOAD_BYTES = 15_000_000; // into MindLoom Files (the API's own limit)
+const DOWNLOAD_WAIT_MS = 12_000;
+const PICTURE_MAX_WIDTH = 1_280;
+const PICTURE_MAX_CHARS = 1_400_000;
 const MAX_LOOP_FAILURES = 12;
 
 let taskPollTimer = null;
@@ -137,7 +143,7 @@ function showTaskBadge(waiting) {
 async function driveTask(taskId, tabId, resumed) {
   work = {
     taskId, tabId: tabId ?? null, allowed: [], ownOrigins: [], refs: new Map(), tabRefs: new Map(),
-    dialog: null, attachedTabId: null, status: "running",
+    dialog: null, attachedTabId: null, status: "running", download: null, picture: null,
   };
   await saveWork();
   let result = resumed
@@ -334,6 +340,7 @@ async function observe() {
       });
     }
     if (frameId === 0 && snapshot.modal) lines.push("A dialog is in front of the page; only the dialog is listed.");
+    if (snapshot.drawn) lines.push("(part of this page is drawn as a picture and is not in this outline: use look to see it and click_at to click in it)");
     if (snapshot.dropped.above) lines.push(`… ${snapshot.dropped.above} more lines above: scroll up to see them`);
     else if (frameId === 0 && snapshot.more.above) lines.push("(the page continues above: scroll up for more)");
     for (const line of snapshot.lines) {
@@ -396,6 +403,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     work.dialog = { type: String(params.type || "alert").slice(0, 20), message: String(params.message || "").slice(0, 1500) };
   } else if (method === "Page.javascriptDialogClosed") {
     work.dialog = null;
+  } else if (method === "Page.downloadWillBegin") {
+    work.download = { url: String(params.url || ""), name: String(params.suggestedFilename || "") };
   }
 });
 
@@ -594,6 +603,185 @@ async function switchTab(action) {
   return done(`Now working in the tab “${String(tab.title || "").slice(0, 120)}”.`);
 }
 
+// --- Files: from MindLoom Files into a page, and from a page into MindLoom Files --------------
+
+function toBase64(bytes) {
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function fromBase64(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function apiRequest(path, init = {}) {
+  const { apiBase, accessToken } = await getApiConfig();
+  return fetch(`${apiBase}${path}`, { ...init, headers: { Authorization: `Bearer ${accessToken}`, ...(init.headers || {}) } });
+}
+
+async function uploadFile(action) {
+  const wanted = String(action.args?.file_name || "").trim();
+  // A company file leaves MindLoom here: never without the person's approval.
+  if (!action.approved) {
+    return failed(`It sends “${wanted}” from MindLoom Files to this site`, { blocked: "needs_approval" });
+  }
+  const { entry, located, failure } = await locateForAction(action);
+  if (failure) return failure;
+  const listing = await apiRequest("/loombot/files");
+  if (!listing.ok) return failed("MindLoom Files could not be read.");
+  const files = await listing.json();
+  const lower = wanted.toLowerCase();
+  const exact = files.filter((file) => String(file.name).toLowerCase() === lower);
+  const loose = exact.length ? exact : files.filter((file) => String(file.name).toLowerCase().includes(lower));
+  if (loose.length !== 1) {
+    return failed(
+      loose.length
+        ? `Several files match “${wanted}”: ${loose.slice(0, 8).map((file) => file.name).join(", ")}. Give the exact name.`
+        : `No file named “${wanted}” in MindLoom Files. Files there: ${files.slice(0, 15).map((file) => file.name).join(", ") || "none"}.`,
+    );
+  }
+  const file = loose[0];
+  if (file.size_bytes > MAX_UPLOAD_BYTES) return failed(`“${file.name}” is too large to attach this way (8 MB at most). Ask the person to attach it.`);
+  const response = await apiRequest(`/loombot/files/${encodeURIComponent(file.file_id)}/download`);
+  if (!response.ok) return failed(`“${file.name}” could not be fetched from MindLoom Files.`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length > MAX_UPLOAD_BYTES) return failed(`“${file.name}” is too large to attach this way (8 MB at most).`);
+  const attached = await driver(entry.frameId, "attachFile", [entry.n, entry.generation, {
+    name: file.name, type: String(file.mime_type || response.headers.get("Content-Type") || "").split(";")[0], base64: toBase64(bytes),
+  }]);
+  if (!attached?.ok) return failed(attached?.error || "The page did not take the file.");
+  await settlePage();
+  return done(`Attached “${attached.chosen}” (${Math.ceil(bytes.length / 1024)} KB) at “${located.label || located.role}”. Check the page shows it.`);
+}
+
+async function saveToFiles(bytes, name, type) {
+  const form = new FormData();
+  form.append("file", new Blob([bytes], { type: type || "application/octet-stream" }), name);
+  form.append("auto_rename", "true");
+  const response = await apiRequest("/loombot/files/upload", { method: "POST", body: form });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(typeof body.detail === "string" ? body.detail : `MindLoom Files answered ${response.status}`);
+  }
+  return response.json();
+}
+
+function nameFromAddress(url) {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").filter(Boolean).pop() || "");
+  } catch {
+    return "";
+  }
+}
+
+async function downloadFile(action) {
+  const { entry, located, failure } = await locateForAction(action);
+  if (failure) return failure;
+  if (looksIrreversible(located.label) && !action.approved) {
+    return failed(`“${located.label}” looks like it can't be undone`, { blocked: "needs_approval" });
+  }
+  // A plain link is fetched as it is; anything else is clicked and the download watched for.
+  const link = await driver(entry.frameId, "downloadLink", [entry.n, entry.generation]);
+  let source = link?.href ? { url: link.href, name: link.name } : null;
+  if (!source) {
+    work.download = null;
+    const clicked = await clickControl(action);
+    if (!clicked.ok) return clicked;
+    const deadline = Date.now() + DOWNLOAD_WAIT_MS;
+    while (!work.download && !work.dialog && Date.now() < deadline) await sleep(100);
+    if (!work.download) {
+      return failed("Clicking it did not start a download. The page may show a menu or options first: read the page again.");
+    }
+    source = work.download;
+    work.download = null;
+  }
+
+  let bytes;
+  let type = "";
+  try {
+    if (source.url.startsWith("blob:")) {
+      const blob = await driver(0, "readBlob", [source.url, MAX_DOWNLOAD_BYTES]);
+      if (!blob?.ok) return failed(blob?.error || "The file could not be read from the page.");
+      bytes = fromBase64(blob.base64);
+      type = blob.type;
+    } else {
+      // The person's sign-in goes along only to sites this automation may use.
+      const allowed = !pageRefusal(source.url, work.allowed, work.ownOrigins);
+      const response = await fetch(source.url, { credentials: allowed ? "include" : "omit" });
+      if (!response.ok) return failed(`The file could not be fetched (the site answered ${response.status}).`);
+      bytes = new Uint8Array(await response.arrayBuffer());
+      type = String(response.headers.get("Content-Type") || "").split(";")[0];
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const named = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+      if (named && !source.name) source.name = decodeURIComponent(named[1]);
+    }
+  } catch (error) {
+    return failed(`The file could not be fetched (${error instanceof Error ? error.message : error}).`);
+  }
+  if (!bytes.length) return failed("The download was empty.");
+  if (bytes.length > MAX_DOWNLOAD_BYTES) return failed("The file is larger than 15 MB: MindLoom Files can't take it. Ask the person.");
+  const name = (String(action.args?.save_as || "").trim() || source.name || nameFromAddress(source.url) || "download").slice(0, 110);
+  try {
+    const saved = await saveToFiles(bytes, name, type);
+    return done(`Saved as “${saved.name}” in MindLoom Files (${Math.ceil(bytes.length / 1024)} KB).`);
+  } catch (error) {
+    return failed(`The file came down but MindLoom Files did not take it: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+// --- Pages drawn as a picture -------------------------------------------------------------------
+
+/** A picture of the working tab, sized so one picture pixel is one page pixel (or fewer). */
+async function lookAtPage() {
+  const view = await driver(0, "viewportInfo");
+  if (!view?.width) return failed("The page could not be measured for a picture.");
+  const shot = await cdp("Page.captureScreenshot", { format: "jpeg", quality: 70 });
+  const bitmap = await createImageBitmap(new Blob([fromBase64(shot.data)], { type: "image/jpeg" }));
+  const width = Math.min(view.width, PICTURE_MAX_WIDTH);
+  const height = Math.round((bitmap.height / bitmap.width) * width);
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+  let image = "";
+  for (const quality of [0.6, 0.4, 0.25]) {
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+    image = `data:image/jpeg;base64,${toBase64(new Uint8Array(await blob.arrayBuffer()))}`;
+    if (image.length <= PICTURE_MAX_CHARS) break;
+  }
+  if (image.length > PICTURE_MAX_CHARS) return failed("The picture of this page is too large to send.");
+  // Picture pixels → page pixels, for click_at.
+  work.picture = { scale: width / view.width, width, height };
+  return done(`This is the page as a ${width}×${height} picture. Use click_at with x and y in it.`, { image });
+}
+
+async function clickAt(action) {
+  if (!work.picture) return failed("Call look first: click_at needs a picture of the page.");
+  const x = Number(action.args?.x) / work.picture.scale;
+  const y = Number(action.args?.y) / work.picture.scale;
+  if (!(x >= 0 && y >= 0 && Number(action.args.x) <= work.picture.width && Number(action.args.y) <= work.picture.height)) {
+    return failed(`That spot is outside the ${work.picture.width}×${work.picture.height} picture.`);
+  }
+  const under = await driver(0, "pointInfo", [x, y]);
+  if (!under?.ok) return failed(under?.error || "Nothing is at that spot.");
+  if (looksIrreversible(under.label) && under.tag !== "canvas" && !action.approved) {
+    return failed(`“${under.label}” is at that spot and looks like it can't be undone`, { blocked: "needs_approval" });
+  }
+  if (under.disabled) return failed(`“${under.label}” at that spot is disabled.`);
+  const count = action.args?.double ? 2 : 1;
+  await pointer("mouseMoved", x, y);
+  for (let click = 1; click <= count; click += 1) {
+    await pointer("mousePressed", x, y, { button: "left", buttons: 1, clickCount: click });
+    await pointer("mouseReleased", x, y, { button: "left", buttons: 0, clickCount: click });
+  }
+  const what = under.tag === "canvas" ? "the drawn area" : `${under.role} “${String(under.label).slice(0, 60)}”`;
+  return done(`${count === 2 ? "Double-clicked" : "Clicked"} ${what}. Look again to see the result.`);
+}
+
 async function perform(action) {
   const tool = action.tool;
   const args = action.args || {};
@@ -631,7 +819,11 @@ async function perform(action) {
 
   const tabsBefore = new Set((await chrome.tabs.query({})).map((item) => item.id));
   let result;
+  if (tool === "look") return lookAtPage();
+  if (tool === "upload_file") return uploadFile(action);
   if (tool === "press") result = await clickControl(action);
+  else if (tool === "click_at") result = await clickAt(action);
+  else if (tool === "download_file") result = await downloadFile(action);
   else if (tool === "set_value") result = await setValue(action);
   else if (tool === "key") result = await pressKeyAction(action);
   else if (tool === "hover") {
@@ -643,7 +835,8 @@ async function perform(action) {
   } else if (tool === "type_text") {
     const focus = await focusedControl();
     if (focus?.secure) return failed("The focus is in a password, code or card field. The person fills it in.", { blocked: "secure_field" });
-    if (!focus?.editable) return failed("No text field has the focus. Press the field first, or use set_value with its ref.");
+    // A page drawn as a picture takes typing with no text field in the outline.
+    if (!focus?.editable && !work.picture) return failed("No text field has the focus. Press the field first, or use set_value with its ref.");
     await cdpInput("Input.insertText", { text: String(args.text ?? "") });
     result = done(`Typed “${String(args.text ?? "").slice(0, 120)}”.`);
   } else if (tool === "select_option" || tool === "read" || tool === "scroll") {

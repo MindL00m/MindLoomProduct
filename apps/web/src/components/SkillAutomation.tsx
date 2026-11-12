@@ -382,8 +382,9 @@ function BrowserSites({
       <p className="text-muted-foreground">
         Let MindLoom do the steps on these websites through the MindLoom Chrome extension: it reads the
         page, clicks and fills in fields in a tab of its own. Sending, submitting, deleting, paying and
-        anything else that can't be undone waits for your approval. It never types passwords or codes,
-        and never opens other sites. Allow each site in the extension too.
+        anything else that can't be undone waits for your approval, and so does attaching one of your
+        Files. It never types passwords or codes, and never opens other sites. Allow each site in the
+        extension too.
       </p>
       {candidates.length > 0 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -608,7 +609,9 @@ function DeviceTaskCard({
   const browser = task.surface === "browser";
   const where = browser ? "in Chrome" : "on your Mac";
   const quiet = Date.now() - new Date(task.updated_at).getTime() > STALE_MS;
-  const actions = task.log.filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person").slice(-8);
+  const actions = task.log
+    .filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person" || e.kind === "record")
+    .slice(-8);
   return (
     <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
       <p className="flex items-start gap-1.5">
@@ -647,6 +650,12 @@ function DeviceTaskCard({
           )}
         </span>
       </p>
+      {task.progress && task.progress.total > 0 && (
+        <p className="font-medium">
+          Record {Math.min(task.progress.done + 1, task.progress.total)} of {task.progress.total}
+          {task.progress.done > 0 ? ` (${task.progress.done} finished)` : ""}
+        </p>
+      )}
       {actions.length > 0 && (
         <ol className="space-y-0.5 border-l-2 border-amber-300 pl-2">
           {actions.map((entry, i) => (

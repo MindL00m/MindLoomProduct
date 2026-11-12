@@ -671,6 +671,8 @@ _SKILL_AUTOMATION_SQL = [
     # automation, and which app a device task is for ('mac' or 'browser').
     "ALTER TABLE skill_automations ADD COLUMN IF NOT EXISTS browser_sites TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE device_tasks ADD COLUMN IF NOT EXISTS surface TEXT NOT NULL DEFAULT 'mac'",
+    # The same steps for many records: the list, the results so far, the current record's budget.
+    "ALTER TABLE device_tasks ADD COLUMN IF NOT EXISTS batch TEXT",
 ]
 
 _SKILL_RUNS_SQL = [

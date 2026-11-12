@@ -524,6 +524,8 @@ class DeviceResultInput(BaseModel):
     changed: bool | None = None
     # Text an action read from the screen (the browser's ``read``).
     text: str = Field(default="", max_length=20_000)
+    # A picture of the page (the browser's ``look``), as a JPEG or PNG data URL.
+    image: str = Field(default="", max_length=1_500_000, pattern=r"^(data:image/(jpeg|png);base64,[A-Za-z0-9+/=]+)?$")
     blocked: Literal[
         "needs_approval", "secure_field", "app_not_allowed", "declined_foreground", "site_not_allowed",
     ] | None = None

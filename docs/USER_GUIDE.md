@@ -215,9 +215,12 @@ Skill Files are step-by-step procedures, learned from MindLoom Capture sessions 
 - **Run with MindLoom on websites**: for steps on a website or web app (an ERP, a CRM, a supplier or bank portal), add the sites under **In Chrome** (for example `erp.example.com`). The MindLoom Chrome extension then does those steps in a tab of its own: it reads the page, clicks, fills in fields, picks from dropdowns and reads values back.
   - Allow each site in the extension too: click the MindLoom icon in Chrome and allow it under **Sites MindLoom may click on**. MindLoom never opens any other site.
   - Anything that sends, submits, posts, deletes, pays, confirms or can't be undone waits for **Approve** on the web page, the same as on the Mac.
-  - It never types passwords, codes or card numbers, and never works on sign-in pages. Sign in yourself; when it meets a sign-in, a CAPTCHA, or a file to upload or download, it asks you and you click **Done** or **I can't**.
+  - It never types passwords, codes or card numbers, and never works on sign-in pages. Sign in yourself; when it meets a sign-in or a CAPTCHA, it asks you and you click **Done** or **I can't**.
+  - **Files:** it can attach a file from your MindLoom Files to a page, after you approve it, and save a file a page offers for download into your Files (15 MB at most). A download it clicks also appears in Chrome's Downloads folder.
+  - **Many records:** for the same steps over a list (invoices, orders, rows), it does them one at a time and reports each one. The run page shows "Record 4 of 30". One that fails doesn't stop the rest; three failures in a row do.
+  - **Pages drawn as a picture** (online spreadsheets, diagrams, some reports): it looks at a picture of the tab and clicks by position. This is slower and less exact than ordinary pages, and needs a model that reads pictures.
   - Chrome shows a "MindLoom Capture started debugging this browser" bar while it works. **Cancel** on that bar, **Stop** in the extension popup, or Stop on the web page stops the whole run.
-  - Keep the tab it works in visible: Chrome slows pages in hidden tabs and minimized windows.
+  - You can keep working in other tabs and windows while it runs. Don't minimize the window it works in.
   - Works in Chrome on any computer where the extension is installed; the Mac app is not needed for website steps.
 
 ---

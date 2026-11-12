@@ -82,7 +82,32 @@ const script = [
     return { tool: "switch_tab", args: { tab: (o.tabs.find((t) => /Second page/.test(t.title)) || {}).ref } }; },
   (o, r) => { check("working in the new tab", r?.ok && o.app === "Second page" && /Payment in 30 days/.test(o.text), [r, o.app, o.text.slice(0, 200)]);
     return { tool: "go_back", args: {} }; },
-  (o, r) => { check("stale ref is refused", true); return { tool: "press", args: { ref: "e999" } }; },
+  () => ({ tool: "open_url", args: { url: PAGE } }),
+  (o, r) => { check("back on the order page", r?.ok && Boolean(el(o, "button", "Attach invoice")), r);
+    return { tool: "upload_file", args: { ref: el(o, "button", "Attach invoice").ref, file_name: "invoice.pdf" }, approved: false }; },
+  (o, r) => { check("an unapproved upload is refused", r && !r.ok && r.blocked === "needs_approval", r);
+    return { tool: "upload_file", args: { ref: el(o, "button", "Attach invoice").ref, file_name: "missing.pdf" }, approved: true }; },
+  (o, r) => { check("a file that is not in Files is reported", r && !r.ok && /No file named “missing.pdf”.*invoice.pdf/.test(r.detail), r);
+    return { tool: "upload_file", args: { ref: el(o, "button", "Attach invoice").ref, file_name: "notes.txt" }, approved: true }; },
+  (o, r) => { check("a file type the chooser does not take is refused", r && !r.ok && /only takes/.test(r.detail), r);
+    return { tool: "upload_file", args: { ref: el(o, "button", "Attach invoice").ref, file_name: "invoice.pdf" }, approved: true }; },
+  (o, r) => { check("file from MindLoom Files attached through a hidden chooser", r?.ok && /Attached: invoice\.pdf \(21 bytes\)/.test(o.text), [r, line(o, /Attached/)]);
+    return { tool: "download_file", args: { ref: el(o, "link", "Export lines").ref } }; },
+  (o, r) => { check("link download saved to MindLoom Files", r?.ok && /Saved as “export.csv”/.test(r.detail) && saved.some((f) => f.name === "export.csv" && /Item 1,2/.test(f.body)), [r, saved.map((f) => f.name)]);
+    return { tool: "download_file", args: { ref: el(o, "button", "Export report").ref, save_as: "report.csv" } }; },
+  (o, r) => { check("button download saved to MindLoom Files", r?.ok && /Saved as “report.csv”/.test(r.detail) && saved.some((f) => f.name === "report.csv" && /Item 1,2/.test(f.body)), [r, saved.map((f) => f.name)]);
+    return { tool: "open_url", args: { url: PAGE.replace("index.html", "sheet.html") } }; },
+  (o, r) => { check("a page drawn as a picture says so", /drawn as a picture/.test(o.text) && !/B2/.test(o.text), o.text);
+    return { tool: "click_at", args: { x: 150, y: 160 } }; },
+  (o, r) => { check("click_at needs a picture first", r && !r.ok && /Call look first/.test(r.detail), r);
+    return { tool: "look", args: {} }; },
+  (o, r) => { check("look returns a picture of the page", r?.ok && /^data:image\/jpeg;base64,/.test(r.image || "") && r.image.length > 5000 && /1280×/.test(r.detail), r && { ...r, image: (r.image || "").slice(0, 40) });
+    return { tool: "click_at", args: { x: 150, y: 160 } }; },
+  (o, r) => { check("click by position lands on the right cell", r?.ok && /Selected cell B2 \(trusted\)/.test(o.text), [r, o.text]);
+    return { tool: "type_text", args: { text: "42" } }; },
+  (o, r) => { check("typing reaches a page drawn as a picture", r?.ok && /Typed: 42/.test(o.text), [r, o.text]);
+    return { tool: "click_at", args: { x: 99999, y: 5 } }; },
+  (o, r) => { check("a spot outside the picture is refused", r && !r.ok && /outside/.test(r.detail), r); return { tool: "press", args: { ref: "e999" } }; },
   (o, r) => { check("unknown ref fails cleanly", r && !r.ok && /No element e999/.test(r.detail), r); return null; },
 ];
 
@@ -91,7 +116,15 @@ const transcript = [];
 const task = () => ({ task_id: "task-1", run_id: "run-1", skill_id: "s", status, surface: "browser", title: "E2E",
   allowed_apps: ["localhost"], own_origins: [], log: [], pending: null, summary: null, error: null, steps: cursor });
 
+const FILES = [{ file_id: "f1", name: "invoice.pdf", kind: "pdf", mime_type: "application/pdf", size_bytes: 21 },
+  { file_id: "f2", name: "notes.txt", kind: "txt", mime_type: "text/plain", size_bytes: 5 }];
+const saved = []; // what the extension uploaded to "MindLoom Files": { name, body }
+
 function serveSite(req, res) {
+  if (req.url.startsWith("/export.csv")) {
+    res.writeHead(200, { "Content-Type": "text/csv", "Content-Disposition": 'attachment; filename="export.csv"' });
+    return res.end("item,qty\nItem 1,2\n");
+  }
   const file = path.join(FIXTURE, decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/^\/+/, "") || "index.html");
   if (!file.startsWith(FIXTURE) || !fs.existsSync(file)) { res.writeHead(404); return res.end(); }
   res.writeHead(200, { "Content-Type": file.endsWith(".js") ? "text/javascript" : "text/html; charset=utf-8" });
@@ -108,6 +141,19 @@ function serveApi(req, res) {
     const send = (code, data) => { res.writeHead(code, { "Content-Type": "application/json", ...cors }); res.end(JSON.stringify(data)); };
     if (req.headers.authorization !== "Bearer test-token") return send(401, { detail: "no" });
     if (url.pathname === "/captures/skill-runs") return send(200, []);
+    if (url.pathname === "/loombot/files" && req.method === "GET") return send(200, FILES);
+    const wanted = /^\/loombot\/files\/(\w+)\/download$/.exec(url.pathname);
+    if (wanted) {
+      const file = FILES.find((item) => item.file_id === wanted[1]);
+      if (!file) return send(404, { detail: "File not found." });
+      res.writeHead(200, { "Content-Type": file.mime_type, ...cors });
+      return res.end(file.file_id === "f1" ? "%PDF-1.4 fake invoice" : "hello");
+    }
+    if (url.pathname === "/loombot/files/upload" && req.method === "POST") {
+      const name = (/name="file"; filename="([^"]+)"/.exec(body) || [])[1] || "";
+      saved.push({ name, body });
+      return send(201, { file_id: `s${saved.length}`, name });
+    }
     if (url.pathname === "/captures/device-tasks") {
       const wanted = url.searchParams.get("surface") === "browser" && url.searchParams.get("status") === "pending";
       return send(200, wanted && status === "pending" ? [task()] : []);

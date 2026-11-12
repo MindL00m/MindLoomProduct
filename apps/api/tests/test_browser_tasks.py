@@ -426,3 +426,166 @@ def test_extension_uses_the_same_safety_lists() -> None:
 
     assert js_list("IRREVERSIBLE_WORDS") == set(dt._IRREVERSIBLE_WORDS)
     assert js_list("DENIED_SITES") == set(bt.DENIED_SITES)
+
+
+# --- Files and pages drawn as a picture ------------------------------------------------------
+
+
+def test_uploads_always_need_approval_and_downloads_follow_the_label() -> None:
+    elements = dt._elements(PAGE)
+    assert "invoice.pdf" in bt.irreversible_reason("upload_file", {"ref": "e2", "file_name": "invoice.pdf"}, elements, PAGE)
+    assert "file's name" in bt.validate_action("upload_file", {"ref": "e2", "file_name": " "}, elements, SITES, PAGE)
+    assert bt.validate_action("upload_file", {"ref": "e2", "file_name": "invoice.pdf"}, elements, SITES, PAGE) is None
+    assert not bt.irreversible_reason("download_file", {"ref": "e2"}, elements, PAGE)
+    assert bt.irreversible_reason("download_file", {"ref": "e3"}, elements, PAGE)  # "Confirm Order"
+    assert bt.describe("upload_file", {"ref": "e2", "file_name": "invoice.pdf"}, elements, PAGE) == (
+        "Upload “invoice.pdf” with “Save”")
+
+
+def test_click_by_position_is_checked() -> None:
+    elements = dt._elements(PAGE)
+    check = lambda args: bt.validate_action("click_at", args, elements, SITES, PAGE)  # noqa: E731
+    assert check({"x": 150, "y": 160}) is None
+    assert "numbers" in check({"x": "left", "y": 1})
+    assert "inside the picture" in check({"x": -4, "y": 1})
+    assert bt.validate_action("look", {}, elements, SITES, PAGE) is None
+    assert bt.irreversible_reason("click_at", {"x": 1, "y": 1, "irreversible": True}, elements, PAGE)
+    assert not bt.irreversible_reason("click_at", {"x": 1, "y": 1}, elements, PAGE)
+    elsewhere = {**PAGE, "url": "https://evil.net/"}
+    assert "not on an allowed site" in bt.validate_action("click_at", {"x": 1, "y": 1}, elements, SITES, elsewhere)
+
+
+PICTURE = "data:image/jpeg;base64," + "A" * 400
+
+
+async def test_a_picture_reaches_the_model_and_only_the_latest_is_kept(monkeypatch) -> None:
+    task = await _task()
+    model = FakeModel([_call("look", {}, "c1")], [_call("look", {}, "c2")], [_call("click_at", {"x": 5, "y": 6}, "c3")])
+    monkeypatch.setattr(dt, "_model_call", model)
+    await _step(task["task_id"])
+    await _step(task["task_id"], result={"ok": True, "detail": "picture", "image": PICTURE})
+    pictures = [m for m in model.seen[1] if isinstance(m["content"], list)]
+    assert len(pictures) == 1 and pictures[0]["content"][1]["image_url"]["url"] == PICTURE
+    sent = await _step(task["task_id"], result={"ok": True, "detail": "picture", "image": PICTURE})
+    assert sent["action"]["tool"] == "click_at"
+    assert len([m for m in model.seen[2] if isinstance(m["content"], list)]) == 1
+    assert sum("earlier picture" in str(m["content"]) for m in model.seen[2]) == 1
+
+
+async def test_a_model_that_takes_no_pictures_goes_on_without_them(monkeypatch) -> None:
+    task = await _task()
+    calls = {"n": 0}
+
+    async def model(task, messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "", [_call("look", {})]
+        if any(isinstance(m["content"], list) for m in messages):
+            raise RuntimeError("image input is not supported")
+        assert "not available with this model" in messages[-1]["content"]
+        return "", [_call("ask_person", {"instruction": "Tell me what cell B2 says."})]
+
+    monkeypatch.setattr(dt, "_model_call", model)
+    await _step(task["task_id"])
+    response = await _step(task["task_id"], result={"ok": True, "detail": "picture", "image": PICTURE})
+    assert response["status"] == "needs_person"
+
+
+def test_step_route_takes_a_picture_and_refuses_other_data(client) -> None:
+    body = {"observation": PAGE, "result": {"ok": True, "image": "data:text/html;base64,PHNjcmlwdD4="}}
+    assert client.post("/captures/device-tasks/x/step", json=body).status_code == 422
+    body["result"]["image"] = PICTURE
+    assert client.post("/captures/device-tasks/x/step", json=body).status_code == 404  # valid, no such task
+
+
+# --- Records: the same steps for many items ---------------------------------------------------
+
+
+async def _records_task(records, **kwargs) -> dict:
+    task = await dt.create_task(RUN, title="Post the invoices", goal="Post each invoice in the ERP",
+                                allowed_apps=SITES, auto_approve=False, person="Ada", surface="browser",
+                                records=records, **kwargs)
+    await dt.claim("org-a", "user-a", task["task_id"], surface="browser")
+    return task
+
+
+async def test_each_record_gets_a_fresh_conversation_and_its_own_result(monkeypatch, _memory) -> None:
+    task = await _records_task(["INV-1 for 100", {"invoice": "INV-2", "amount": 250}, "  "])
+    stored = dt._memory[task["task_id"]]
+    assert "record 1 of 2" in json.loads(stored["messages"])[1]["content"]
+    assert (await dt.get_task("org-a", "user-a", task["task_id"]))["progress"] == {"done": 0, "total": 2}
+
+    model = FakeModel(
+        [_call("set_value", {"ref": "e1", "text": "INV-1"})],
+        [_call("done", {"summary": "INV-1 posted as J-501"})],
+        [_call("done", {"summary": "INV-2 is already posted", "outcome": "not_done"})],
+    )
+    monkeypatch.setattr(dt, "_model_call", model)
+    await _step(task["task_id"])
+    done = await _step(task["task_id"], result={"ok": True, "detail": "ok"})
+    assert done["status"] == "completed" and done["task"]["progress"] == {"done": 2, "total": 2}
+    assert done["task"]["summary"] == "1 of 2 records done, 1 not done."
+
+    # The second record started clean: the system prompt, its own goal, the screen.
+    second = model.seen[2]
+    assert [m["role"] for m in second] == ["system", "user", "user"]
+    assert "record 2 of 2" in second[1]["content"] and '"invoice": "INV-2"' in second[1]["content"]
+    assert "INV-1 posted as J-501" in second[1]["content"] and "Current screen" in second[2]["content"]
+
+    handed = _memory[0]["result"]
+    assert handed["outcome"] == "partly_done" and handed["records_not_tried"] == 0
+    assert [r["outcome"] for r in handed["records"]] == ["done", "not_done"]
+    assert handed["records"][0] == {"record": "INV-1 for 100", "outcome": "done", "summary": "INV-1 posted as J-501"}
+
+
+async def test_a_record_that_runs_out_of_actions_does_not_stop_the_rest(monkeypatch, _memory) -> None:
+    task = await _records_task(["A", "B"])
+    stored = dt._memory[task["task_id"]]
+    batch = json.loads(stored["batch"])
+    batch["steps"] = bt.MAX_STEPS
+    stored["batch"] = json.dumps(batch)
+    stored["steps"] = bt.MAX_STEPS
+    model = FakeModel([_call("done", {"summary": "B done"})])
+    monkeypatch.setattr(dt, "_model_call", model)
+    done = await _step(task["task_id"])
+    assert done["status"] == "completed"
+    assert "record 2 of 2" in model.seen[0][1]["content"]
+    records = _memory[0]["result"]["records"]
+    assert records[0]["outcome"] == "not_done" and "150 actions" in records[0]["summary"]
+    assert records[1] == {"record": "B", "outcome": "done", "summary": "B done"}
+
+
+async def test_three_failures_in_a_row_end_the_list(monkeypatch, _memory) -> None:
+    task = await _records_task(["A", "B", "C", "D", "E"])
+    fail = lambda: [_call("done", {"summary": "The site is down", "outcome": "not_done"})]  # noqa: E731
+    monkeypatch.setattr(dt, "_model_call", FakeModel(fail(), fail(), fail()))
+    done = await _step(task["task_id"])
+    assert done["status"] == "completed" and "2 were not tried" in done["task"]["summary"]
+    handed = _memory[0]["result"]
+    assert handed["outcome"] == "not_done" and handed["records_not_tried"] == 2 and len(handed["records"]) == 3
+
+
+async def test_records_are_capped_and_cleaned() -> None:
+    cleaned = dt.clean_records(["x" * 5000, "", None, {"a": 1}] + ["r"] * 400)
+    assert len(cleaned) == dt.MAX_RECORDS and len(cleaned[0]) == dt.MAX_RECORD_CHARS and cleaned[1] == '{"a": 1}'
+    assert dt.clean_records("not a list") == [] and dt.clean_records(None) == []
+
+
+async def test_hand_off_passes_records_to_the_task() -> None:
+    run = _run()
+    calls = [_call("hand_off_to_browser", {"steps": "Post each invoice", "records": ["INV-1", "INV-2"]})]
+    assert await sa._drain(run, calls, False, browser_sites=SITES, skill_text="Skill: Invoices") is False
+    task = dt._memory[json.loads(run["pending"])["device_task_id"]]
+    assert json.loads(task["batch"])["items"] == ["INV-1", "INV-2"]
+    for name in ("hand_off_to_browser", "hand_off_to_device"):
+        spec = next(t for t in sa.tool_specs() if t["function"]["name"] == name)
+        assert spec["function"]["parameters"]["properties"]["records"]["type"] == "array"
+
+
+async def test_a_task_without_records_is_unchanged(monkeypatch, _memory) -> None:
+    task = await _task()
+    assert dt._memory[task["task_id"]]["batch"] is None
+    monkeypatch.setattr(dt, "_model_call", FakeModel([_call("done", {"summary": "all done"})]))
+    done = await _step(task["task_id"])
+    assert done["status"] == "completed" and "progress" not in done["task"]
+    assert "records" not in _memory[0]["result"] and _memory[0]["result"]["actions"] == []

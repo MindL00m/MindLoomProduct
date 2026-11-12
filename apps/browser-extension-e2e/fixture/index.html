@@ -29,6 +29,12 @@
 <span class="fake-btn" id="react" >Add line</span>
 <button id="rmall" onclick="if(confirm('Remove all 40 lines?')){document.getElementById('rows').innerHTML=''}">Remove all lines</button>
 <a href="second.html" target="_blank">Open terms</a> <span id="agreed"></span> <span id="shadowmsg"></span>
+<h2>Attachments</h2>
+<button id="pick" type="button" onclick="document.getElementById('file').click()">Attach invoice</button>
+<input id="file" type="file" accept=".pdf,.csv" style="display:none" onchange="document.getElementById('picked').textContent='Attached: '+this.files[0].name+' ('+this.files[0].size+' bytes)'">
+<span id="picked"></span>
+<a href="/export.csv">Export lines</a>
+<button id="exp" type="button" onclick="location.href='/export.csv?via=button'">Export report</button>
 <h2>Lines</h2>
 <div id="grid"><table><caption>Order lines</caption><thead><tr><th>Item</th><th>Qty</th><th>Price</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
 <my-widget></my-widget>

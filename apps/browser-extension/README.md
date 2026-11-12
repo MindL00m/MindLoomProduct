@@ -92,6 +92,10 @@ extension picks it up and does those steps in a tab of its own:
   select, type, press Enter/Tab/Escape/arrows, hover, scroll, read a table, answer a
   page dialog, switch to a tab a link opened. Clicks and typing are real input through
   `chrome.debugger`.
+- **Files.** It attaches a file from your MindLoom Files to a page's file chooser (after
+  you approve it), and saves a file a page offers for download into your Files.
+- **Pages drawn as a picture** (canvas spreadsheets, diagrams): it sends a picture of the
+  tab and clicks by position.
 - **Only allowed sites.** A page must be https, on a site allowed for the automation,
   and allowed here in the popup ("Sites MindLoom may click on"). Sign-in and
   password-manager sites and MindLoom's own pages are always refused.
@@ -102,8 +106,8 @@ extension picks it up and does those steps in a tab of its own:
 - **You're in control.** **Stop** in the popup, Cancel on Chrome's debugging bar, or Stop
   on the web page stops the task and its run.
 
-It polls every 10 seconds while idle. Keep the working tab visible: Chrome slows pages in
-hidden tabs. File uploads and downloads are not done; MindLoom asks you.
+It polls every 10 seconds while idle. The working tab keeps running when another tab or
+window is in front; don't minimize its window.
 
 Checks:
 

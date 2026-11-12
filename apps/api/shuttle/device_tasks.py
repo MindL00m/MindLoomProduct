@@ -19,6 +19,11 @@ Capture) claims it and drives it one action at a time:
 When the model calls ``done``, or the person takes over, the automation run that
 handed off continues with the result. Screen content is data, never instructions.
 
+A task can carry **records**: the same steps for many items (invoices, orders, rows).
+The loop then does one record at a time, each with a fresh conversation and its own
+action budget, and hands back one result per record, so a long list never outgrows the
+model's memory or the budget.
+
 The same loop drives web pages in Chrome: a task with ``surface`` "browser" is claimed by
 the MindLoom Chrome extension, and its prompt, tools and checks come from
 :mod:`shuttle.browser_tasks` (allowed sites instead of allowed apps).
@@ -47,6 +52,11 @@ MAX_MODEL_TRIES = 3
 MAX_SCREEN_CHARS = 16_000
 MAX_ELEMENTS = 2_000
 MAX_READ_CHARS = 8_000
+MAX_IMAGE_CHARS = 1_500_000
+MAX_RECORDS = 200
+MAX_RECORD_CHARS = 2_000
+# This many records failing one after another ends the task: something is wrong.
+MAX_FAILED_IN_A_ROW = 3
 KEEP_SCREENS = 2
 MAX_LOG_ENTRIES = 300
 MAX_APPS = 10
@@ -358,13 +368,13 @@ async def _insert(task: dict[str, Any]) -> None:
         await session.execute(text("""
             INSERT INTO device_tasks
               (task_id, run_id, org_id, user_id, skill_id, status, title, allowed_apps,
-               auto_approve, messages, log, pending, steps, seq, surface, created_at, updated_at)
+               auto_approve, messages, log, pending, steps, seq, surface, batch, created_at, updated_at)
             VALUES (:task_id, :run_id, :org_id, :user_id, :skill_id, :status, :title,
                     :allowed_apps, :auto_approve, :messages, :log, :pending, 0, 0, :surface,
-                    now(), now())
+                    :batch, now(), now())
         """), {k: task.get(k) for k in (
             "task_id", "run_id", "org_id", "user_id", "skill_id", "status", "title",
-            "allowed_apps", "auto_approve", "messages", "log", "pending", "surface",
+            "allowed_apps", "auto_approve", "messages", "log", "pending", "surface", "batch",
         )})
 
 
@@ -401,10 +411,11 @@ async def _save(task: dict[str, Any]) -> None:
         result = await session.execute(text("""
             UPDATE device_tasks
             SET status=:status, messages=:messages, log=:log, pending=:pending, summary=:summary,
-                error=:error, steps=:steps, seq=:seq, updated_at=now()
+                error=:error, steps=:steps, seq=:seq, batch=:batch, updated_at=now()
             WHERE task_id=:task_id AND seq=:expected
         """), {**{k: task.get(k) for k in (
             "task_id", "status", "messages", "log", "pending", "summary", "error", "steps", "seq",
+            "batch",
         )}, "expected": expected})
     if result.rowcount != 1:
         raise HTTPException(status_code=409, detail="The task changed meanwhile. Try again.")
@@ -445,6 +456,10 @@ def public(task: dict[str, Any]) -> dict[str, Any]:
 
         # MindLoom's own pages: the extension refuses them too (the Approve button lives there).
         extra["own_origins"] = own_origins()
+    batch = _json(task.get("batch"), None)
+    if batch:
+        # Which record is being done, for "Record 4 of 30" on the run page.
+        extra["progress"] = {"done": len(batch.get("results") or []), "total": len(batch.get("items") or [])}
     return {
         **extra,
         "task_id": task["task_id"], "run_id": task["run_id"], "skill_id": task["skill_id"],
@@ -464,12 +479,74 @@ def _log(task: dict[str, Any], entry: dict[str, Any]) -> None:
     task["log"] = json.dumps(log[-MAX_LOG_ENTRIES:], default=str)
 
 
+# --- Records: the same steps for many items, one at a time ----------------------------------
+
+
+def clean_records(records: Any) -> list[str]:
+    out = []
+    for raw in records if isinstance(records, list) else []:
+        if raw is None:
+            continue
+        text_value = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
+        text_value = text_value.strip()[:MAX_RECORD_CHARS]
+        if text_value:
+            out.append(text_value)
+    return out[:MAX_RECORDS]
+
+
+def _record_goal(batch: dict[str, Any]) -> str:
+    """The task for the record that is next: the steps, this record, and how the others went."""
+
+    items, results = batch["items"], batch["results"]
+    number = len(results) + 1
+    lines = [batch["goal"], "", f"These steps are done once per record. This is record {number} of {len(items)}:",
+             items[number - 1], "",
+             "Do the steps for this record only. Then call done with what happened and every value the "
+             "page gave back for it (outcome not_done if it could not be done, with the reason)."]
+    if results:
+        failed = [r for r in results if r["outcome"] == "not_done"]
+        lines.append(f"Records done so far: {len(results) - len(failed)} done, {len(failed)} not done. "
+                     f"The last one: {results[-1]['summary'][:300]}")
+    return "\n".join(lines)
+
+
+def _finish_record(task: dict[str, Any], batch: dict[str, Any], messages: list[dict[str, Any]],
+                   outcome: str, summary: str) -> bool:
+    """Note this record's result and set up the next. False when the task is over."""
+
+    items = batch["items"]
+    number = len(batch["results"]) + 1
+    batch["results"].append({"record": items[number - 1][:300], "outcome": outcome, "summary": summary[:600]})
+    batch["steps"] = 0
+    batch["failed_in_a_row"] = batch.get("failed_in_a_row", 0) + 1 if outcome == "not_done" else 0
+    _log(task, {"kind": "record", "status": "error" if outcome == "not_done" else "ok",
+                "summary": f"Record {number} of {len(items)}: {summary[:300]}"})
+    finished = number >= len(items)
+    stuck = batch["failed_in_a_row"] >= MAX_FAILED_IN_A_ROW and not finished
+    if finished or stuck:
+        done = sum(1 for r in batch["results"] if r["outcome"] != "not_done")
+        failed = len(batch["results"]) - done
+        task.update(status="completed", summary=(
+            f"{done} of {len(items)} records done" + (f", {failed} not done" if failed else "")
+            + (f". Stopped after {MAX_FAILED_IN_A_ROW} records in a row could not be done; "
+               f"{len(items) - number} were not tried" if stuck else "") + "."))
+        task["outcome"] = "done" if done == len(items) else ("partly_done" if done else "not_done")
+        _log(task, {"kind": "finish", "status": "ok" if done else "error", "summary": task["summary"],
+                    "outcome": task["outcome"]})
+        task["batch"] = json.dumps(batch)
+        return False
+    # A fresh conversation for the next record: it never grows with the list.
+    messages[:] = [messages[0], {"role": "user", "content": _record_goal(batch)}]
+    task["batch"] = json.dumps(batch)
+    return True
+
+
 # --- Creating and listing ---------------------------------------------------------------
 
 
 async def create_task(
     run: dict[str, Any], *, title: str, goal: str, allowed_apps: list[str], auto_approve: bool,
-    person: str = "the person", surface: str = "mac",
+    person: str = "the person", surface: str = "mac", records: list[str] | None = None,
 ) -> dict[str, Any]:
     """A pending task the Mac app (or, for ``surface`` "browser", the Chrome extension)
     will pick up. ``goal`` is the skill, inputs and steps; ``allowed_apps`` are the apps,
@@ -478,13 +555,17 @@ async def create_task(
     driver = _driver(surface)
     apps = driver.clean_allowed(allowed_apps)
     system = driver.system_prompt(person, apps)
+    items = clean_records(records)
+    batch = {"items": items, "results": [], "steps": 0, "failed_in_a_row": 0, "goal": goal[:20_000]} if items else None
+    first = _record_goal(batch) if batch else goal[:20_000]
     task = {
         "task_id": str(uuid4()), "run_id": run["run_id"], "org_id": run["org_id"],
         "user_id": run["user_id"], "skill_id": run["skill_id"], "status": "pending",
         "surface": driver.SURFACE,
         "title": title[:200], "allowed_apps": json.dumps(apps), "auto_approve": bool(auto_approve),
         "messages": json.dumps([{"role": "system", "content": system},
-                                {"role": "user", "content": goal[:20_000]}]),
+                                {"role": "user", "content": first}]),
+        "batch": json.dumps(batch) if batch else None,
         "log": "[]", "pending": None, "summary": None, "error": None, "steps": 0, "seq": 0,
         "created_at": _now(), "updated_at": _now(),
     }
@@ -560,9 +641,28 @@ def _screen_text(observation: dict[str, Any], driver: Any = _MacDriver, allowed:
     return f"{_SCREEN_MARK}{driver.screen_header(observation, allowed or [])}\n{screen}"
 
 
+def _picture_message(image: str) -> dict[str, Any]:
+    return {"role": "user", "content": [
+        {"type": "text", "text": "The page as a picture. click_at takes x and y in this picture's pixels."},
+        {"type": "image_url", "image_url": {"url": image}},
+    ]}
+
+
+def _drop_pictures(messages: list[dict[str, Any]], keep_latest: bool) -> None:
+    """Pictures are large: only the latest stays in the conversation."""
+
+    kept = not keep_latest
+    for message in reversed(messages):
+        if isinstance(message.get("content"), list):
+            if kept:
+                message["content"] = "(an earlier picture of the page, omitted)"
+            kept = True
+
+
 def _forget_old_screens(messages: list[dict[str, Any]]) -> None:
     """Only the latest screens stay in the conversation; older ones become a stub."""
 
+    _drop_pictures(messages, keep_latest=True)
     seen = 0
     for message in reversed(messages):
         content = message.get("content")
@@ -664,17 +764,46 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
                     "tool": last.get("tool"), "summary": last.get("description"),
                     "result": payload["detail"][:300]})
         messages.append(_tool_message(outstanding, payload, screen))
+        image = str((result or {}).get("image") or "")
+        if image.startswith("data:image/") and len(image) <= MAX_IMAGE_CHARS:
+            messages.append(_picture_message(image))
     else:
         messages.append({"role": "user", "content": "Current screen:" + screen})
     task["pending"] = None
     _forget_old_screens(messages)
 
-    for _ in range(MAX_MODEL_TRIES):
-        if task.get("steps", 0) >= driver.MAX_STEPS:
+    batch = _json(task.get("batch"), None)
+    tries = 0
+    while tries < MAX_MODEL_TRIES:
+        tries += 1
+        if (batch["steps"] if batch else task.get("steps", 0)) >= driver.MAX_STEPS:
+            if batch:
+                # This record used up its actions: note it and go on with the next.
+                more = _finish_record(task, batch, messages, "not_done",
+                                      f"Stopped after {driver.MAX_STEPS} actions without finishing this record.")
+                if not more:
+                    break
+                messages.append({"role": "user", "content": "Current screen:" + screen})
+                tries = 0
+                continue
             task.update(status="failed", error=f"Stopped after {driver.MAX_STEPS} actions without finishing.")
             break
         task["steps"] = int(task.get("steps") or 0) + 1
-        content, calls = await _model_call(task, messages)
+        if batch:
+            batch["steps"] += 1
+            task["batch"] = json.dumps(batch)
+        try:
+            content, calls = await _model_call(task, messages)
+        except Exception:  # noqa: BLE001
+            if not any(isinstance(m.get("content"), list) for m in messages):
+                raise
+            # The organization's model may not take pictures: go on without them.
+            logger.info("Device task %s: the model refused a picture", task["task_id"], exc_info=True)
+            _drop_pictures(messages, keep_latest=False)
+            messages.append({"role": "user", "content": (
+                "Pictures of the page are not available with this model. Work from the outline, "
+                "or call ask_person for what cannot be seen in it.")})
+            content, calls = await _model_call(task, messages)
         assistant: dict[str, Any] = {"role": "assistant", "content": content}
         if calls:
             assistant["tool_calls"] = calls
@@ -694,6 +823,12 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
 
         if name == "done":
             outcome = args.get("outcome") if args.get("outcome") in {"done", "partly_done", "not_done"} else "done"
+            if batch:
+                if _finish_record(task, batch, messages, outcome, str(args.get("summary") or "Done.")):
+                    messages.append({"role": "user", "content": "Current screen:" + screen})
+                    tries = 0
+                    continue
+                break
             task.update(status="completed", summary=str(args.get("summary") or "Done.")[:4000])
             task["outcome"] = outcome
             messages.append(_tool_message(first["id"], {"ok": True}))
@@ -727,9 +862,8 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
         task["pending"] = json.dumps({"outstanding": first["id"], "action": action})
         task["messages"] = json.dumps(messages)
         return _respond(task, action)
-    else:
-        if task["status"] == "running":
-            task.update(status="failed", error="MindLoom could not decide on a valid next action.")
+    if task["status"] == "running":
+        task.update(status="failed", error="MindLoom could not decide on a valid next action.")
 
     task["messages"] = json.dumps(messages)
     return _respond(task)
@@ -818,6 +952,11 @@ async def _hand_back(task: dict[str, Any]) -> None:
         "summary": task.get("summary") or task.get("error") or "",
         "actions": [e.get("summary") for e in _json(task.get("log"), []) if e.get("kind") == "action"][-30:],
     }
+    batch = _json(task.get("batch"), None)
+    if batch:
+        result["records"] = batch.get("results") or []
+        result["records_not_tried"] = len(batch.get("items") or []) - len(result["records"])
+        del result["actions"]
     try:
         await skill_automation.continue_after_device(
             task["org_id"], task["user_id"], task["run_id"], task_id=task["task_id"], result=result,

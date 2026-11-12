@@ -52,11 +52,12 @@ CREATE TABLE IF NOT EXISTS slack_installations (
 
 CREATE TABLE IF NOT EXISTS organization_llm_settings (
     org_id          TEXT PRIMARY KEY REFERENCES organizations (org_id) ON DELETE CASCADE,
-    provider        TEXT NOT NULL DEFAULT 'openai' CHECK (provider IN ('openai', 'local')),
+    provider        TEXT NOT NULL DEFAULT 'openai' CHECK (provider IN ('openai', 'anthropic', 'local')),
     base_url        TEXT,
     model           TEXT,
     context_window  INTEGER NOT NULL DEFAULT 16384 CHECK (context_window >= 1024),
     supports_tools  BOOLEAN NOT NULL DEFAULT TRUE,
+    api_key         TEXT,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

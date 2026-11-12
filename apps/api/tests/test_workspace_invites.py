@@ -94,3 +94,66 @@ async def test_loombot_invites_raw_email_addresses(monkeypatch) -> None:
         org_id="o", user_id="u1", workspace_id="w", queries=["new@acme.com"]
     )
     assert result["invited"] == ["new@acme.com"]
+
+
+async def test_an_existing_org_member_is_added_whatever_their_email_domain(monkeypatch) -> None:
+    """Being in the organization decides, not the address's domain."""
+
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    async def member(*args):
+        return {"kind": "group", "name": "Launch", "created_by": "u1"}
+
+    class _Result:
+        def __init__(self, rows=(), scalar=None):
+            self._rows, self._scalar = list(rows), scalar
+
+        def scalar_one_or_none(self):
+            return self._scalar
+
+        def mappings(self):
+            return SimpleNamespace(all=lambda: self._rows)
+
+    class _Session:
+        async def execute(self, statement, params=None):
+            sql = str(statement)
+            if "FROM organizations" in sql:
+                return _Result(scalar="acme.com")
+            if "FROM users" in sql and "ANY(:emails)" in sql:
+                known = {"priya@acme.com": "u2", "contractor@gmail.com": "u3"}
+                return _Result(rows=[
+                    {"user_id": known[e], "email": e} for e in params["emails"] if e in known
+                ])
+            return _Result(scalar="Isha")
+
+        async def commit(self):
+            pass
+
+    @asynccontextmanager
+    async def session():
+        yield _Session()
+
+    added_ids: list[str] = []
+
+    async def add_members(*, member_user_ids, **_):
+        added_ids.extend(member_user_ids)
+        return {"added": [{"user_id": i} for i in member_user_ids], "already_members": []}
+
+    async def nothing(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(workspaces, "_require_member", member)
+    monkeypatch.setattr(workspaces, "get_session_factory", lambda: session)
+    monkeypatch.setattr(workspaces, "add_members", add_members)
+    monkeypatch.setattr(workspaces, "list_workspace_members", nothing)
+    monkeypatch.setattr(workspaces, "list_workspace_invites", nothing)
+
+    result = await workspaces.invite_members_by_email(
+        org_id="o", user_id="u1", workspace_id="w",
+        emails=["Priya@acme.com", "contractor@gmail.com", "stranger@other.io"],
+    )
+    assert added_ids == ["u2", "u3"]
+    # Someone who is not in the organization is neither added nor invited.
+    assert result["outside_organization"] == ["stranger@other.io"]
+    assert result["invited"] == []

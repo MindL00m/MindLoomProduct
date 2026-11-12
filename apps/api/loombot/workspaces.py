@@ -913,9 +913,11 @@ async def invite_members_by_email(
 ) -> dict:
     """Add people by email address.
 
-    Signed-in colleagues are added straight away. Colleagues on the org's domain who
-    have not signed in yet get a pending invite (and an invite email from the
-    inviter's Gmail when it is connected); they join on first sign-in.
+    Anyone who already has an account in this organization is added straight away,
+    whatever their address's domain. Colleagues on the org's domain who have not
+    signed in yet get a pending invite (and an invite email from the inviter's
+    Gmail when it is connected); they join on first sign-in. Other addresses are
+    reported back as outside the organization.
     """
 
     workspace = await _require_member(org_id, user_id, workspace_id)
@@ -933,7 +935,7 @@ async def invite_members_by_email(
     inside, outside, invalid = split_invite_emails(emails, org_domain)
     if not inside and not outside and not invalid:
         raise HTTPException(status_code=400, detail="Enter at least one email address.")
-    if len(inside) > MAX_INVITES_PER_REQUEST:
+    if len(inside) + len(outside) > MAX_INVITES_PER_REQUEST:
         raise HTTPException(
             status_code=400,
             detail=f"Invite at most {MAX_INVITES_PER_REQUEST} people at a time.",
@@ -944,11 +946,14 @@ async def invite_members_by_email(
             await session.execute(text("""
                 SELECT user_id, lower(email) AS email FROM users
                 WHERE org_id=:org AND lower(email) = ANY(:emails)
-            """), {"org": org_id, "emails": inside})
+            """), {"org": org_id, "emails": [*inside, *outside]})
         ).mappings().all()
+    # Membership of the organization decides, not the address: a member whose
+    # email is on another domain is still a member.
     by_email = {row["email"]: str(row["user_id"]) for row in users}
-    signed_in_ids = [by_email[e] for e in inside if e in by_email]
+    signed_in_ids = [by_email[e] for e in [*inside, *outside] if e in by_email]
     to_invite = [e for e in inside if e not in by_email]
+    outside = [e for e in outside if e not in by_email]
 
     result: dict[str, Any] = {
         "added": [],

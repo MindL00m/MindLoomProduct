@@ -33,6 +33,9 @@ async def main() -> None:
     from shuttle.skill_automation import run_automation_scheduler
 
     automations = asyncio.create_task(run_automation_scheduler())
+    from weaver.whatsapp_live import run_periodic_whatsapp_flush
+
+    whatsapp_flush = asyncio.create_task(run_periodic_whatsapp_flush())
     try:
         # Recover work reserved by this single worker before a process crash.
         while True:
@@ -52,6 +55,7 @@ async def main() -> None:
         slack_flush.cancel()
         recurring.cancel()
         automations.cancel()
+        whatsapp_flush.cancel()
         await redis.aclose()
         await close_pools()
 

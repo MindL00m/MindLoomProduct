@@ -170,7 +170,8 @@ async def openai_error(_request: Request, exc: openai.APIError) -> JSONResponse:
     logger.warning("Language model request failed: %s", exc.__class__.__name__)
     status = getattr(exc, "status_code", None)
     detail = (
-        "The language model rejected MindLoom's API key. Check OPENAI_API_KEY."
+        "The language model rejected the API key. Check the key in AI provider "
+        "settings, or OPENAI_API_KEY."
         if status == 401 else "The language model is unavailable right now. Try again shortly."
     )
     return JSONResponse(status_code=503, content={"detail": detail})

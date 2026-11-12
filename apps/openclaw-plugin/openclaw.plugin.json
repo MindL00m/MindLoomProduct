@@ -1,0 +1,16 @@
+{
+  "id": "mindloom-whatsapp",
+  "name": "MindLoom WhatsApp",
+  "description": "Forwards inbound WhatsApp messages to MindLoom so they become searchable there. Read-only: OpenClaw never replies on WhatsApp while this is enabled.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["apiUrl", "token"],
+    "properties": {
+      "apiUrl": { "type": "string", "description": "MindLoom API base URL, e.g. https://api.mindloom.example" },
+      "token": { "type": "string", "description": "WhatsApp link token from MindLoom (starts with mlwa_)." },
+      "silent": { "type": "boolean", "default": true, "description": "Stop the OpenClaw agent from replying to WhatsApp messages." }
+    }
+  }
+}

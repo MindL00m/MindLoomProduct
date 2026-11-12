@@ -103,6 +103,7 @@ export default function WorkspacesView() {
   const [showMembers, setShowMembers] = useState(false);
   const [newName, setNewName] = useState("");
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [newEmails, setNewEmails] = useState("");
   const [resyncError, setResyncError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [cardStates, setCardStates] = useState<Record<string, AnswerState>>({});
@@ -264,11 +265,30 @@ export default function WorkspacesView() {
     setBusy(true);
     try {
       const created = await createWorkspace(newName, selectedMembers);
+      const emails = newEmails.split(/[\s,;]+/).map((e) => e.trim()).filter(Boolean);
+      // The workspace exists now; people typed by email are added to it, and any
+      // address that could not be added is reported in the new workspace.
+      let notAdded: string | null = null;
+      if (emails.length) {
+        try {
+          const result = await addWorkspaceMembersByEmail(created.workspace_id, emails);
+          const skipped = [...result.outside_organization, ...result.invalid];
+          if (skipped.length) {
+            notAdded = `Workspace created. Not added (not in your organization): ${skipped.join(", ")}.`;
+          }
+        } catch (err) {
+          notAdded = `Workspace created, but adding people by email failed: ${
+            err instanceof Error ? err.message : "try again from Members."
+          }`;
+        }
+      }
       setShowNew(false);
       setNewName("");
       setSelectedMembers([]);
+      setNewEmails("");
       await loadWorkspaces();
       setActiveId(created.workspace_id);
+      setSendError(notAdded);
     } finally {
       setBusy(false);
     }
@@ -634,6 +654,20 @@ export default function WorkspacesView() {
                   })
                 )}
               </div>
+            </div>
+            <div>
+              <p className="mb-2 text-sm font-medium">Add by email</p>
+              <input
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                placeholder="priya@company.com, sam@company.com"
+                value={newEmails}
+                onChange={(event) => setNewEmails(event.target.value)}
+                aria-label="Email addresses to add"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                People in your organization are added right away. Colleagues on your company
+                domain who have not signed in yet are invited and join on first sign-in.
+              </p>
             </div>
             <div className="flex justify-end gap-2">
               <SecondaryButton onClick={() => setShowNew(false)}>Cancel</SecondaryButton>

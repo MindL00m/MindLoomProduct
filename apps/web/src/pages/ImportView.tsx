@@ -1,5 +1,6 @@
 import AppsView from "@/pages/AppsView";
 import UploadData from "@/pages/UploadData";
+import { WhatsAppLivePanel } from "@/components/WhatsAppLivePanel";
 import type { ConnectionProvider } from "@/services/integrations";
 
 export default function ImportView({
@@ -56,6 +57,9 @@ export default function ImportView({
           exports. Their content and source context are retained together.
         </p>
         <UploadData showHeading={false} />
+        <div className="mt-6">
+          <WhatsAppLivePanel />
+        </div>
       </section>
     </div>
   );

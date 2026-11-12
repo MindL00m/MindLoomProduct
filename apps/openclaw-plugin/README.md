@@ -59,17 +59,18 @@ WhatsApp number; linking adds a companion device to whichever account scans the 
 
 Messages appear in MindLoom a couple of minutes after a chat goes quiet.
 
-## Not yet verified against a running gateway
+## What has been verified
 
-The plugin's logic is tested (`npm test`), was run end to end against MindLoom's API
-with simulated OpenClaw events, and loads in OpenClaw 2026.11.3 with both hooks
-(`message_received`, `before_dispatch`) registered. It has not yet received a real
-WhatsApp message. Two things depend on OpenClaw behaviour its
-docs do not spell out, so check them on first use:
+Checked on OpenClaw 2026.11.3 with a real linked WhatsApp account (12 Nov 2026):
 
-- **Field names for WhatsApp.** The group id and group name are read from
-  `ctx.conversationId` and `metadata.channelName`, with fallbacks. If groups show up
-  under a sender's name, adjust `toMindLoomMessage` in `forward.js`.
-- **Staying silent.** Replies are stopped by claiming the turn in `before_dispatch`.
-  Send yourself a test message from another number and confirm nothing is sent back
-  before opening `dmPolicy` to everyone.
+- **Direct messages** arrive in MindLoom with the right sender name, number,
+  WhatsApp message id and timestamp.
+- **Staying silent** works: the gateway logs each turn as
+  `cause=completed:before_dispatch_handled` with no reply sent.
+- A gateway that has never been through `openclaw onboard` also needs
+  `openclaw config set gateway.mode local` before it will start.
+
+Not yet checked on a real account: **group messages**. The group id and group name
+are read from `ctx.conversationId` and `metadata.channelName`, with fallbacks. If a
+group shows up under a sender's name, adjust `toMindLoomMessage` in `forward.js`.
+Start with one group in `channels.whatsapp.groups` before allowing all of them.

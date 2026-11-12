@@ -1,0 +1,8 @@
+{
+  "name": "mindloom-browser-extension-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs the MindLoom Chrome extension's browser tasks in Chromium against a mock API and a fixture page.",
+  "scripts": { "test": "node run.js" },
+  "devDependencies": { "playwright-core": "^1.65.0" }
+}

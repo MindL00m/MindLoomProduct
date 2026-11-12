@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Fixture sheet</title>
+<style>body{margin:0;font-family:system-ui} #cv{position:absolute;left:0;top:100px} #bar{height:100px;padding:8px;box-sizing:border-box} #keys{position:absolute;left:-9999px;top:0}</style></head><body>
+<div id="bar"><b>Price sheet</b> <span id="msg">Nothing selected</span> <span id="typed"></span></div>
+<canvas id="cv" width="1000" height="480"></canvas><textarea id="keys" aria-hidden="true"></textarea>
+<script>
+ // A spreadsheet drawn on a canvas: nothing in it exists as an element.
+ const cv=document.getElementById('cv'),g=cv.getContext('2d'),W=100,H=40;
+ g.font='14px system-ui';for(let r=0;r<12;r++)for(let c=0;c<10;c++){g.strokeStyle='#bbb';g.strokeRect(c*W,r*H,W,H);g.fillText(String.fromCharCode(65+c)+(r+1),c*W+8,r*H+25)}
+ const keys=document.getElementById('keys');
+ cv.addEventListener('mousedown',e=>{const c=Math.floor(e.offsetX/W),r=Math.floor(e.offsetY/H);document.getElementById('msg').textContent='Selected cell '+String.fromCharCode(65+c)+(r+1)+(e.isTrusted?' (trusted)':' (synthetic)');setTimeout(()=>keys.focus(),0)});
+ cv.addEventListener('dblclick',()=>{document.getElementById('msg').textContent+=' editing'});
+ keys.addEventListener('input',()=>{document.getElementById('typed').textContent='Typed: '+keys.value});
+</script></body></html>

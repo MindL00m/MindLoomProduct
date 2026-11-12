@@ -597,4 +597,4 @@ syncCaptureSchedule();
 refreshActiveTab();
 restoreQueues();
 
-importScripts("run-client.js");
+importScripts("run-client.js", "task-policy.js", "task-client.js");

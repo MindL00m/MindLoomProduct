@@ -5,6 +5,7 @@ import {
   Check,
   CircleDashed,
   Clock,
+  Globe,
   Hand,
   Loader2,
   MessageCircleQuestion,
@@ -51,7 +52,8 @@ const TOOL_LABEL: Record<string, string> = {
   create_shipment_documents: "Shipment documents",
   web_search: "Web search",
   ask_user: "Ask you",
-  hand_off_to_device: "On your computer",
+  hand_off_to_device: "On your Mac",
+  hand_off_to_browser: "In Chrome",
   finish: "Finish",
 };
 
@@ -64,7 +66,8 @@ function toolLabel(tool?: string): string {
  * "Run with MindLoom": MindLoom performs the Skill File itself with its toolbox
  * (knowledge, email, files and spreadsheets, templates, calendar, web, web APIs).
  * Outbound actions wait for Approve; missing values are asked for; steps in other
- * apps are done by the Mac app in the apps the person allowed ("On your Mac").
+ * apps are done by the Mac app in the apps the person allowed ("On your Mac"), and steps
+ * on websites by the Chrome extension on the sites the person allowed ("In Chrome").
  */
 export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner: boolean }) {
   const [open, setOpen] = useState(false);
@@ -203,6 +206,20 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
                 />
               )}
 
+              {(plan?.steps.some((s) => s.tool === "hand_off_to_browser") ||
+                (plan?.sites?.length ?? 0) > 0 ||
+                (automation.browser_sites?.length ?? 0) > 0) && (
+                <BrowserSites
+                  automation={automation}
+                  busy={busy === "settings"}
+                  onSave={(sites) =>
+                    void act("settings", async () =>
+                      setAutomation(await updateAutomation(skill.skill_id, { browser_sites: sites })),
+                    )
+                  }
+                />
+              )}
+
               {plan && plan.inputs.length > 0 && (
                 <div className="grid gap-2 sm:grid-cols-2">
                   {plan.inputs.map((input) => (
@@ -335,6 +352,72 @@ function DeviceApps({
       </form>
       {allowed.length === 0 && (
         <p className="text-muted-foreground">No apps allowed: you'll do those steps yourself and click Done.</p>
+      )}
+    </div>
+  );
+}
+
+/** The websites MindLoom may operate in Chrome for this automation (the extension does the work). */
+function BrowserSites({
+  automation,
+  busy,
+  onSave,
+}: {
+  automation: Automation;
+  busy: boolean;
+  onSave: (sites: string[]) => void;
+}) {
+  const [extra, setExtra] = useState("");
+  const allowed = automation.browser_sites ?? [];
+  const isAllowed = (site: string) => allowed.includes(site.toLowerCase());
+  const candidates = [...allowed];
+  for (const site of automation.plan.sites ?? []) if (!isAllowed(site)) candidates.push(site);
+  const toggle = (site: string, on: boolean) =>
+    onSave(on ? [...allowed, site] : allowed.filter((s) => s !== site.toLowerCase()));
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-background p-3 text-xs">
+      <p className="flex items-center gap-1.5 font-semibold">
+        <Globe className="size-3.5" /> In Chrome
+      </p>
+      <p className="text-muted-foreground">
+        Let MindLoom do the steps on these websites through the MindLoom Chrome extension: it reads the
+        page, clicks and fills in fields in a tab of its own. Sending, submitting, deleting, paying and
+        anything else that can't be undone waits for your approval, and so does attaching one of your
+        Files. It never types passwords or codes, and never opens other sites. Allow each site in the
+        extension too.
+      </p>
+      {candidates.length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {candidates.map((site) => (
+            <label key={site} className="inline-flex items-center gap-1.5">
+              <input type="checkbox" checked={isAllowed(site)} disabled={busy} onChange={(e) => toggle(site, e.target.checked)} />
+              {site}
+            </label>
+          ))}
+        </div>
+      )}
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const site = extra.trim();
+          if (site) onSave([...allowed, site]);
+          setExtra("");
+        }}
+      >
+        <input
+          value={extra}
+          onChange={(e) => setExtra(e.target.value)}
+          placeholder="Another site, e.g. erp.example.com"
+          maxLength={253}
+          className="w-64 rounded border border-border px-2 py-1"
+        />
+        <button type="submit" disabled={busy || !extra.trim()} className="rounded-md border border-border px-2.5 py-1 disabled:opacity-50">
+          Allow
+        </button>
+      </form>
+      {allowed.length === 0 && (
+        <p className="text-muted-foreground">No sites allowed: you'll do those steps yourself and click Done.</p>
       )}
     </div>
   );
@@ -484,11 +567,17 @@ function RunView({
         ) : (
           <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
             <p className="flex items-start gap-1.5">
-              <Monitor className="mt-0.5 size-3.5 shrink-0" />
+              {run.pending?.surface === "browser" ? (
+                <Globe className="mt-0.5 size-3.5 shrink-0" />
+              ) : (
+                <Monitor className="mt-0.5 size-3.5 shrink-0" />
+              )}
               <span>
-                Do these steps on your computer: <b>{run.pending?.steps}</b>
+                Do these steps {run.pending?.surface === "browser" ? "in your browser" : "on your computer"}:{" "}
+                <b>{run.pending?.steps}</b>
                 {run.pending?.details ? <> ({run.pending.details})</> : null}. To let MindLoom do them next
-                time, allow the apps under <b>On your Mac</b>.
+                time, allow the {run.pending?.surface === "browser" ? "sites" : "apps"} under{" "}
+                <b>{run.pending?.surface === "browser" ? "In Chrome" : "On your Mac"}</b>.
               </span>
             </p>
             <button type="button" disabled={busy} onClick={() => onReply({ action: "continue" })} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
@@ -504,7 +593,7 @@ function RunView({
 
 const STALE_MS = 2 * 60_000;
 
-/** Live view of the Mac doing its part: what it's doing, and anything waiting on you. */
+/** Live view of the Mac app or Chrome doing its part: what it's doing, and anything waiting on you. */
 function DeviceTaskCard({
   task,
   busy,
@@ -517,32 +606,56 @@ function DeviceTaskCard({
   onDoneMyself: () => void;
 }) {
   const apps = task.allowed_apps.join(", ");
+  const browser = task.surface === "browser";
+  const where = browser ? "in Chrome" : "on your Mac";
   const quiet = Date.now() - new Date(task.updated_at).getTime() > STALE_MS;
-  const actions = task.log.filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person").slice(-8);
+  const actions = task.log
+    .filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person" || e.kind === "record")
+    .slice(-8);
   return (
     <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs">
       <p className="flex items-start gap-1.5">
-        <Monitor className="mt-0.5 size-3.5 shrink-0" />
+        {browser ? <Globe className="mt-0.5 size-3.5 shrink-0" /> : <Monitor className="mt-0.5 size-3.5 shrink-0" />}
         <span>
           {task.status === "pending" ? (
-            <>
-              Waiting for Loom Capture on your Mac to start <b>{task.title}</b> in {apps}.
-              {quiet && " Open Loom Capture and sign in; it picks up tasks from the last 30 minutes."}
-            </>
+            browser ? (
+              <>
+                Waiting for the MindLoom extension in Chrome to start <b>{task.title}</b> on {apps}.
+                {quiet && " Open Chrome with the MindLoom extension signed in; it picks up tasks from the last 30 minutes."}
+              </>
+            ) : (
+              <>
+                Waiting for Loom Capture on your Mac to start <b>{task.title}</b> in {apps}.
+                {quiet && " Open Loom Capture and sign in; it picks up tasks from the last 30 minutes."}
+              </>
+            )
           ) : task.status === "running" ? (
-            <>
-              MindLoom is working in {apps} on your Mac: <b>{task.title}</b>.
-              {quiet && " Loom Capture hasn't reported for a while; check it's still open."}
-            </>
+            browser ? (
+              <>
+                MindLoom is working on {apps} in a Chrome tab of its own: <b>{task.title}</b>.
+                {quiet && " The extension hasn't reported for a while; check Chrome is still open."}
+              </>
+            ) : (
+              <>
+                MindLoom is working in {apps} on your Mac: <b>{task.title}</b>.
+                {quiet && " Loom Capture hasn't reported for a while; check it's still open."}
+              </>
+            )
           ) : task.status === "needs_approval" ? (
-            <>MindLoom wants to do something on your Mac that may not be undoable.</>
+            <>MindLoom wants to do something {where} that may not be undoable.</>
           ) : task.status === "needs_person" ? (
-            <>MindLoom needs you to do something on your Mac.</>
+            <>MindLoom needs you to do something {where}.</>
           ) : (
-            <>{task.summary || task.error || "Finished on your Mac."}</>
+            <>{task.summary || task.error || `Finished ${where}.`}</>
           )}
         </span>
       </p>
+      {task.progress && task.progress.total > 0 && (
+        <p className="font-medium">
+          Record {Math.min(task.progress.done + 1, task.progress.total)} of {task.progress.total}
+          {task.progress.done > 0 ? ` (${task.progress.done} finished)` : ""}
+        </p>
+      )}
       {actions.length > 0 && (
         <ol className="space-y-0.5 border-l-2 border-amber-300 pl-2">
           {actions.map((entry, i) => (

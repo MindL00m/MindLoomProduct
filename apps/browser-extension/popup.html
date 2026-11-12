@@ -186,10 +186,18 @@
       View Captures
     </button>
 
+    <div id="task-box" class="field" hidden style="margin-top: 16px; padding: 10px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff;">
+      <span class="label">MindLoom is working in Chrome</span>
+      <div id="task-status" class="site-empty" style="margin-bottom: 6px"></div>
+      <button type="button" id="task-stop" style="padding: 6px 12px; border: none; border-radius: 6px; background: #dc2626; color: #fff; font-size: 12px; cursor: pointer;">
+        Stop
+      </button>
+    </div>
+
     <div class="field" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0;">
       <span class="label">Sites MindLoom may click on</span>
       <p class="site-empty" style="margin: 0 0 6px">
-        When you run a Skill File, MindLoom only opens and clicks on these sites.
+        When you run a Skill File, MindLoom only opens, reads, clicks and types on these sites.
       </p>
       <div id="run-sites"></div>
     </div>

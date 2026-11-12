@@ -212,6 +212,13 @@ Skill Files are step-by-step procedures, learned from MindLoom Capture sessions 
   - If you type or click in the app it's working in, it pauses until you click **Resume**.
   - **Stop** on the Mac, Stop on the web page, or **⌃⌥⌘.** (Control-Option-Command-Period) stops the whole run at once.
   - Needs macOS 15 or later, and Accessibility granted to MindLoom Capture.
+- **Run with MindLoom on websites**: for steps on a website or web app (an ERP, a CRM, a supplier or bank portal), add the sites under **In Chrome** (for example `erp.example.com`). The MindLoom Chrome extension then does those steps in a tab of its own: it reads the page, clicks, fills in fields, picks from dropdowns and reads values back.
+  - Allow each site in the extension too: click the MindLoom icon in Chrome and allow it under **Sites MindLoom may click on**. MindLoom never opens any other site.
+  - Anything that sends, submits, posts, deletes, pays, confirms or can't be undone waits for **Approve** on the web page, the same as on the Mac.
+  - It never types passwords, codes or card numbers, and never works on sign-in pages. Sign in yourself; when it meets a sign-in, a CAPTCHA, or a file to upload or download, it asks you and you click **Done** or **I can't**.
+  - Chrome shows a "MindLoom Capture started debugging this browser" bar while it works. **Cancel** on that bar, **Stop** in the extension popup, or Stop on the web page stops the whole run.
+  - Keep the tab it works in visible: Chrome slows pages in hidden tabs and minimized windows.
+  - Works in Chrome on any computer where the extension is installed; the Mac app is not needed for website steps.
 
 ---
 

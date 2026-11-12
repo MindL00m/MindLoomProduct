@@ -18,6 +18,10 @@ Capture) claims it and drives it one action at a time:
 
 When the model calls ``done``, or the person takes over, the automation run that
 handed off continues with the result. Screen content is data, never instructions.
+
+The same loop drives web pages in Chrome: a task with ``surface`` "browser" is claimed by
+the MindLoom Chrome extension, and its prompt, tools and checks come from
+:mod:`shuttle.browser_tasks` (allowed sites instead of allowed apps).
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ MAX_STEPS = 80
 MAX_MODEL_TRIES = 3
 MAX_SCREEN_CHARS = 16_000
 MAX_ELEMENTS = 2_000
+MAX_READ_CHARS = 8_000
 KEEP_SCREENS = 2
 MAX_LOG_ENTRIES = 300
 MAX_APPS = 10
@@ -276,6 +281,60 @@ def validate_action(
     return None
 
 
+# --- Surfaces: the Mac app, or Chrome through the extension ---------------------------------
+
+
+class _MacDriver:
+    """What is specific to operating Mac apps; ``browser_tasks`` is the same for Chrome."""
+
+    SURFACE = "mac"
+    WHERE = "the Mac app"
+    MAX_STEPS = MAX_STEPS
+    TOOLS = DRIVER_TOOLS
+
+    @staticmethod
+    def system_prompt(person: str, allowed: list[str]) -> str:
+        return _SYSTEM.format(person=person, apps=", ".join(allowed) or "(none)")
+
+    @staticmethod
+    def clean_allowed(values: Any) -> list[str]:
+        return clean_apps(values)
+
+    @staticmethod
+    def start_summary(allowed: list[str]) -> str:
+        return f"Waiting for the Mac app ({', '.join(allowed)})"
+
+    @staticmethod
+    def screen_header(observation: dict[str, Any], allowed: list[str]) -> str:
+        running = [str(a)[:60] for a in (observation.get("running_apps") or [])[:30]]
+        header = f"App: {str(observation.get('app') or '?')[:120]}"
+        return header + (f"\nAllowed apps running: {', '.join(running)}" if running else "")
+
+    @staticmethod
+    def validate_action(name, args, elements, allowed, observation) -> str | None:  # noqa: ANN001
+        return validate_action(name, args, elements, allowed)
+
+    @staticmethod
+    def irreversible_reason(name, args, elements, observation) -> str | None:  # noqa: ANN001
+        return irreversible_reason(name, args, elements)
+
+    @staticmethod
+    def describe(name, args, elements, observation) -> str:  # noqa: ANN001
+        return describe(name, args, elements)
+
+
+SURFACES = ("mac", "browser")
+
+
+def _driver(task_or_surface: Any) -> Any:
+    surface = task_or_surface if isinstance(task_or_surface, str) else (task_or_surface.get("surface") or "mac")
+    if surface == "browser":
+        from shuttle import browser_tasks
+
+        return browser_tasks
+    return _MacDriver
+
+
 # --- Storage (with an in-memory backend for tests) -------------------------------------
 
 _memory: dict[str, dict[str, Any]] | None = None
@@ -299,12 +358,13 @@ async def _insert(task: dict[str, Any]) -> None:
         await session.execute(text("""
             INSERT INTO device_tasks
               (task_id, run_id, org_id, user_id, skill_id, status, title, allowed_apps,
-               auto_approve, messages, log, pending, steps, seq, created_at, updated_at)
+               auto_approve, messages, log, pending, steps, seq, surface, created_at, updated_at)
             VALUES (:task_id, :run_id, :org_id, :user_id, :skill_id, :status, :title,
-                    :allowed_apps, :auto_approve, :messages, :log, :pending, 0, 0, now(), now())
+                    :allowed_apps, :auto_approve, :messages, :log, :pending, 0, 0, :surface,
+                    now(), now())
         """), {k: task.get(k) for k in (
             "task_id", "run_id", "org_id", "user_id", "skill_id", "status", "title",
-            "allowed_apps", "auto_approve", "messages", "log", "pending",
+            "allowed_apps", "auto_approve", "messages", "log", "pending", "surface",
         )})
 
 
@@ -379,9 +439,18 @@ def public(task: dict[str, Any]) -> dict[str, Any]:
 
     pending = _json(task.get("pending"), None) or {}
     shown = {k: pending[k] for k in ("instruction", "description", "reason", "tool", "args") if k in pending}
+    extra: dict[str, Any] = {}
+    if (task.get("surface") or "mac") == "browser":
+        from shuttle.browser_tasks import own_origins
+
+        # MindLoom's own pages: the extension refuses them too (the Approve button lives there).
+        extra["own_origins"] = own_origins()
     return {
+        **extra,
         "task_id": task["task_id"], "run_id": task["run_id"], "skill_id": task["skill_id"],
         "status": task["status"], "title": task.get("title") or "",
+        "surface": task.get("surface") or "mac",
+        # Mac apps for a Mac task, sites for a browser task.
         "allowed_apps": _json(task.get("allowed_apps"), []),
         "log": _json(task.get("log"), [])[-60:], "pending": shown or None,
         "summary": task.get("summary"), "error": task.get("error"), "steps": task.get("steps") or 0,
@@ -400,29 +469,38 @@ def _log(task: dict[str, Any], entry: dict[str, Any]) -> None:
 
 async def create_task(
     run: dict[str, Any], *, title: str, goal: str, allowed_apps: list[str], auto_approve: bool,
-    person: str = "the person",
+    person: str = "the person", surface: str = "mac",
 ) -> dict[str, Any]:
-    """A pending task the Mac app will pick up. ``goal`` is the skill, inputs and steps."""
+    """A pending task the Mac app (or, for ``surface`` "browser", the Chrome extension)
+    will pick up. ``goal`` is the skill, inputs and steps; ``allowed_apps`` are the apps,
+    or the sites."""
 
-    apps = clean_apps(allowed_apps)
-    system = _SYSTEM.format(person=person, apps=", ".join(apps) or "(none)")
+    driver = _driver(surface)
+    apps = driver.clean_allowed(allowed_apps)
+    system = driver.system_prompt(person, apps)
     task = {
         "task_id": str(uuid4()), "run_id": run["run_id"], "org_id": run["org_id"],
         "user_id": run["user_id"], "skill_id": run["skill_id"], "status": "pending",
+        "surface": driver.SURFACE,
         "title": title[:200], "allowed_apps": json.dumps(apps), "auto_approve": bool(auto_approve),
         "messages": json.dumps([{"role": "system", "content": system},
                                 {"role": "user", "content": goal[:20_000]}]),
         "log": "[]", "pending": None, "summary": None, "error": None, "steps": 0, "seq": 0,
         "created_at": _now(), "updated_at": _now(),
     }
-    _log(task, {"kind": "start", "status": "ok", "summary": f"Waiting for the Mac app ({', '.join(apps)})"})
+    _log(task, {"kind": "start", "status": "ok", "summary": driver.start_summary(apps)})
     await _insert(task)
     return task
 
 
-async def list_tasks(org_id: str, user_id: str, status: str | None = None) -> list[dict[str, Any]]:
+async def list_tasks(
+    org_id: str, user_id: str, status: str | None = None, surface: str = "mac",
+) -> list[dict[str, Any]]:
+    """The person's tasks for one surface: the Mac app and the extension each see their own."""
+
     if _memory is not None:
         rows = [t for t in _memory.values() if t["org_id"] == org_id and t["user_id"] == user_id
+                and (t.get("surface") or "mac") == surface
                 and (status is None or t["status"] == status)]
         rows.sort(key=lambda t: t["created_at"], reverse=True)
     else:
@@ -430,9 +508,10 @@ async def list_tasks(org_id: str, user_id: str, status: str | None = None) -> li
         async with factory() as session:
             rows = (await session.execute(text("""
                 SELECT * FROM device_tasks
-                WHERE org_id=:org AND user_id=:user AND (CAST(:status AS TEXT) IS NULL OR status=:status)
+                WHERE org_id=:org AND user_id=:user AND surface=:surface
+                  AND (CAST(:status AS TEXT) IS NULL OR status=:status)
                 ORDER BY created_at DESC LIMIT 20
-            """), {"org": org_id, "user": user_id, "status": status})).mappings().all()
+            """), {"org": org_id, "user": user_id, "status": status, "surface": surface})).mappings().all()
     return [public(dict(r)) for r in rows[:20]]
 
 
@@ -440,15 +519,20 @@ async def get_task(org_id: str, user_id: str, task_id: str) -> dict[str, Any]:
     return public(await _load(org_id, user_id, task_id))
 
 
-async def claim(org_id: str, user_id: str, task_id: str) -> dict[str, Any]:
+async def claim(org_id: str, user_id: str, task_id: str, surface: str | None = None) -> dict[str, Any]:
+    """Take a pending task. ``surface`` is who is claiming: the Mac app never takes a
+    browser task, and the extension never takes a Mac one."""
+
     task = await _load(org_id, user_id, task_id)
+    if surface is not None and (task.get("surface") or "mac") != surface:
+        raise HTTPException(status_code=409, detail="This task is for another app.")
     if task["status"] != "pending":
         raise HTTPException(status_code=409, detail="This task was already picked up.")
     created = task["created_at"]
     if isinstance(created, datetime) and created < _now() - CLAIM_WINDOW:
         raise HTTPException(status_code=409, detail="This task is too old to start on its own.")
     task["status"] = "running"
-    _log(task, {"kind": "claim", "status": "ok", "summary": "The Mac app started"})
+    _log(task, {"kind": "claim", "status": "ok", "summary": f"{_driver(task).WHERE[0].upper()}{_driver(task).WHERE[1:]} started"})
     await _save(task)
     return public(task)
 
@@ -469,15 +553,11 @@ def _elements(observation: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _screen_text(observation: dict[str, Any]) -> str:
-    screen = str(observation.get("text") or "(the Mac sent no screen)")
+def _screen_text(observation: dict[str, Any], driver: Any = _MacDriver, allowed: list[str] | None = None) -> str:
+    screen = str(observation.get("text") or "(no screen was sent)")
     if len(screen) > MAX_SCREEN_CHARS:
         screen = screen[:MAX_SCREEN_CHARS] + "\n… (outline cut short; scroll or focus a window for more)"
-    running = [str(a)[:60] for a in (observation.get("running_apps") or [])[:30]]
-    header = f"App: {str(observation.get('app') or '?')[:120]}"
-    if running:
-        header += f"\nAllowed apps running: {', '.join(running)}"
-    return f"{_SCREEN_MARK}{header}\n{screen}"
+    return f"{_SCREEN_MARK}{driver.screen_header(observation, allowed or [])}\n{screen}"
 
 
 def _forget_old_screens(messages: list[dict[str, Any]]) -> None:
@@ -494,8 +574,10 @@ def _forget_old_screens(messages: list[dict[str, Any]]) -> None:
 
 def _result_payload(result: dict[str, Any] | None) -> dict[str, Any]:
     if not result:
-        return {"ok": False, "detail": "The Mac sent no result."}
+        return {"ok": False, "detail": "No result was sent for the last action."}
     out = {"ok": bool(result.get("ok")), "detail": str(result.get("detail") or "")[:2000]}
+    if result.get("text"):
+        out["text"] = str(result["text"])[:MAX_READ_CHARS]
     if result.get("changed") is not None:
         out["screen_changed"] = bool(result.get("changed"))
     if result.get("blocked"):
@@ -505,7 +587,7 @@ def _result_payload(result: dict[str, Any] | None) -> dict[str, Any]:
 
 def _tool_message(call_id: str, payload: Any, screen: str = "") -> dict[str, Any]:
     content = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, default=str)
-    return {"role": "tool", "tool_call_id": call_id, "content": content[:4000] + screen}
+    return {"role": "tool", "tool_call_id": call_id, "content": content[:MAX_READ_CHARS + 3000] + screen}
 
 
 async def _model_call(task: dict[str, Any], messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -515,7 +597,7 @@ async def _model_call(task: dict[str, Any], messages: list[dict[str, Any]]) -> t
 
     client = await get_llm_client(task["org_id"])
     response = await client.chat.completions.create(
-        model="", messages=messages, tools=DRIVER_TOOLS, tool_choice="auto", temperature=0,
+        model="", messages=messages, tools=_driver(task).TOOLS, tool_choice="auto", temperature=0,
     )
     message = response.choices[0].message
     calls = [
@@ -551,9 +633,11 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
     if status != "running":
         raise HTTPException(status_code=409, detail="Claim the task first.")
     pending = _json(task.get("pending"), None) or {}
+    driver = _driver(task)
+    allowed = _json(task.get("allowed_apps"), [])
     elements = _elements(observation)
     messages = _json(task.get("messages"), [])
-    screen = _screen_text(observation)
+    screen = _screen_text(observation, driver, allowed)
 
     # An approved action goes out as it was approved; its result arrives next turn.
     if pending.get("deliver"):
@@ -571,7 +655,7 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
             task["pending"] = json.dumps({
                 "outstanding": outstanding, "action": last, "tool": last.get("tool"),
                 "args": last.get("args"), "description": last.get("description"),
-                "reason": payload["detail"] or "The Mac flagged this action as not undoable",
+                "reason": payload["detail"] or "This action was flagged as not undoable",
             })
             _log(task, {"kind": "approval", "status": "pending", "tool": last.get("tool"),
                         "summary": last.get("description")})
@@ -586,8 +670,8 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
     _forget_old_screens(messages)
 
     for _ in range(MAX_MODEL_TRIES):
-        if task.get("steps", 0) >= MAX_STEPS:
-            task.update(status="failed", error=f"Stopped after {MAX_STEPS} actions without finishing.")
+        if task.get("steps", 0) >= driver.MAX_STEPS:
+            task.update(status="failed", error=f"Stopped after {driver.MAX_STEPS} actions without finishing.")
             break
         task["steps"] = int(task.get("steps") or 0) + 1
         content, calls = await _model_call(task, messages)
@@ -610,26 +694,25 @@ async def advance(task: dict[str, Any], *, observation: dict[str, Any], result: 
 
         if name == "done":
             outcome = args.get("outcome") if args.get("outcome") in {"done", "partly_done", "not_done"} else "done"
-            task.update(status="completed", summary=str(args.get("summary") or "Done.")[:2000])
+            task.update(status="completed", summary=str(args.get("summary") or "Done.")[:4000])
             task["outcome"] = outcome
             messages.append(_tool_message(first["id"], {"ok": True}))
             _log(task, {"kind": "finish", "status": "ok", "summary": task["summary"], "outcome": outcome})
             break
         if name == "ask_person":
-            instruction = str(args.get("instruction") or "Please check the app.")[:1000]
+            instruction = str(args.get("instruction") or "Please check the screen.")[:1000]
             task["status"] = "needs_person"
             task["pending"] = json.dumps({"outstanding": first["id"], "instruction": instruction})
             _log(task, {"kind": "person", "status": "pending", "summary": instruction})
             break
 
-        allowed = _json(task.get("allowed_apps"), [])
-        error = validate_action(name, args, elements, allowed)
+        error = driver.validate_action(name, args, elements, allowed, observation)
         if error:
             messages.append(_tool_message(first["id"], {"ok": False, "detail": error}))
             _log(task, {"kind": "action", "status": "error", "tool": name, "summary": error[:300]})
             continue
-        description = describe(name, args, elements)
-        reason = irreversible_reason(name, args, elements)
+        description = driver.describe(name, args, elements, observation)
+        reason = driver.irreversible_reason(name, args, elements, observation)
         expected_label = (elements.get(str(args.get("ref") or "")) or {}).get("label")
         action = {"id": first["id"], "tool": name, "args": args, "description": description,
                   "approved": bool(reason and task.get("auto_approve")), "expect_label": expected_label}

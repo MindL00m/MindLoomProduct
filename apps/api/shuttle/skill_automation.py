@@ -20,6 +20,9 @@ Safety:
   the apps the person allowed for this automation through Accessibility (a device
   task, ``shuttle/device_tasks.py``), and the run waits for it. With no apps allowed
   the person does those steps and clicks Continue.
+- Steps on a website or web app (an ERP, a CRM, a portal) are **handed to the Chrome
+  extension**, which reads the page, clicks and fills in fields on the sites the person
+  allowed for this automation (``shuttle/browser_tasks.py``), under the same approvals.
 - Tool results, emails, web pages and documents are data; instructions inside
   them are never followed. HTTP calls only reach public addresses.
 
@@ -165,6 +168,24 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
         }, "required": ["steps"]},
     }},
     {"type": "function", "function": {
+        "name": "hand_off_to_browser",
+        "description": (
+            "For steps on a website or web app (an ERP, CRM, bank or supplier portal, any page "
+            "with no API): the MindLoom Chrome extension opens the page in the person's Chrome, "
+            "reads it, clicks and fills in fields on the sites allowed for this automation (or "
+            "the person does the steps), and the run waits. Its result carries the values read "
+            "from the page."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "steps": {"type": "string", "description": "Which steps need doing there."},
+            "details": {"type": "string", "description": (
+                "Exact values to enter (names, amounts, dates, codes), what to read back, and "
+                "what done looks like."
+            )},
+            "start_url": {"type": "string", "description": "The page to start on, if known."},
+        }, "required": ["steps"]},
+    }},
+    {"type": "function", "function": {
         "name": "finish",
         "description": "End the run with a short summary of what was done and anything left.",
         "parameters": {"type": "object", "properties": {
@@ -186,7 +207,9 @@ TOOL_CATALOG = """\
 - web_search: public information.  http_request: public APIs and webhooks (writes need approval).
 - track_status, project_status, knowledge_inventory: status and inventory.
 - github_list_repos, github_get_repo, github_get_file: read GitHub.
-- calculate: exact arithmetic.  ask_user: ask the person.  hand_off_to_device: clicks in other apps.
+- calculate: exact arithmetic.  ask_user: ask the person.
+- hand_off_to_browser: read, click and fill in pages of a website or web app in Chrome.
+- hand_off_to_device: clicks and typing in desktop apps on the Mac.
 """
 
 _PLAN_SYSTEM = f"""\
@@ -197,14 +220,17 @@ Return a JSON object:
 {{"summary": one sentence on what the automation does,
   "inputs": [{{"name": snake_case, "label": short label, "description": what it is,
               "required": true|false, "example": example value}}],
-  "steps": [{{"step": the skill step, "tool": the tool that does it, or "ask_user" or
-             "hand_off_to_device", "how": one sentence}}],
+  "steps": [{{"step": the skill step, "tool": the tool that does it, or "ask_user",
+             "hand_off_to_browser" or "hand_off_to_device", "how": one sentence}}],
   "apps": [names of the Mac apps the hand_off_to_device steps use, e.g. "Numbers"],
+  "sites": [host names of the websites the hand_off_to_browser steps use, only ones the
+            skill names, e.g. "erp.example.com"],
   "automatable": "full" | "partial" | "manual",
   "notes": one sentence on limits, e.g. steps that need clicking in a desktop app}}
 Rules: inputs are values that change from run to run (names, dates, amounts,
-files). Prefer MindLoom tools over hand_off_to_device; use hand_off_to_device only
-for steps that must be clicked in another application with no API.
+files). Prefer MindLoom tools over the hand-offs. Use hand_off_to_browser for steps
+done on a website or web app, and hand_off_to_device only for steps that must be done
+in a desktop application.
 {_UNTRUSTED}
 """
 
@@ -221,7 +247,10 @@ Rules:
   addresses, amounts or dates.
 - send_email, create_meeting and changing http_request calls wait for approval;
   if one is rejected, adapt or finish.
-- Steps that need another app on the person's Mac: call hand_off_to_device once for
+- Steps on a website or web app: call hand_off_to_browser with the exact values to
+  enter and what to read back in details. Give it one coherent piece of work at a time
+  (for many records, a batch of at most 10), and check its result before the next.
+- Steps that need a desktop app on the person's Mac: call hand_off_to_device once for
   them, with the exact values to enter in details. Its result says what happened there.
 - This skill may run again and again. Never handle the same item twice: before adding
   rows for emails, invoices, orders or similar, read the file and skip items it already
@@ -264,7 +293,7 @@ def _skill_text(skill: Any) -> str:
 
 def _row(row: Any) -> dict[str, Any]:
     out = dict(row)
-    for key in ("plan", "default_inputs", "inputs", "log", "pending", "device_apps"):
+    for key in ("plan", "default_inputs", "inputs", "log", "pending", "device_apps", "browser_sites"):
         if key in out and isinstance(out[key], str):
             try:
                 out[key] = json.loads(out[key])
@@ -289,6 +318,8 @@ async def prepare_automation(org_id: str, user_id: str, skill_id: str) -> dict[s
 
     from lens.status_trackers import _chat_json
 
+    from shuttle.browser_tasks import clean_sites, sites_in_skill
+
     skill = await _skill(org_id, user_id, skill_id)
     plan = await _chat_json(org_id, _PLAN_SYSTEM, _skill_text(skill))
     plan = {
@@ -307,6 +338,8 @@ async def prepare_automation(org_id: str, user_id: str, skill_id: str) -> dict[s
             for s in (plan.get("steps") or []) if isinstance(s, dict)
         ][:40],
         "apps": [str(a)[:60] for a in (plan.get("apps") or []) if isinstance(a, str) and a.strip()][:10],
+        # Sites the steps were recorded on first, then the ones the planner read in the skill.
+        "sites": clean_sites([*sites_in_skill(skill), *(plan.get("sites") or [])])[:10],
         "automatable": plan.get("automatable") if plan.get("automatable") in {"full", "partial", "manual"} else "partial",
         "notes": str(plan.get("notes") or "")[:300],
     }
@@ -328,9 +361,10 @@ async def update_automation_settings(
     auto_approve: bool | None = None, interval_value: int | None = None,
     interval_unit: str | None = None, schedule: bool | None = None,
     default_inputs: dict[str, Any] | None = None, device_apps: list[str] | None = None,
+    browser_sites: list[str] | None = None,
 ) -> dict[str, Any]:
     """Auto-approve (own skills only), a repeating schedule, inputs for scheduled runs,
-    and the Mac apps MindLoom may operate for this automation."""
+    and the Mac apps and the websites MindLoom may operate for this automation."""
 
     skill = await _skill(org_id, user_id, skill_id)
     current = await get_automation(org_id, user_id, skill_id)
@@ -356,6 +390,24 @@ async def update_automation_settings(
             )
         sets.append("device_apps=:apps")
         params["apps"] = json.dumps(clean_apps(device_apps))
+    if browser_sites is not None:
+        from shuttle.browser_tasks import clean_sites, is_denied_site, normalize_site
+
+        named = [(str(s), normalize_site(s)) for s in browser_sites]
+        invalid = [raw for raw, site in named if site is None]
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Not a website address: {', '.join(invalid)[:200]}. Use a host like erp.example.com.",
+            )
+        denied = [site for _, site in named if site and is_denied_site(site)]
+        if denied:
+            raise HTTPException(
+                status_code=422,
+                detail=f"MindLoom never operates {', '.join(denied)}: it holds sign-ins or passwords.",
+            )
+        sets.append("browser_sites=:sites")
+        params["sites"] = json.dumps(clean_sites(browser_sites))
     if default_inputs is not None:
         sets.append("default_inputs=:inputs")
         params["inputs"] = json.dumps({k: str(v)[:2000] for k, v in default_inputs.items()})
@@ -733,7 +785,7 @@ def _result_message(call_id: str, result: Any) -> dict[str, Any]:
 async def _drain(
     run: dict[str, Any], calls: list[dict[str, Any]], auto_approve: bool,
     allowed_hosts: set[str] | None = None, device_apps: list[str] | None = None,
-    skill_text: str = "", person: str = "the person",
+    skill_text: str = "", person: str = "the person", browser_sites: list[str] | None = None,
 ) -> bool:
     """Run queued tool calls in order. Returns False when the run paused or ended."""
 
@@ -757,19 +809,21 @@ async def _drain(
             _log(run, {"kind": "input", "tool": name, "status": "pending", "summary": str(args.get("question"))[:500]})
             run["messages"] = json.dumps(messages)
             return False
-        if name == "hand_off_to_device":
+        if name in HAND_OFFS:
+            surface = HAND_OFFS[name]
+            allowed = browser_sites if surface == "browser" else device_apps
             task = None
-            if device_apps:
+            if allowed:
                 from shuttle import device_tasks
 
                 task = await device_tasks.create_task(
-                    run, title=str(args.get("steps") or "Steps on your Mac")[:200],
-                    goal=_device_goal(run, args, skill_text), allowed_apps=device_apps,
-                    auto_approve=auto_approve, person=person,
+                    run, title=str(args.get("steps") or "Steps on your computer")[:200],
+                    goal=_device_goal(run, args, skill_text, surface), allowed_apps=allowed,
+                    auto_approve=auto_approve, person=person, surface=surface,
                 )
             run.update(status="waiting_device", pending=json.dumps({
                 "calls": calls, "steps": args.get("steps"), "details": args.get("details"),
-                "device_task_id": task["task_id"] if task else None,
+                "surface": surface, "device_task_id": task["task_id"] if task else None,
             }))
             _log(run, {"kind": "device", "tool": name, "status": "pending", "summary": str(args.get("steps"))[:500]})
             run["messages"] = json.dumps(messages)
@@ -796,13 +850,19 @@ async def _drain(
     return run["status"] not in {"completed", "failed", "stopped"}
 
 
-def _device_goal(run: dict[str, Any], args: dict[str, Any], skill_text: str) -> str:
+# The hand-off tools and the surface each one's device task runs on.
+HAND_OFFS = {"hand_off_to_device": "mac", "hand_off_to_browser": "browser"}
+
+
+def _device_goal(run: dict[str, Any], args: dict[str, Any], skill_text: str, surface: str = "mac") -> str:
     inputs = run.get("inputs")
     inputs = json.loads(inputs) if isinstance(inputs, str) else inputs or {}
+    where = "in Chrome" if surface == "browser" else "on the Mac"
     return (
         f"{skill_text}\n\nInputs for this run: {json.dumps(inputs, ensure_ascii=False) if inputs else '(none)'}"
-        f"\n\nDo these steps on the Mac now: {str(args.get('steps') or '')[:4000]}"
+        f"\n\nDo these steps {where} now: {str(args.get('steps') or '')[:4000]}"
         + (f"\nDetails: {str(args.get('details'))[:4000]}" if args.get("details") else "")
+        + (f"\nStart on: {str(args.get('start_url'))[:500]}" if surface == "browser" and args.get("start_url") else "")
     )
 
 
@@ -847,6 +907,7 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
     )
     device = {
         "device_apps": (automation or {}).get("device_apps") or [], "skill_text": _skill_text(skill),
+        "browser_sites": (automation or {}).get("browser_sites") or [],
         "person": await _person_name(org_id, user_id),
     }
     try:
@@ -945,7 +1006,7 @@ async def respond(
             _log(run, {"kind": "input", "tool": "ask_user", "status": "ok", "summary": answer.strip()[:500]})
         elif status == "waiting_device" and action == "continue":
             messages.append(_result_message(call["id"], {"done": True, "by": "the person", "note": (answer or "").strip()[:2000]}))
-            _log(run, {"kind": "device", "tool": "hand_off_to_device", "status": "ok", "summary": "Marked done"})
+            _log(run, {"kind": "device", "tool": call["function"]["name"], "status": "ok", "summary": "Marked done"})
             from shuttle import device_tasks
 
             await device_tasks.stop_for_run(run_id, "Done by the person")
@@ -989,9 +1050,11 @@ async def continue_after_device(
             raise HTTPException(status_code=409, detail="This run is not waiting for that task.")
         calls = pending.get("calls") or []
         messages = json.loads(run["messages"])
-        messages.append(_result_message(calls[0]["id"], {"on_the_mac": result}))
+        tool = calls[0]["function"]["name"]
+        where = "in_chrome" if HAND_OFFS.get(tool) == "browser" else "on_the_mac"
+        messages.append(_result_message(calls[0]["id"], {where: result}))
         ok = result.get("status") == "completed" and result.get("outcome") != "not_done"
-        _log(run, {"kind": "device", "tool": "hand_off_to_device", "status": "ok" if ok else "error",
+        _log(run, {"kind": "device", "tool": tool, "status": "ok" if ok else "error",
                    "summary": str(result.get("summary") or "")[:500]})
         run.update(messages=json.dumps(messages), status="queued",
                    pending=json.dumps({"calls": calls[1:]}) if len(calls) > 1 else None)

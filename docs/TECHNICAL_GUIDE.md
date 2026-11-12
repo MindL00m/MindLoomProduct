@@ -464,6 +464,16 @@ Legacy .doc, .xls and .ppt, ZIP, and images uploaded directly are not supported.
   - **Hand-back:** when the task ends, `skill_automation.continue_after_device` gives the result to the waiting `hand_off_to_device` call and requeues the run.
   - **Safety lists:** Python and Swift keep the same lists, and a test checks they match.
   - **Self-test:** `apps/desktop-agent/scripts/driver-selftest.sh` checks the driver against a fixture app with real AX.
+- **Browser tasks (`shuttle/browser_tasks.py`, `apps/browser-extension/task-client.js`, `page-driver.js`, `task-policy.js`):**
+  - `hand_off_to_browser` in an automation run creates a `device_tasks` row with `surface = 'browser'` for the sites the person allowed (`skill_automations.browser_sites`). With none allowed, the person does the steps. The step loop, approvals and hand-back are the device-task ones above; only the prompt, tools and checks differ.
+  - The extension polls `GET /captures/device-tasks?status=pending&surface=browser` and claims with `?surface=browser`. The Mac app never sees or claims a browser task, and the extension never a Mac one.
+  - **Observation:** `page-driver.js` is injected into every frame and lists controls as `[e12] button "Save"` with the visible text in between: open shadow roots, same-site iframes, the front dialog only when one is open, what is on screen first when the page is large, and messages that flashed up since the last read. It leaves out hidden text and never reads password, one-time-code or card fields.
+  - **Actions:** `open_url`, `switch_tab`, `go_back`, `press`, `set_value`, `select_option`, `type_text`, `key`, `hover`, `scroll`, `wait`, `read`, `answer_dialog`. Clicks and typing are real input through `chrome.debugger`; a click is only sent after a pointer move is seen to land on the control, otherwise the DOM click is used. At most 150 actions per task.
+  - **Sites:** https only (http on localhost). A page must be on a site allowed for the automation and allowed in the extension popup. Sign-in and password-manager sites (`DENIED_SITES`) and MindLoom's own pages are always refused, on the server and in the extension. An embedded page from another site is read only if that site is allowed too.
+  - **Approvals:** a control whose label looks irreversible, Enter in a form whose button does, and OK on a confirm dialog all pause in `needs_approval`. The extension repeats the checks against the live page and refuses an unapproved one.
+  - **Stop:** Stop on the web page or in the popup, or Cancel on Chrome's "started debugging" bar.
+  - **Safety lists:** Python and JavaScript keep the same lists, and a test checks they match.
+  - **Tests:** `tests/test_browser_tasks.py`; `node --test apps/browser-extension`; `apps/browser-extension-e2e` runs the real extension in Chromium against a mock API and a fixture page.
 
 ---
 

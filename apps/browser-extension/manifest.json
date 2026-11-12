@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MindLoom Capture",
-  "version": "1.5.0",
-  "description": "Turns approved Chrome screenshot sessions into reviewable MindLoom Skill Files, and performs their browser steps when you run one.",
+  "version": "1.6.0",
+  "description": "Turns approved Chrome screenshot sessions into reviewable MindLoom Skill Files, and does their steps on the sites you allow when you run one.",
   "permissions": ["tabs", "activeTab", "scripting", "storage", "debugger", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {

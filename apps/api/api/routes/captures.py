@@ -350,6 +350,7 @@ class AutomationSettingsInput(BaseModel):
     interval_unit: str | None = None
     default_inputs: dict[str, str] | None = None
     device_apps: list[str] | None = Field(default=None, max_length=20)
+    browser_sites: list[str] | None = Field(default=None, max_length=20)
 
 
 class AutomationRunInput(BaseModel):
@@ -433,6 +434,7 @@ async def skill_automation_settings(
         *ctx, skill_id, auto_approve=body.auto_approve, schedule=body.schedule,
         interval_value=body.interval_value, interval_unit=body.interval_unit,
         default_inputs=body.default_inputs, device_apps=body.device_apps,
+        browser_sites=body.browser_sites,
     )
 
 
@@ -477,6 +479,7 @@ async def stop_automation_run(
 # --- Device tasks: the Mac app operates allowed apps for an automation run --------------
 # The Mac polls, claims, then sends each screen and action result to /step and gets the
 # next action. Approvals and the person's answers come from the web page or the Mac.
+# The Chrome extension does the same for web pages, with ``surface=browser``.
 
 from typing import Literal  # noqa: E402
 
@@ -491,12 +494,27 @@ class DeviceElementInput(BaseModel):
     focused: bool = False
 
 
+class DeviceTabInput(BaseModel):
+    ref: str = Field(max_length=8)
+    title: str = Field(default="", max_length=300)
+    url: str = Field(default="", max_length=2000)
+
+
+class DeviceDialogInput(BaseModel):
+    type: str = Field(default="", max_length=20)
+    message: str = Field(default="", max_length=2000)
+
+
 class DeviceObservationInput(BaseModel):
     app: str = Field(default="", max_length=120)
     bundle_id: str = Field(default="", max_length=200)
     text: str = Field(default="", max_length=60_000)
     elements: list[DeviceElementInput] = Field(default_factory=list, max_length=3000)
     running_apps: list[str] = Field(default_factory=list, max_length=50)
+    # Browser tasks: the page's address, other open tabs on allowed sites, an open dialog.
+    url: str = Field(default="", max_length=2000)
+    tabs: list[DeviceTabInput] = Field(default_factory=list, max_length=20)
+    dialog: DeviceDialogInput | None = None
 
 
 class DeviceResultInput(BaseModel):
@@ -504,7 +522,11 @@ class DeviceResultInput(BaseModel):
     ok: bool
     detail: str = Field(default="", max_length=2000)
     changed: bool | None = None
-    blocked: Literal["needs_approval", "secure_field", "app_not_allowed", "declined_foreground"] | None = None
+    # Text an action read from the screen (the browser's ``read``).
+    text: str = Field(default="", max_length=20_000)
+    blocked: Literal[
+        "needs_approval", "secure_field", "app_not_allowed", "declined_foreground", "site_not_allowed",
+    ] | None = None
 
 
 class DeviceStepInput(BaseModel):
@@ -523,10 +545,12 @@ async def list_device_tasks(
     status: Annotated[Literal[
         "pending", "running", "needs_approval", "needs_person", "completed", "failed", "stopped"
     ] | None, Query()] = None,
+    surface: Annotated[Literal["mac", "browser"], Query()] = "mac",
 ) -> list[dict]:
-    """The caller's device tasks, newest first; the Mac app polls ``?status=pending``."""
+    """The caller's device tasks, newest first. The Mac app polls ``?status=pending``;
+    the Chrome extension polls ``?status=pending&surface=browser``."""
 
-    return await device_tasks.list_tasks(*ctx, status=status)
+    return await device_tasks.list_tasks(*ctx, status=status, surface=surface)
 
 
 @router.get("/device-tasks/{task_id}")
@@ -535,10 +559,14 @@ async def device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(requ
 
 
 @router.post("/device-tasks/{task_id}/claim")
-async def claim_device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)]) -> dict:
-    """The Mac app takes a pending task. A second claim gets 409."""
+async def claim_device_task(
+    task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
+    surface: Annotated[Literal["mac", "browser"], Query()] = "mac",
+) -> dict:
+    """The Mac app (or, with ``surface=browser``, the extension) takes a pending task.
+    A second claim, or a claim for the other app's task, gets 409."""
 
-    return await device_tasks.claim(*ctx, task_id)
+    return await device_tasks.claim(*ctx, task_id, surface=surface)
 
 
 @router.post("/device-tasks/{task_id}/step")

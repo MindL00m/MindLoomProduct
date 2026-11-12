@@ -1,7 +1,8 @@
 # Dev plan: autonomous desktop steps for Workflows (macOS)
 
-Status: **approved 2026-11-01; host mode (M0–M3) implemented on `feature/desktop-automation`.**
-macOS only; Windows later.
+Status: **approved 2026-11-01; host mode (M0–M3) implemented and merged to `main`.**
+macOS only; Windows later. Web pages are covered separately by browser tasks in the Chrome
+extension (`shuttle/browser_tasks.py`; see the Technical Guide).
 
 Decisions:
 - Host mode first, then the VM.

@@ -79,6 +79,41 @@ It never types. A step that needs a value pauses with Next in the Loom Capture o
 The run client polls every 10 seconds while idle and every 1.5 seconds during a run,
 using the access token from the popup.
 
+## Browser tasks (Run with MindLoom)
+
+When an automation run (web app → Workflows → **Run with MindLoom**) reaches steps on a
+website, it creates a browser task for the sites allowed under **In Chrome**. The
+extension picks it up and does those steps in a tab of its own:
+
+- **Reads the page** as a numbered outline of its controls and visible text, in every
+  frame of the tab, and sends it to MindLoom to choose each step. Hidden text is left
+  out. Password, one-time-code and card fields are never read.
+- **Acts one step at a time:** open a page, click, replace a field's text, choose from a
+  select, type, press Enter/Tab/Escape/arrows, hover, scroll, read a table, answer a
+  page dialog, switch to a tab a link opened. Clicks and typing are real input through
+  `chrome.debugger`.
+- **Only allowed sites.** A page must be https, on a site allowed for the automation,
+  and allowed here in the popup ("Sites MindLoom may click on"). Sign-in and
+  password-manager sites and MindLoom's own pages are always refused.
+- **Approvals.** A control whose label sends, submits, deletes, pays or confirms is only
+  clicked when the action arrives approved. The same goes for Enter in a form with such
+  a button, and for OK on a confirm dialog.
+- **No passwords.** It never types into password, code or card fields; MindLoom asks you.
+- **You're in control.** **Stop** in the popup, Cancel on Chrome's debugging bar, or Stop
+  on the web page stops the task and its run.
+
+It polls every 10 seconds while idle. Keep the working tab visible: Chrome slows pages in
+hidden tabs. File uploads and downloads are not done; MindLoom asks you.
+
+Checks:
+
+```bash
+node --test apps/browser-extension      # the safety rules (task-policy.js)
+cd apps/browser-extension-e2e && npm install && npx playwright-core install chromium && npm test
+```
+
+The second runs this extension in Chromium against a mock API and a fixture page.
+
 Version 1.5.0 adds the `debugger` and `alarms` permissions. Chrome disables the
 extension after an update that adds permissions until you re-enable it on
 `chrome://extensions`.
@@ -91,6 +126,9 @@ extension after an update that adds permissions until you re-enable it on
 | `background.js` | Service worker — tracks active tab, captures  |
 | `anchor.js`     | Content script — records and finds page anchors |
 | `run-client.js` | Performs browser steps of skill runs          |
+| `task-client.js` | Does browser tasks: polls, reads the page, sends real input |
+| `page-driver.js` | Injected into the working tab: the page outline and DOM actions |
+| `task-policy.js` | Safety rules checked before every action       |
 | `popup.html`    | Popup UI                                     |
 | `popup.js`      | Popup logic — reads tab state, capture toggle |
 | `captures.html` | Gallery page for queued screenshots           |

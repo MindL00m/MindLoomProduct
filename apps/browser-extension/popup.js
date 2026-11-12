@@ -106,7 +106,8 @@ async function renderSites() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const origin = new URL(tab?.url || "").origin;
-    if (origin.startsWith("https://") && !allowed.includes(origin)) current = origin;
+    const usable = origin.startsWith("https://") || origin.startsWith("http://localhost");
+    if (usable && !allowed.includes(origin)) current = origin;
   } catch {
     /* no usable tab */
   }
@@ -145,6 +146,40 @@ async function renderSites() {
     sitesList.append(empty);
   }
 }
+
+// --- A browser task in progress: what it is waiting for, and Stop ---------------------
+
+const taskBox = document.getElementById("task-box");
+const taskStatus = document.getElementById("task-status");
+const taskStop = document.getElementById("task-stop");
+
+async function renderTask() {
+  let task;
+  try {
+    task = await chrome.runtime.sendMessage({ type: "GET_BROWSER_TASK" });
+  } catch {
+    task = null;
+  }
+  taskBox.hidden = !task?.active;
+  if (!task?.active) return;
+  const where = (task.sites || []).join(", ");
+  taskStatus.textContent =
+    task.status === "needs_approval"
+      ? "Waiting for your approval in MindLoom (Workflows)."
+      : task.status === "needs_person"
+        ? "Waiting for you to do a step: see MindLoom (Workflows)."
+        : `Doing steps on ${where || "the allowed sites"}. Cancel on Chrome's debugging bar also stops it.`;
+}
+
+taskStop.addEventListener("click", async () => {
+  taskStop.disabled = true;
+  await chrome.runtime.sendMessage({ type: "STOP_BROWSER_TASK" }).catch(() => undefined);
+  taskStop.disabled = false;
+  void renderTask();
+});
+
+void renderTask();
+setInterval(renderTask, 2000);
 
 loadActiveTab();
 loadCaptureState();

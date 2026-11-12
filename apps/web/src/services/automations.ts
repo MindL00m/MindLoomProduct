@@ -15,6 +15,8 @@ export interface AutomationPlan {
   steps: { step: string; tool: string; how: string }[];
   /** Mac apps the device steps use, as the planner saw them. */
   apps?: string[];
+  /** Websites the browser steps use: the ones the skill was recorded on or names. */
+  sites?: string[];
   automatable: "full" | "partial" | "manual";
   notes: string;
 }
@@ -30,6 +32,8 @@ export interface Automation {
   default_inputs: Record<string, string>;
   /** Mac apps the person allowed MindLoom to operate for this automation. */
   device_apps: string[];
+  /** Websites the person allowed MindLoom to operate in Chrome for this automation. */
+  browser_sites: string[];
 }
 
 export type AutomationRunStatus =
@@ -70,12 +74,17 @@ export interface DeviceTaskLogEntry {
   result?: string;
 }
 
-/** Part of a run that the Mac app does in the allowed apps (shuttle/device_tasks.py). */
+/**
+ * Part of a run done outside MindLoom (shuttle/device_tasks.py): by the Mac app in the
+ * allowed apps, or by the Chrome extension on the allowed sites (surface "browser").
+ */
 export interface DeviceTask {
   task_id: string;
   run_id: string;
   status: DeviceTaskStatus;
   title: string;
+  surface: "mac" | "browser";
+  /** Mac apps for a Mac task, sites for a browser task. */
   allowed_apps: string[];
   log: DeviceTaskLogEntry[];
   pending: { instruction?: string; description?: string; reason?: string; tool?: string } | null;
@@ -98,6 +107,7 @@ export interface AutomationRun {
     question?: string;
     steps?: string;
     details?: string | null;
+    surface?: "mac" | "browser";
     device_task_id?: string | null;
   } | null;
   device_task?: DeviceTask | null;
@@ -150,6 +160,7 @@ export function updateAutomation(
     interval_unit?: string;
     default_inputs?: Record<string, string>;
     device_apps?: string[];
+    browser_sites?: string[];
   },
 ): Promise<Automation> {
   return call(skillPath(skillId), { method: "PATCH", body: JSON.stringify(settings) }, "Could not save.");

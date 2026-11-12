@@ -667,6 +667,10 @@ _SKILL_AUTOMATION_SQL = [
     """CREATE INDEX IF NOT EXISTS idx_device_tasks_user_status
   ON device_tasks (org_id, user_id, status, created_at DESC)""",
     "CREATE INDEX IF NOT EXISTS idx_device_tasks_run ON device_tasks (run_id)",
+    # Web pages in Chrome (shuttle/browser_tasks.py): the sites the person allowed for an
+    # automation, and which app a device task is for ('mac' or 'browser').
+    "ALTER TABLE skill_automations ADD COLUMN IF NOT EXISTS browser_sites TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE device_tasks ADD COLUMN IF NOT EXISTS surface TEXT NOT NULL DEFAULT 'mac'",
 ]
 
 _SKILL_RUNS_SQL = [

@@ -1,0 +1,71 @@
+# MindLoom WhatsApp plugin for OpenClaw
+
+Lets MindLoom read the WhatsApp messages you receive. [OpenClaw](https://docs.openclaw.ai)
+runs on your own computer and links to WhatsApp as a companion device; this plugin
+forwards each inbound text message to MindLoom, where it becomes searchable in Ask.
+
+- **Read-only.** While the plugin is enabled (`silent`, on by default) the OpenClaw
+  agent does not reply to anyone on WhatsApp. MindLoom never sends on WhatsApp.
+- **Private.** Chats you link are visible only to you in MindLoom.
+- **Text only.** Media, reactions and messages you send yourself are not forwarded.
+- **From now on.** Only messages that arrive after linking are read. For history,
+  upload a chat export in MindLoom (Import > Upload files).
+
+## Set up
+
+OpenClaw needs Node 24.16+ (plugins: 24.22.1+). OpenClaw's docs recommend a separate
+WhatsApp number; linking adds a companion device to whichever account scans the QR code.
+
+1. Install OpenClaw and its WhatsApp channel, then link by scanning the QR code:
+
+   ```bash
+   npm install -g openclaw@latest --allow-scripts=openclaw
+   openclaw onboard --install-daemon
+   openclaw plugins install @openclaw/whatsapp
+   openclaw channels login --channel whatsapp
+   ```
+
+2. In MindLoom, open Import > Live WhatsApp chats and create a link token.
+
+3. Install this plugin and give it your MindLoom API address and the token:
+
+   ```bash
+   openclaw plugins install --link /path/to/MindLoomProduct/apps/openclaw-plugin --force
+   openclaw plugins enable mindloom-whatsapp
+   ```
+
+   In `~/.openclaw/openclaw.json`:
+
+   ```json5
+   {
+     plugins: { entries: { "mindloom-whatsapp": { config: {
+       apiUrl: "https://your-mindloom-api.example",
+       token: "mlwa_...",
+     } } } },
+     channels: { whatsapp: {
+       pluginHooks: { messageReceived: true },   // lets the plugin see inbound messages
+       dmPolicy: "open", allowFrom: ["*"],       // every direct chat
+       groupPolicy: "open",
+       groups: { "*": { requireMention: false } }, // every group
+       sendReadReceipts: false,                  // do not mark chats as read
+     } },
+     messages: { ackReaction: "" },
+   }
+   ```
+
+4. Restart the gateway (`openclaw gateway`) and check `openclaw plugins inspect mindloom-whatsapp --runtime --json`.
+
+Messages appear in MindLoom a couple of minutes after a chat goes quiet.
+
+## Not yet verified against a running gateway
+
+The plugin's logic is tested (`npm test`) and was run end to end against MindLoom's
+API, but with simulated OpenClaw events. Two things depend on OpenClaw behaviour its
+docs do not spell out, so check them on first use:
+
+- **Field names for WhatsApp.** The group id and group name are read from
+  `ctx.conversationId` and `metadata.channelName`, with fallbacks. If groups show up
+  under a sender's name, adjust `toMindLoomMessage` in `forward.js`.
+- **Staying silent.** Replies are stopped by claiming the turn in `before_dispatch`.
+  Send yourself a test message from another number and confirm nothing is sent back
+  before opening `dmPolicy` to everyone.

@@ -128,6 +128,35 @@ _LLM_SETTINGS_PROVIDERS_SQL = [
   CHECK (provider IN ('openai', 'anthropic', 'local'))""",
 ]
 
+# Live WhatsApp via OpenClaw (db/migrations/021_whatsapp_live.sql).
+_WHATSAPP_LIVE_SQL = [
+    """CREATE TABLE IF NOT EXISTS whatsapp_live_links (
+    link_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ,
+    UNIQUE (org_id, user_id)
+)""",
+    """CREATE TABLE IF NOT EXISTS whatsapp_live_messages (
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    chat_name TEXT,
+    sender_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    sent_at TIMESTAMPTZ NOT NULL,
+    body TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ingested_at TIMESTAMPTZ,
+    PRIMARY KEY (org_id, user_id, chat_id, message_id)
+)""",
+    """CREATE INDEX IF NOT EXISTS idx_whatsapp_live_pending
+  ON whatsapp_live_messages (received_at) WHERE ingested_at IS NULL""",
+]
+
 _CHUNKS_VISIBILITY_SQL = """
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS visible_to TEXT[] NOT NULL DEFAULT '{}'
 """
@@ -673,6 +702,8 @@ async def ensure_schema() -> None:
             await session.execute(text(_CONNECTION_POLICIES_INDEX_SQL))
             await session.execute(text(_LLM_SETTINGS_TABLE_SQL))
             for statement in _LLM_SETTINGS_PROVIDERS_SQL:
+                await session.execute(text(statement))
+            for statement in _WHATSAPP_LIVE_SQL:
                 await session.execute(text(statement))
             await session.execute(text(_CHUNKS_VISIBILITY_SQL))
             for statement in _DURABLE_INTEGRATIONS_SQL:

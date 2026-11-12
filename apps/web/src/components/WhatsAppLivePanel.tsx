@@ -4,7 +4,10 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import {
   getWhatsAppLive,
   linkWhatsAppLive,
+  listWhatsAppLiveChats,
+  renameWhatsAppLiveChat,
   unlinkWhatsAppLive,
+  type WhatsAppLiveChat,
   type WhatsAppLiveStatus,
 } from "@/services/whatsappLive";
 
@@ -14,10 +17,28 @@ export function WhatsAppLivePanel() {
   const [token, setToken] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [chats, setChats] = useState<WhatsAppLiveChat[]>([]);
 
   useEffect(() => {
     getWhatsAppLive().then(setStatus).catch((error: Error) => setNote(error.message));
+    listWhatsAppLiveChats().then(setChats).catch(() => setChats([]));
   }, []);
+
+  async function rename(chat: WhatsAppLiveChat) {
+    const name = window.prompt(
+      chat.is_group
+        ? "Name this group (WhatsApp does not share group names with MindLoom):"
+        : "Name this chat:",
+      chat.named_by_you ? chat.name : "",
+    );
+    if (name === null) return;
+    try {
+      setChats(await renameWhatsAppLiveChat(chat.chat_id, name));
+      setNote("Renamed. The chat is being read in again under its new name.");
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : "Could not rename the chat.");
+    }
+  }
 
   async function run(action: () => Promise<WhatsAppLiveStatus>, done: string) {
     setBusy(true);
@@ -25,6 +46,7 @@ export function WhatsAppLivePanel() {
     try {
       const next = await action();
       setStatus(next);
+      setChats(next.linked ? await listWhatsAppLiveChats().catch(() => []) : []);
       setToken(next.token ?? null);
       setNote(done);
     } catch (error) {
@@ -65,6 +87,25 @@ export function WhatsAppLivePanel() {
             apps/openclaw-plugin/README.md.
           </p>
         </div>
+      )}
+      {chats.length > 0 && (
+        <ul className="mt-3 divide-y divide-border rounded-md border border-border text-sm">
+          {chats.map((chat) => (
+            <li key={chat.chat_id} className="flex items-center gap-3 px-3 py-2">
+              <span className="min-w-0 flex-1 truncate">
+                <span className="font-medium">{chat.name}</span>
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {chat.is_group ? `group, ${chat.participants} people` : "direct"} · {chat.messages}{" "}
+                  message{chat.messages === 1 ? "" : "s"}
+                </span>
+              </span>
+              <button className="text-xs underline-offset-2 hover:underline" onClick={() => void rename(chat)}>
+                {chat.is_group && !chat.named_by_you ? "Name this group" : "Rename"}
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <PrimaryButton

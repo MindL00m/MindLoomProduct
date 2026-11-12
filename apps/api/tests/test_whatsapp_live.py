@@ -65,3 +65,47 @@ async def test_only_a_link_token_reaches_the_ingest_endpoint(header) -> None:
     with pytest.raises(HTTPException) as exc:
         await require_link(Request({"type": "http", "headers": headers}))
     assert exc.value.status_code == 401
+
+
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("+919401264052", "+919401264052"),
+    ("919401264052@s.whatsapp.net", "+919401264052"),
+    ("919401264052:12@s.whatsapp.net", "+919401264052"),
+    ("whatsapp:+44 7700 900123", "+447700900123"),
+    ("+1 (415) 555-2671", "+14155552671"),
+    ("4915112345678@c.us", "+4915112345678"),
+    ("971501234567", "+971501234567"),
+    ("120363001@G.US", "120363001@g.us"),
+    ("98765432109876@lid", "98765432109876@lid"),
+    ("", ""),
+])
+def test_numbers_from_any_country_normalise_without_assuming_one(raw, expected) -> None:
+    from weaver.whatsapp_live import normalize_whatsapp_id
+
+    assert normalize_whatsapp_id(raw) == expected
+
+
+def test_the_same_person_is_one_chat_however_their_number_arrives() -> None:
+    a = normalize_message(LiveMessage(text="hi", sender_id="447700900123@s.whatsapp.net"), NOW)
+    b = normalize_message(LiveMessage(text="yo", sender_id="+44 7700 900123", sender_name="Tom"), NOW)
+    assert a["chat_id"] == b["chat_id"] == "+447700900123"
+    # No saved contact name: the number stands in for it.
+    assert a["sender_name"] == "+447700900123"
+
+
+def test_a_group_is_its_own_chat_and_is_not_named_after_a_member() -> None:
+    row = normalize_message(LiveMessage(
+        text="Docs are signed.", chat_id="120363001234@g.us", is_group=True,
+        sender_id="+5511987654321", sender_name="Ana",
+    ), NOW)
+    assert (row["chat_id"], row["chat_name"]) == ("120363001234@g.us", "WhatsApp group 1234")
+    assert (row["sender_id"], row["sender_name"]) == ("+5511987654321", "Ana")
+    named = normalize_message(LiveMessage(
+        text="x", chat_id="120363001234@g.us", chat_name="Ops team", sender_id="+5511987654321",
+    ), NOW)
+    assert named["chat_name"] == "Ops team"
+
+
+def test_status_updates_and_channels_are_not_chats() -> None:
+    for chat in ("status@broadcast", "12036300@newsletter"):
+        assert normalize_message(LiveMessage(text="x", chat_id=chat, sender_id="+65"), NOW) is None

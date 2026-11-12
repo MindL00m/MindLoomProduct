@@ -9,6 +9,31 @@ const first = (...values) => {
   return undefined;
 };
 
+/**
+ * A WhatsApp identity in one stable form, whatever the country:
+ * "+<digits>" for a phone number, the JID unchanged for groups ("...@g.us") and
+ * for contacts WhatsApp only identifies by a private id ("...@lid").
+ * No country code is ever assumed or added.
+ */
+export function normalizeWhatsAppId(value) {
+  if (value === undefined || value === null) return undefined;
+  let id = String(value).trim().replace(/^whatsapp:/i, "");
+  if (!id) return undefined;
+  const at = id.indexOf("@");
+  if (at > 0) {
+    const domain = id.slice(at + 1).toLowerCase();
+    if (domain !== "s.whatsapp.net" && domain !== "c.us") return id.toLowerCase();
+    id = id.slice(0, at).split(":")[0]; // drop the device suffix (number:device@...)
+  }
+  const digits = id.replace(/[\s().-]/g, "");
+  if (/^\+?\d{6,15}$/.test(digits)) return `+${digits.replace(/^\+/, "")}`;
+  return id;
+}
+
+const isGroupId = (id) => typeof id === "string" && id.endsWith("@g.us");
+// Status updates and channels are broadcasts, not chats.
+const isBroadcast = (id) => typeof id === "string" && /@(broadcast|newsletter)$/.test(id);
+
 /** True for a message that arrived on the WhatsApp channel. */
 export function isWhatsApp(event = {}, ctx = {}) {
   const meta = event.metadata ?? {};
@@ -21,16 +46,28 @@ export function toMindLoomMessage(event = {}, ctx = {}) {
   const meta = event.metadata ?? {};
   const text = first(event.content, event.text, event.body);
   if (typeof text !== "string") return null;
-  const senderId = first(event.senderId, meta.senderE164, meta.senderId, event.from, ctx.from);
+  // OpenClaw gives the phone number as metadata.senderE164 when WhatsApp reveals it,
+  // and a private id (senderId) otherwise.
+  const senderId = normalizeWhatsAppId(
+    first(meta.senderE164, event.senderId, meta.senderId, ctx.senderId, event.from),
+  );
+  // ctx.conversationId is the group JID for a group and the other person for a direct chat.
+  const conversationId = normalizeWhatsAppId(
+    first(ctx.conversationId, event.conversationId, meta.originatingTo, event.from),
+  );
+  if (isBroadcast(conversationId)) return null;
+  const isGroup = isGroupId(conversationId);
+  const senderName = first(meta.senderName, event.senderName, meta.senderUsername);
   return {
     text,
-    message_id: first(event.messageId, meta.messageId) !== undefined
-      ? String(first(event.messageId, meta.messageId)) : undefined,
-    // Groups have their own conversation id; a direct chat is identified by the sender.
-    chat_id: first(ctx.conversationId, event.conversationId, meta.threadId, event.threadId, senderId),
-    chat_name: first(meta.channelName, meta.groupName, meta.senderName),
-    sender_id: senderId !== undefined ? String(senderId) : undefined,
-    sender_name: first(meta.senderName, event.senderName),
+    message_id: first(event.messageId, meta.messageId, ctx.messageId) !== undefined
+      ? String(first(event.messageId, meta.messageId, ctx.messageId)) : undefined,
+    chat_id: conversationId ?? senderId,
+    // OpenClaw does not pass a group's name to plugins; MindLoom names it instead.
+    chat_name: isGroup ? first(meta.channelName, meta.groupSubject, meta.groupName) : senderName,
+    is_group: isGroup,
+    sender_id: senderId,
+    sender_name: senderName,
     timestamp: first(event.timestamp, meta.timestamp, ctx.timestamp) ?? Date.now(),
   };
 }

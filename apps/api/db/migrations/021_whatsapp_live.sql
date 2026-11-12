@@ -26,3 +26,12 @@ CREATE TABLE IF NOT EXISTS whatsapp_live_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_whatsapp_live_pending
   ON whatsapp_live_messages (received_at) WHERE ingested_at IS NULL;
+-- Names the user gives a chat. OpenClaw does not pass a group's name to plugins.
+CREATE TABLE IF NOT EXISTS whatsapp_live_chats (
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    chat_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id, chat_id)
+);

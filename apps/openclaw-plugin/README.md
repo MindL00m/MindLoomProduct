@@ -7,7 +7,17 @@ forwards each inbound text message to MindLoom, where it becomes searchable in A
 - **Read-only.** While the plugin is enabled (`silent`, on by default) the OpenClaw
   agent does not reply to anyone on WhatsApp. MindLoom never sends on WhatsApp.
 - **Private.** Chats you link are visible only to you in MindLoom.
-- **Text only.** Media, reactions and messages you send yourself are not forwarded.
+- **Every chat.** Direct chats and groups, from numbers in any country. Numbers are
+  kept in international form (`+<country code><number>`) exactly as WhatsApp gives
+  them; no country is assumed. Contacts whose number WhatsApp hides are kept under
+  their private id. Status updates and channels are skipped.
+- **Text only, incoming only.** Media and reactions are not forwarded. Messages you
+  send from your own phone are not forwarded either, because OpenClaw does not hand
+  those to plugins, so a chat shows what others wrote to you. (Your own
+  "Message yourself" chat does come through.)
+- **Group names.** OpenClaw gives plugins a group's id but not its name. A group
+  appears in MindLoom as "WhatsApp group 1234" until you name it once under
+  Import > Live WhatsApp chats; MindLoom then uses that name everywhere.
 - **From now on.** Only messages that arrive after linking are read. For history,
   upload a chat export in MindLoom (Import > Upload files).
 
@@ -70,7 +80,8 @@ Checked on OpenClaw 2026.11.3 with a real linked WhatsApp account (12 Nov 2026):
 - A gateway that has never been through `openclaw onboard` also needs
   `openclaw config set gateway.mode local` before it will start.
 
-Not yet checked on a real account: **group messages**. The group id and group name
-are read from `ctx.conversationId` and `metadata.channelName`, with fallbacks. If a
-group shows up under a sender's name, adjust `toMindLoomMessage` in `forward.js`.
-Start with one group in `channels.whatsapp.groups` before allowing all of them.
+**Group messages** are handled from OpenClaw's source rather than from a live group
+message: the event carries the group JID as `ctx.conversationId`, the speaker in
+`metadata.senderE164` / `metadata.senderName`, and no group name. That shape is
+covered by `forward.test.js`. If a real group ever shows up wrongly, compare the
+event against `toMindLoomMessage` in `forward.js`.

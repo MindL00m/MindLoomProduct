@@ -30,11 +30,15 @@ export interface Automation {
   interval_unit: string | null;
   next_run_at: string | null;
   default_inputs: Record<string, string>;
-  /** Mac apps the person allowed MindLoom to operate for this automation. */
+  /** Desktop apps the person allowed MindLoom to operate for this automation. */
   device_apps: string[];
+  /** Which computer does the desktop-app steps: the Mac app or MindLoom for Windows. */
+  device_os?: DeviceOS;
   /** Websites the person allowed MindLoom to operate in Chrome for this automation. */
   browser_sites: string[];
 }
+
+export type DeviceOS = "mac" | "windows";
 
 export type AutomationRunStatus =
   | "queued"
@@ -75,16 +79,17 @@ export interface DeviceTaskLogEntry {
 }
 
 /**
- * Part of a run done outside MindLoom (shuttle/device_tasks.py): by the Mac app in the
- * allowed apps, or by the Chrome extension on the allowed sites (surface "browser").
+ * Part of a run done outside MindLoom (shuttle/device_tasks.py): by the Mac app or
+ * MindLoom for Windows (surface "windows") in the allowed apps, or by the Chrome extension
+ * on the allowed sites (surface "browser").
  */
 export interface DeviceTask {
   task_id: string;
   run_id: string;
   status: DeviceTaskStatus;
   title: string;
-  surface: "mac" | "browser";
-  /** Mac apps for a Mac task, sites for a browser task. */
+  surface: "mac" | "browser" | "windows";
+  /** Apps for a Mac or Windows task, sites for a browser task. */
   allowed_apps: string[];
   log: DeviceTaskLogEntry[];
   pending: { instruction?: string; description?: string; reason?: string; tool?: string } | null;
@@ -109,7 +114,7 @@ export interface AutomationRun {
     question?: string;
     steps?: string;
     details?: string | null;
-    surface?: "mac" | "browser";
+    surface?: "mac" | "browser" | "windows";
     device_task_id?: string | null;
   } | null;
   device_task?: DeviceTask | null;
@@ -162,6 +167,7 @@ export function updateAutomation(
     interval_unit?: string;
     default_inputs?: Record<string, string>;
     device_apps?: string[];
+    device_os?: DeviceOS;
     browser_sites?: string[];
   },
 ): Promise<Automation> {

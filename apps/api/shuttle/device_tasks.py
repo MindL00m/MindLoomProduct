@@ -333,7 +333,7 @@ class _MacDriver:
         return describe(name, args, elements)
 
 
-SURFACES = ("mac", "browser")
+SURFACES = ("mac", "browser", "windows")
 
 
 def _driver(task_or_surface: Any) -> Any:
@@ -342,6 +342,10 @@ def _driver(task_or_surface: Any) -> Any:
         from shuttle import browser_tasks
 
         return browser_tasks
+    if surface == "windows":
+        from shuttle import windows_tasks
+
+        return windows_tasks
     return _MacDriver
 
 
@@ -465,7 +469,7 @@ def public(task: dict[str, Any]) -> dict[str, Any]:
         "task_id": task["task_id"], "run_id": task["run_id"], "skill_id": task["skill_id"],
         "status": task["status"], "title": task.get("title") or "",
         "surface": task.get("surface") or "mac",
-        # Mac apps for a Mac task, sites for a browser task.
+        # Apps for a Mac or Windows task, sites for a browser task.
         "allowed_apps": _json(task.get("allowed_apps"), []),
         "log": _json(task.get("log"), [])[-60:], "pending": shown or None,
         "summary": task.get("summary"), "error": task.get("error"), "steps": task.get("steps") or 0,
@@ -548,8 +552,8 @@ async def create_task(
     run: dict[str, Any], *, title: str, goal: str, allowed_apps: list[str], auto_approve: bool,
     person: str = "the person", surface: str = "mac", records: list[str] | None = None,
 ) -> dict[str, Any]:
-    """A pending task the Mac app (or, for ``surface`` "browser", the Chrome extension)
-    will pick up. ``goal`` is the skill, inputs and steps; ``allowed_apps`` are the apps,
+    """A pending task the Mac app (or, for ``surface`` "windows", MindLoom for Windows;
+    for "browser", the Chrome extension) will pick up. ``goal`` is the skill, inputs and steps; ``allowed_apps`` are the apps,
     or the sites."""
 
     driver = _driver(surface)
@@ -577,7 +581,8 @@ async def create_task(
 async def list_tasks(
     org_id: str, user_id: str, status: str | None = None, surface: str = "mac",
 ) -> list[dict[str, Any]]:
-    """The person's tasks for one surface: the Mac app and the extension each see their own."""
+    """The person's tasks for one surface: the Mac app, the Windows app and the extension
+    each see their own."""
 
     if _memory is not None:
         rows = [t for t in _memory.values() if t["org_id"] == org_id and t["user_id"] == user_id
@@ -601,8 +606,8 @@ async def get_task(org_id: str, user_id: str, task_id: str) -> dict[str, Any]:
 
 
 async def claim(org_id: str, user_id: str, task_id: str, surface: str | None = None) -> dict[str, Any]:
-    """Take a pending task. ``surface`` is who is claiming: the Mac app never takes a
-    browser task, and the extension never takes a Mac one."""
+    """Take a pending task. ``surface`` is who is claiming: the Mac app, the Windows app
+    and the extension each take only their own."""
 
     task = await _load(org_id, user_id, task_id)
     if surface is not None and (task.get("surface") or "mac") != surface:

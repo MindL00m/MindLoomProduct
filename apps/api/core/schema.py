@@ -673,6 +673,9 @@ _SKILL_AUTOMATION_SQL = [
     "ALTER TABLE device_tasks ADD COLUMN IF NOT EXISTS surface TEXT NOT NULL DEFAULT 'mac'",
     # The same steps for many records: the list, the results so far, the current record's budget.
     "ALTER TABLE device_tasks ADD COLUMN IF NOT EXISTS batch TEXT",
+    # Native Windows apps (shuttle/windows_tasks.py): which computer does an automation's
+    # desktop-app steps ('mac' or 'windows'). device_tasks.surface is then 'windows'.
+    "ALTER TABLE skill_automations ADD COLUMN IF NOT EXISTS device_os TEXT NOT NULL DEFAULT 'mac'",
 ]
 
 _SKILL_RUNS_SQL = [

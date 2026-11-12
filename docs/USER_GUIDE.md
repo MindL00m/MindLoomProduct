@@ -212,6 +212,16 @@ Skill Files are step-by-step procedures, learned from MindLoom Capture sessions 
   - If you type or click in the app it's working in, it pauses until you click **Resume**.
   - **Stop** on the Mac, Stop on the web page, or **⌃⌥⌘.** (Control-Option-Command-Period) stops the whole run at once.
   - Needs macOS 15 or later, and Accessibility granted to MindLoom Capture.
+- **Run with MindLoom on a Windows PC** (new; not yet tested on Windows, so treat it as a preview): for steps in Windows apps such as Tally, SAP GUI or Excel, choose **A Windows PC** under **On your computer** and tick or add the apps. MindLoom for Windows (section 10.3) then does those steps.
+  - One automation uses one computer for its desktop steps: a Mac or a Windows PC. Website steps still go to Chrome on either.
+  - The first time, it asks whether MindLoom may work on this PC. While a run is going it sends what the allowed apps show (never password fields) to decide each step.
+  - Anything that sends, submits, deletes, pays or can't be undone waits for **Approve**, in the small MindLoom window or on the web page. So do Shift+Delete, Ctrl+Enter and Enter on a button that sends or deletes.
+  - It never types passwords, two-factor codes or CAPTCHAs, and it never answers "Do you want to allow this app to make changes" prompts. For those it asks you, and you click **Done** or **I can't**.
+  - It never opens or uses PowerShell, Command Prompt, Registry Editor, Task Manager, Settings, Control Panel, Credential Manager, Windows Security, File Explorer or password managers, even if you add them. It never presses the Windows key or Alt+Tab.
+  - Reading, pressing buttons and filling in fields happen in the background. To type or use a menu it must bring the app to the front: it counts down first (click **Not now** to refuse) and puts your window back afterwards.
+  - If you type or click in the app it's working in, it pauses until you click **Resume**.
+  - **Stop** in the MindLoom window, Stop on the web page, or **Ctrl+Alt+.** stops the whole run at once.
+  - Apps run "as administrator" and apps from the Microsoft Store are not supported yet.
 - **Run with MindLoom on websites**: for steps on a website or web app (an ERP, a CRM, a supplier or bank portal), add the sites under **In Chrome** (for example `erp.example.com`). The MindLoom Chrome extension then does those steps in a tab of its own: it reads the page, clicks, fills in fields, picks from dropdowns and reads values back.
   - Allow each site in the extension too: click the MindLoom icon in Chrome and allow it under **Sites MindLoom may click on**. MindLoom never opens any other site.
   - Anything that sends, submits, posts, deletes, pays, confirms or can't be undone waits for **Approve** on the web page, the same as on the Mac.
@@ -221,7 +231,7 @@ Skill Files are step-by-step procedures, learned from MindLoom Capture sessions 
   - **Pages drawn as a picture** (online spreadsheets, diagrams, some reports): it looks at a picture of the tab and clicks by position. This is slower and less exact than ordinary pages, and needs a model that reads pictures.
   - Chrome shows a "MindLoom Capture started debugging this browser" bar while it works. **Cancel** on that bar, **Stop** in the extension popup, or Stop on the web page stops the whole run.
   - You can keep working in other tabs and windows while it runs. Don't minimize the window it works in.
-  - Works in Chrome on any computer where the extension is installed; the Mac app is not needed for website steps.
+  - Works in Chrome on any computer where the extension is installed, Windows included; neither the Mac app nor MindLoom for Windows is needed for website steps.
 
 ---
 
@@ -278,6 +288,13 @@ Capture teaches MindLoom *how* work is done, not just what is written down.
 1. Load the extension (unpacked). Paste the API address and your token into the popup.
 2. Capture screenshots as you work. Each screenshot waits for your **approval** before it is uploaded, and you can redact areas.
 3. Click **Analyze session** to draft a Skill File.
+
+### 10.3 MindLoom for Windows (preview)
+MindLoom for Windows does the Windows-app steps of **Run with MindLoom** (section 8.2). It does not record how you work; capture on Windows is still the Chrome extension. It has not been tested on Windows yet.
+1. Get `MindLoom.exe` from your administrator (it is built from `apps/windows-agent`; there is no download page yet). Windows 10 or 11.
+2. Open it and click **Sign in**. Your browser opens MindLoom; sign in there and the app picks up the session.
+3. Leave the window open or minimized. When an automation set to **A Windows PC** reaches its desktop steps, a small MindLoom window appears at the bottom right and shows each step, with **Stop** on it.
+4. **Sign out** or **Quit** in the main window when you don't want automations to run on this PC.
 
 ---
 

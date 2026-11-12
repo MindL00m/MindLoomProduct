@@ -29,6 +29,7 @@ import {
   type Automation,
   type AutomationLogEntry,
   type AutomationRun,
+  type DeviceOS,
   type DeviceTask,
 } from "@/services/automations";
 import type { SkillFile } from "@/services/skillFiles";
@@ -52,7 +53,7 @@ const TOOL_LABEL: Record<string, string> = {
   create_shipment_documents: "Shipment documents",
   web_search: "Web search",
   ask_user: "Ask you",
-  hand_off_to_device: "On your Mac",
+  hand_off_to_device: "On your computer",
   hand_off_to_browser: "In Chrome",
   finish: "Finish",
 };
@@ -66,8 +67,9 @@ function toolLabel(tool?: string): string {
  * "Run with MindLoom": MindLoom performs the Skill File itself with its toolbox
  * (knowledge, email, files and spreadsheets, templates, calendar, web, web APIs).
  * Outbound actions wait for Approve; missing values are asked for; steps in other
- * apps are done by the Mac app in the apps the person allowed ("On your Mac"), and steps
- * on websites by the Chrome extension on the sites the person allowed ("In Chrome").
+ * apps are done by the Mac app or MindLoom for Windows in the apps the person allowed
+ * ("On your computer"), and steps on websites by the Chrome extension on the sites the
+ * person allowed ("In Chrome").
  */
 export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner: boolean }) {
   const [open, setOpen] = useState(false);
@@ -203,6 +205,11 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
                       setAutomation(await updateAutomation(skill.skill_id, { device_apps: apps })),
                     )
                   }
+                  onSystem={(system) =>
+                    void act("settings", async () =>
+                      setAutomation(await updateAutomation(skill.skill_id, { device_os: system })),
+                    )
+                  }
                 />
               )}
 
@@ -293,17 +300,24 @@ export function SkillAutomation({ skill, isOwner }: { skill: SkillFile; isOwner:
   );
 }
 
-/** The Mac apps MindLoom may operate for this automation (Loom Capture does the work). */
+/**
+ * The desktop apps MindLoom may operate for this automation, and which computer does it:
+ * the Mac (Loom Capture) or a Windows PC (MindLoom for Windows).
+ */
 function DeviceApps({
   automation,
   busy,
   onSave,
+  onSystem,
 }: {
   automation: Automation;
   busy: boolean;
   onSave: (apps: string[]) => void;
+  onSystem: (system: DeviceOS) => void;
 }) {
   const [extra, setExtra] = useState("");
+  const system: DeviceOS = automation.device_os === "windows" ? "windows" : "mac";
+  const agent = system === "windows" ? "MindLoom for Windows" : "the Loom Capture app";
   const allowed = automation.device_apps;
   const isAllowed = (app: string) => allowed.some((a) => a.toLowerCase() === app.toLowerCase());
   const candidates = [...allowed];
@@ -313,12 +327,27 @@ function DeviceApps({
   return (
     <div className="space-y-2 rounded-md border border-border bg-background p-3 text-xs">
       <p className="flex items-center gap-1.5 font-semibold">
-        <Monitor className="size-3.5" /> On your Mac
+        <Monitor className="size-3.5" /> On your computer
       </p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="text-muted-foreground">These steps run on:</span>
+        {(["mac", "windows"] as const).map((option) => (
+          <label key={option} className="inline-flex items-center gap-1.5">
+            <input
+              type="radio"
+              name={`device-os-${automation.automation_id}`}
+              checked={system === option}
+              disabled={busy}
+              onChange={() => onSystem(option)}
+            />
+            {option === "mac" ? "A Mac" : "A Windows PC"}
+          </label>
+        ))}
+      </div>
       <p className="text-muted-foreground">
-        Let MindLoom do the steps in these apps through the Loom Capture app, in the background where it
-        can. Sending, deleting, paying and anything else that can't be undone waits for your approval. It
-        never types passwords or touches other apps.
+        Let MindLoom do the steps in these apps through {agent}, in the background where it can. Sending,
+        deleting, paying and anything else that can't be undone waits for your approval. It never types
+        passwords or touches other apps.
       </p>
       {candidates.length > 0 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -342,7 +371,7 @@ function DeviceApps({
         <input
           value={extra}
           onChange={(e) => setExtra(e.target.value)}
-          placeholder="Another app, e.g. Numbers"
+          placeholder={system === "windows" ? "Another app, e.g. Excel or TallyPrime" : "Another app, e.g. Numbers"}
           maxLength={60}
           className="w-48 rounded border border-border px-2 py-1"
         />
@@ -577,7 +606,7 @@ function RunView({
                 <b>{run.pending?.steps}</b>
                 {run.pending?.details ? <> ({run.pending.details})</> : null}. To let MindLoom do them next
                 time, allow the {run.pending?.surface === "browser" ? "sites" : "apps"} under{" "}
-                <b>{run.pending?.surface === "browser" ? "In Chrome" : "On your Mac"}</b>.
+                <b>{run.pending?.surface === "browser" ? "In Chrome" : "On your computer"}</b>.
               </span>
             </p>
             <button type="button" disabled={busy} onClick={() => onReply({ action: "continue" })} className="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground">
@@ -607,7 +636,10 @@ function DeviceTaskCard({
 }) {
   const apps = task.allowed_apps.join(", ");
   const browser = task.surface === "browser";
-  const where = browser ? "in Chrome" : "on your Mac";
+  const windows = task.surface === "windows";
+  const computer = windows ? "your PC" : "your Mac";
+  const agent = windows ? "MindLoom for Windows" : "Loom Capture";
+  const where = browser ? "in Chrome" : `on ${computer}`;
   const quiet = Date.now() - new Date(task.updated_at).getTime() > STALE_MS;
   const actions = task.log
     .filter((e) => e.kind === "action" || e.kind === "approval" || e.kind === "person" || e.kind === "record")
@@ -625,8 +657,8 @@ function DeviceTaskCard({
               </>
             ) : (
               <>
-                Waiting for Loom Capture on your Mac to start <b>{task.title}</b> in {apps}.
-                {quiet && " Open Loom Capture and sign in; it picks up tasks from the last 30 minutes."}
+                Waiting for {agent} on {computer} to start <b>{task.title}</b> in {apps}.
+                {quiet && ` Open ${agent} and sign in; it picks up tasks from the last 30 minutes.`}
               </>
             )
           ) : task.status === "running" ? (
@@ -637,8 +669,8 @@ function DeviceTaskCard({
               </>
             ) : (
               <>
-                MindLoom is working in {apps} on your Mac: <b>{task.title}</b>.
-                {quiet && " Loom Capture hasn't reported for a while; check it's still open."}
+                MindLoom is working in {apps} on {computer}: <b>{task.title}</b>.
+                {quiet && ` ${agent} hasn't reported for a while; check it's still open.`}
               </>
             )
           ) : task.status === "needs_approval" ? (

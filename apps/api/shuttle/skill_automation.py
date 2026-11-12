@@ -19,7 +19,9 @@ Safety:
 - Steps only possible in another app are **handed to the Mac app**, which operates
   the apps the person allowed for this automation through Accessibility (a device
   task, ``shuttle/device_tasks.py``), and the run waits for it. With no apps allowed
-  the person does those steps and clicks Continue.
+  the person does those steps and clicks Continue. An automation whose computer is set
+  to Windows (``device_os``) hands the same steps to **MindLoom for Windows**, which
+  uses UI Automation (``shuttle/windows_tasks.py``).
 - Steps on a website or web app (an ERP, a CRM, a portal) are **handed to the Chrome
   extension**, which reads the page, clicks and fills in fields on the sites the person
   allowed for this automation (``shuttle/browser_tasks.py``), under the same approvals.
@@ -165,9 +167,9 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
     {"type": "function", "function": {
         "name": "hand_off_to_device",
         "description": (
-            "For steps that can only be done in another app on the person's Mac: the MindLoom "
-            "Mac app operates the apps allowed for this automation (or the person does the "
-            "steps), and the run waits for the result."
+            "For steps that can only be done in a desktop app on the person's computer (Mac or "
+            "Windows): the MindLoom desktop app operates the apps allowed for this automation "
+            "(or the person does the steps), and the run waits for the result."
         ),
         "parameters": {"type": "object", "properties": {
             "steps": {"type": "string", "description": "Which steps need doing there."},
@@ -220,7 +222,7 @@ TOOL_CATALOG = """\
 - github_list_repos, github_get_repo, github_get_file: read GitHub.
 - calculate: exact arithmetic.  ask_user: ask the person.
 - hand_off_to_browser: read, click and fill in pages of a website or web app in Chrome.
-- hand_off_to_device: clicks and typing in desktop apps on the Mac.
+- hand_off_to_device: clicks and typing in desktop apps on the person's Mac or Windows PC.
 """
 
 _PLAN_SYSTEM = f"""\
@@ -233,7 +235,8 @@ Return a JSON object:
               "required": true|false, "example": example value}}],
   "steps": [{{"step": the skill step, "tool": the tool that does it, or "ask_user",
              "hand_off_to_browser" or "hand_off_to_device", "how": one sentence}}],
-  "apps": [names of the Mac apps the hand_off_to_device steps use, e.g. "Numbers"],
+  "apps": [names of the desktop apps the hand_off_to_device steps use, e.g. "Numbers" or
+           "TallyPrime"],
   "sites": [host names of the websites the hand_off_to_browser steps use, only ones the
             skill names, e.g. "erp.example.com"],
   "automatable": "full" | "partial" | "manual",
@@ -263,8 +266,8 @@ Rules:
   For the same steps over many records, pass them all in records (one entry each with
   that record's values) in a single call, and read the result per record afterwards. It
   can upload files from the person's Files and save downloads to Files by name.
-- Steps that need a desktop app on the person's Mac: call hand_off_to_device once for
-  them, with the exact values to enter in details. Its result says what happened there.
+- Steps that need a desktop app on the person's computer: call hand_off_to_device once
+  for them, with the exact values to enter in details. Its result says what happened there.
 - This skill may run again and again. Never handle the same item twice: before adding
   rows for emails, invoices, orders or similar, read the file and skip items it already
   lists. When the first message says when the last run finished, only handle items that
@@ -374,10 +377,11 @@ async def update_automation_settings(
     auto_approve: bool | None = None, interval_value: int | None = None,
     interval_unit: str | None = None, schedule: bool | None = None,
     default_inputs: dict[str, Any] | None = None, device_apps: list[str] | None = None,
-    browser_sites: list[str] | None = None,
+    browser_sites: list[str] | None = None, device_os: str | None = None,
 ) -> dict[str, Any]:
     """Auto-approve (own skills only), a repeating schedule, inputs for scheduled runs,
-    and the Mac apps and the websites MindLoom may operate for this automation."""
+    the desktop apps and the websites MindLoom may operate for this automation, and which
+    computer does the desktop-app steps (``device_os``: "mac" or "windows")."""
 
     skill = await _skill(org_id, user_id, skill_id)
     current = await get_automation(org_id, user_id, skill_id)
@@ -392,17 +396,25 @@ async def update_automation_settings(
             )
         sets.append("auto_approve=:auto")
         params["auto"] = auto_approve
+    if device_os is not None:
+        if device_os not in DEVICE_SYSTEMS:
+            raise HTTPException(status_code=422, detail="The computer is mac or windows.")
+        sets.append("device_os=:os")
+        params["os"] = device_os
     if device_apps is not None:
-        from shuttle.device_tasks import clean_apps, is_denied_app
+        from shuttle import device_tasks, windows_tasks
 
-        denied = [a for a in device_apps if is_denied_app(str(a))]
+        # The list is saved before or after the computer is chosen, so an app denied on
+        # either system is refused here. The task checks its own system's list again.
+        denied = [a for a in device_apps
+                  if device_tasks.is_denied_app(str(a)) or windows_tasks.is_denied_app(str(a))]
         if denied:
             raise HTTPException(
                 status_code=422,
                 detail=f"MindLoom never operates {', '.join(denied)}: it holds passwords or system settings.",
             )
         sets.append("device_apps=:apps")
-        params["apps"] = json.dumps(clean_apps(device_apps))
+        params["apps"] = json.dumps(windows_tasks.clean_apps(device_tasks.clean_apps(device_apps)))
     if browser_sites is not None:
         from shuttle.browser_tasks import clean_sites, is_denied_site, normalize_site
 
@@ -799,6 +811,7 @@ async def _drain(
     run: dict[str, Any], calls: list[dict[str, Any]], auto_approve: bool,
     allowed_hosts: set[str] | None = None, device_apps: list[str] | None = None,
     skill_text: str = "", person: str = "the person", browser_sites: list[str] | None = None,
+    device_os: str = "mac",
 ) -> bool:
     """Run queued tool calls in order. Returns False when the run paused or ended."""
 
@@ -823,7 +836,7 @@ async def _drain(
             run["messages"] = json.dumps(messages)
             return False
         if name in HAND_OFFS:
-            surface = HAND_OFFS[name]
+            surface = hand_off_surface(name, device_os)
             allowed = browser_sites if surface == "browser" else device_apps
             task = None
             if allowed:
@@ -866,12 +879,29 @@ async def _drain(
 
 # The hand-off tools and the surface each one's device task runs on.
 HAND_OFFS = {"hand_off_to_device": "mac", "hand_off_to_browser": "browser"}
+# The computers that can do hand_off_to_device steps. Which one is a setting of the
+# automation (``device_os``), not a guess from whichever app is online: the allowed apps,
+# the prompt and the key combos differ per system, scheduled runs start with no app
+# online, and a person with both a Mac and a PC gets the same computer every time.
+DEVICE_SYSTEMS = ("mac", "windows")
+
+
+def hand_off_surface(tool: str, device_os: str | None = "mac") -> str:
+    """The surface a hand-off's device task runs on."""
+
+    if tool == "hand_off_to_device" and device_os == "windows":
+        return "windows"
+    return HAND_OFFS[tool]
+
+
+_WHERE = {"mac": ("on the Mac", "on_the_mac"), "windows": ("on the Windows PC", "on_windows"),
+          "browser": ("in Chrome", "in_chrome")}
 
 
 def _device_goal(run: dict[str, Any], args: dict[str, Any], skill_text: str, surface: str = "mac") -> str:
     inputs = run.get("inputs")
     inputs = json.loads(inputs) if isinstance(inputs, str) else inputs or {}
-    where = "in Chrome" if surface == "browser" else "on the Mac"
+    where = _WHERE.get(surface, _WHERE["mac"])[0]
     return (
         f"{skill_text}\n\nInputs for this run: {json.dumps(inputs, ensure_ascii=False) if inputs else '(none)'}"
         f"\n\nDo these steps {where} now: {str(args.get('steps') or '')[:4000]}"
@@ -922,6 +952,7 @@ async def advance(org_id: str, user_id: str, run_id: str) -> None:
     device = {
         "device_apps": (automation or {}).get("device_apps") or [], "skill_text": _skill_text(skill),
         "browser_sites": (automation or {}).get("browser_sites") or [],
+        "device_os": (automation or {}).get("device_os") or "mac",
         "person": await _person_name(org_id, user_id),
     }
     try:
@@ -1065,7 +1096,9 @@ async def continue_after_device(
         calls = pending.get("calls") or []
         messages = json.loads(run["messages"])
         tool = calls[0]["function"]["name"]
-        where = "in_chrome" if HAND_OFFS.get(tool) == "browser" else "on_the_mac"
+        # The surface the hand-off was given when it started, even if the setting changed since.
+        surface = pending.get("surface") or HAND_OFFS.get(tool) or "mac"
+        where = _WHERE.get(surface, _WHERE["mac"])[1]
         messages.append(_result_message(calls[0]["id"], {where: result}))
         ok = result.get("status") == "completed" and result.get("outcome") != "not_done"
         _log(run, {"kind": "device", "tool": tool, "status": "ok" if ok else "error",

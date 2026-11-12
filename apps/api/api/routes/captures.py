@@ -1,7 +1,7 @@
 """Browser and desktop activity capture HTTP routes."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Query, Request, Response
 
@@ -350,6 +350,8 @@ class AutomationSettingsInput(BaseModel):
     interval_unit: str | None = None
     default_inputs: dict[str, str] | None = None
     device_apps: list[str] | None = Field(default=None, max_length=20)
+    # Which computer does the desktop-app steps: the Mac app or MindLoom for Windows.
+    device_os: Literal["mac", "windows"] | None = None
     browser_sites: list[str] | None = Field(default=None, max_length=20)
 
 
@@ -434,6 +436,7 @@ async def skill_automation_settings(
         *ctx, skill_id, auto_approve=body.auto_approve, schedule=body.schedule,
         interval_value=body.interval_value, interval_unit=body.interval_unit,
         default_inputs=body.default_inputs, device_apps=body.device_apps,
+        device_os=body.device_os,
         browser_sites=body.browser_sites,
     )
 
@@ -479,11 +482,12 @@ async def stop_automation_run(
 # --- Device tasks: the Mac app operates allowed apps for an automation run --------------
 # The Mac polls, claims, then sends each screen and action result to /step and gets the
 # next action. Approvals and the person's answers come from the web page or the Mac.
-# The Chrome extension does the same for web pages, with ``surface=browser``.
-
-from typing import Literal  # noqa: E402
+# The Chrome extension does the same for web pages with ``surface=browser``, and MindLoom
+# for Windows for native Windows apps with ``surface=windows``.
 
 from shuttle import device_tasks  # noqa: E402
+
+DeviceSurface = Literal["mac", "browser", "windows"]
 
 
 class DeviceElementInput(BaseModel):
@@ -547,10 +551,11 @@ async def list_device_tasks(
     status: Annotated[Literal[
         "pending", "running", "needs_approval", "needs_person", "completed", "failed", "stopped"
     ] | None, Query()] = None,
-    surface: Annotated[Literal["mac", "browser"], Query()] = "mac",
+    surface: Annotated[DeviceSurface, Query()] = "mac",
 ) -> list[dict]:
     """The caller's device tasks, newest first. The Mac app polls ``?status=pending``;
-    the Chrome extension polls ``?status=pending&surface=browser``."""
+    the Chrome extension polls ``?status=pending&surface=browser`` and MindLoom for Windows
+    ``?status=pending&surface=windows``."""
 
     return await device_tasks.list_tasks(*ctx, status=status, surface=surface)
 
@@ -563,10 +568,11 @@ async def device_task(task_id: str, ctx: Annotated[tuple[str, str], Depends(requ
 @router.post("/device-tasks/{task_id}/claim")
 async def claim_device_task(
     task_id: str, ctx: Annotated[tuple[str, str], Depends(require_user_context)],
-    surface: Annotated[Literal["mac", "browser"], Query()] = "mac",
+    surface: Annotated[DeviceSurface, Query()] = "mac",
 ) -> dict:
-    """The Mac app (or, with ``surface=browser``, the extension) takes a pending task.
-    A second claim, or a claim for the other app's task, gets 409."""
+    """The Mac app (or, with ``surface=browser``, the extension; with ``surface=windows``,
+    MindLoom for Windows) takes a pending task. A second claim, or a claim for another
+    app's task, gets 409."""
 
     return await device_tasks.claim(*ctx, task_id, surface=surface)
 

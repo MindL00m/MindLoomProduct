@@ -26,6 +26,7 @@ apps/
 ├── web/                 # Main React + TypeScript user interface
 ├── api/                 # Main Python API, grouped by agent (see apps/api/README.md)
 ├── desktop-agent/       # MindLoom Capture for Mac: Accessibility capture agent (menu bar)
+├── windows-agent/       # MindLoom for Windows: does automation steps in Windows apps (preview, untested on Windows)
 └── browser-extension/   # MindLoom Capture for Chrome: approved work captures
 docs/                    # Product, security, and competitive documents (Typst)
 scripts/                 # Staging smoke test

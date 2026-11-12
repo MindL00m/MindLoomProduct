@@ -30,11 +30,13 @@ WhatsApp number; linking adds a companion device to whichever account scans the 
 3. Install this plugin and give it your MindLoom API address and the token:
 
    ```bash
-   openclaw plugins install --link /path/to/MindLoomProduct/apps/openclaw-plugin --force
+   openclaw plugins install --link /path/to/MindLoomProduct/apps/openclaw-plugin --force --accept-capabilities
+   openclaw config set plugins.entries.mindloom-whatsapp.config '{"apiUrl":"https://your-mindloom-api.example","token":"mlwa_..."}'
    openclaw plugins enable mindloom-whatsapp
    ```
 
-   In `~/.openclaw/openclaw.json`:
+   OpenClaw will not enable the plugin until `apiUrl` and `token` are set. The rest
+   goes in `~/.openclaw/openclaw.json` (or use `openclaw config set`):
 
    ```json5
    {
@@ -59,8 +61,10 @@ Messages appear in MindLoom a couple of minutes after a chat goes quiet.
 
 ## Not yet verified against a running gateway
 
-The plugin's logic is tested (`npm test`) and was run end to end against MindLoom's
-API, but with simulated OpenClaw events. Two things depend on OpenClaw behaviour its
+The plugin's logic is tested (`npm test`), was run end to end against MindLoom's API
+with simulated OpenClaw events, and loads in OpenClaw 2026.11.3 with both hooks
+(`message_received`, `before_dispatch`) registered. It has not yet received a real
+WhatsApp message. Two things depend on OpenClaw behaviour its
 docs do not spell out, so check them on first use:
 
 - **Field names for WhatsApp.** The group id and group name are read from

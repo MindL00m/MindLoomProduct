@@ -528,8 +528,31 @@ async def list_integrations(org_id: str, user_id: str) -> IntegrationsListRespon
             connected=False,
             setup_status="not_connected",
         )
+    from weaver import netsuite as netsuite_service
+
+    netsuite_row = await netsuite_service._get_row(org_id, user_id)
+    netsuite_active = netsuite_row is not None and netsuite_row.status == "active"
+    netsuite = IntegrationInfo(
+        provider=netsuite_service.PROVIDER_NETSUITE,
+        label="NetSuite",
+        connected=netsuite_active,
+        account_email=netsuite_row.account_id if netsuite_row else None,
+        connected_at=netsuite_row.created_at.isoformat() if netsuite_active else None,
+        setup_status="active" if netsuite_active else ("setup_required" if netsuite_row else "not_connected"),
+    )
+    from weaver import sap as sap_service
+
+    sap_row = await sap_service._get_row(org_id, user_id)
+    sap = IntegrationInfo(
+        provider=sap_service.PROVIDER_SAP,
+        label="SAP",
+        connected=sap_row is not None,
+        account_email=sap_row.base_url if sap_row else None,
+        connected_at=sap_row.created_at.isoformat() if sap_row else None,
+        setup_status="active" if sap_row else "not_connected",
+    )
     return IntegrationsListResponse(
-        integrations=[workspace, teams, zoom, github],
+        integrations=[workspace, teams, zoom, github, netsuite, sap],
         oauth_enabled=settings.google_oauth_enabled,
         microsoft_oauth_enabled=settings.microsoft_oauth_enabled,
         zoom_oauth_enabled=settings.zoom_oauth_enabled,

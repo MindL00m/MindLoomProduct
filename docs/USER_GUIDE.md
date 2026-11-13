@@ -246,6 +246,8 @@ Click **Add connector** and choose a provider:
 | **Microsoft 365** | Outlook mail and calendar, Teams channels and chats, SharePoint | An Entra admin may need to grant consent. |
 | **Zoom** | Cloud recording transcripts and chats | New recordings arrive by webhook. |
 | **GitHub** | Repository browsing and pull request drafts | Paste a fine-grained personal access token and choose repos and allowed actions. *Issues and PR status are not imported.* |
+| **NetSuite** | Automations read NetSuite and, after you approve, create or change records | Nothing is imported into knowledge. Setup in two steps, see below. *Not yet tried against a real NetSuite account.* |
+| **SAP** (S/4HANA) | Automations read SAP and, after you approve, create or change records | Nothing is imported into knowledge. Needs a technical user and an address reachable over https, see below. *Not yet tried against a real SAP system.* |
 | **Slack** (admin) | Chosen channels and threads; `@Loombot` answers in Slack | MindLoom generates the Slack app manifest. Needs a public HTTPS API address. |
 
 After you authorize, a setup wizard asks you to choose:
@@ -257,6 +259,13 @@ After you authorize, a setup wizard asks you to choose:
    - **Organization**: everyone.
    - **Selected**: specific people or departments.
 5. Preview, then **Confirm**. The first import runs in the background.
+
+**NetSuite** and **SAP** have no wizard: they add tools to automations (section 8.2) and import nothing.
+
+- **NetSuite.** Enter your account ID and choose **Start setup**. MindLoom makes a certificate; download it. A NetSuite administrator then turns on REST Web Services and OAuth 2.0, creates an integration record with the Client Credentials (Machine to Machine) grant, and uploads the certificate under OAuth 2.0 Client Credentials (M2M) Setup against a user and a role. Paste the client ID and certificate ID NetSuite shows and choose **Connect**. Automations can do whatever that NetSuite role allows, so give it only what they need, and not the Administrator role. The certificate lasts two years; connect again before it runs out.
+- **SAP.** Enter the https address of your S/4HANA system, a technical user and its password, and one API that user may use (for example `API_BUSINESS_PARTNER`), which MindLoom reads once to check the sign-in. In S/4HANA Cloud that user is a communication user, with a communication arrangement for each API. Automations can do whatever that SAP user is allowed. SAP systems that can only be reached inside your company network, and SAP Business One, are not supported; for those, use steps in Chrome or in the desktop app.
+
+In an automation, reading NetSuite or SAP runs straight away. Creating or changing a record always stops for **Approve** first, showing the record and the values, unless you turned on automatic approval for that automation. There is no delete.
 
 Each connector card also has **Manage**, **Pause/Resume** and **Disconnect**. Google also has **Reconnect**, for new permissions.
 

@@ -170,6 +170,35 @@ ALTER TABLE chunks ADD COLUMN IF NOT EXISTS visible_to TEXT[] NOT NULL DEFAULT '
 """
 
 _DURABLE_INTEGRATIONS_SQL = [
+"""CREATE TABLE IF NOT EXISTS sap_connections (
+    connection_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    base_url TEXT NOT NULL,
+    sap_client TEXT,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_sap_connection_user UNIQUE (org_id, user_id)
+)""",
+"""CREATE TABLE IF NOT EXISTS netsuite_connections (
+    connection_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL REFERENCES organizations (org_id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL,
+    client_id TEXT,
+    certificate_id TEXT,
+    private_key TEXT NOT NULL,
+    certificate_pem TEXT NOT NULL,
+    certificate_expires_at TIMESTAMPTZ NOT NULL,
+    access_token TEXT,
+    token_expiry TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_netsuite_connection_user UNIQUE (org_id, user_id)
+)""",
 """ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS result_json TEXT""",
 """CREATE TABLE IF NOT EXISTS integration_subscriptions (
     subscription_key TEXT PRIMARY KEY,

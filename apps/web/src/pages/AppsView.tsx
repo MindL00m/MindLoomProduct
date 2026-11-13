@@ -17,6 +17,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ConnectionWizard } from "@/pages/integrations/ConnectionWizard";
 import GitHubConnector from "@/pages/integrations/GitHubConnector";
+import NetSuiteConnector from "@/pages/integrations/NetSuiteConnector";
+import SapConnector from "@/pages/integrations/SapConnector";
 import { SlackConnectorCard, SlackSetup } from "@/pages/integrations/SlackSetup";
 import {
   connectGoogleWorkspaceDev,
@@ -81,6 +83,8 @@ export default function AppsView({
   const teams = integrations.find((item) => item.provider === "microsoft_teams");
   const zoom = integrations.find((item) => item.provider === "zoom");
   const github = integrations.find((item) => item.provider === "github");
+  const netsuite = integrations.find((item) => item.provider === "netsuite");
+  const sap = integrations.find((item) => item.provider === "sap");
 
   const loadIntegrations = useCallback(async () => {
     setLoading(true);
@@ -245,6 +249,17 @@ export default function AppsView({
       ),
     },
     {
+      id: "netsuite",
+      // A started setup stays in view so the person can finish it.
+      connected: Boolean(netsuite?.connected) || netsuite?.setup_status === "setup_required",
+      card: <NetSuiteConnector onChanged={() => void loadIntegrations()} />,
+    },
+    {
+      id: "sap",
+      connected: Boolean(sap?.connected),
+      card: <SapConnector onChanged={() => void loadIntegrations()} />,
+    },
+    {
       id: "slack",
       connected: Boolean(slack?.connected) || slack?.status === "error",
       card: (
@@ -270,7 +285,7 @@ export default function AppsView({
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Connected workspaces</h2>
           <p className="mt-1 text-muted-foreground">
-            Connect Google, Microsoft 365, Zoom, GitHub, or Slack. MindLoom only uses the locations and
+            Connect Google, Microsoft 365, Zoom, GitHub, NetSuite, SAP, or Slack. MindLoom only uses the locations and
             permissions you approve.
           </p>
         </div>

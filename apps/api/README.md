@@ -10,7 +10,7 @@ The source is grouped by agent, matching how the product is described:
 main.py      HTTP app, startup and the remaining top-level routes
 worker.py    Durable Redis ingestion worker (python -m worker)
 api/routes/  HTTP routers for calendar, captures, files, GitHub, LLM settings,
-             reviews, status, workspaces, WhatsApp, Zoom and connection setup
+             reviews, status, workspaces, WhatsApp, Zoom, NetSuite, SAP and connection setup
 core/        Shared infrastructure: config, databases, models, schema, jobs,
              Redis, rate limits, health probes, token encryption, the
              organization-selectable LLM provider and HTTP helpers

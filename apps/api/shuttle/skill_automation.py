@@ -73,7 +73,7 @@ ASK_TOOLS = (
     "github_list_repos", "github_get_repo", "github_get_file",
 )
 # Tools that reach outside MindLoom: the run pauses for approval first.
-APPROVAL_TOOLS = {"send_email", "create_meeting"}
+APPROVAL_TOOLS = {"send_email", "create_meeting", "sap_write"}
 SAFE_HTTP_METHODS = {"GET", "HEAD"}
 
 _UNTRUSTED = (
@@ -136,6 +136,69 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
             "json": {"type": "object", "description": "JSON body."},
             "body": {"type": "string", "description": "Raw text body (instead of json)."},
         }, "required": ["method", "url"]},
+    }},
+    {"type": "function", "function": {
+        "name": "netsuite_query",
+        "description": (
+            "Read from the company's NetSuite with one SuiteQL query (NetSuite's SQL), e.g. "
+            "\"SELECT id, companyname, email FROM customer WHERE companyname LIKE ?\". Runs "
+            "immediately. Returns one page of rows; when has_more is true, call again with the "
+            "next offset (a multiple of limit). Put values in params, not in the query text."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "One SELECT statement."},
+            "params": {"type": "array", "items": {"type": "string"}, "description": "Values for each ? in the query."},
+            "limit": {"type": "integer", "description": "Rows per page, 1 to 1000. Default 100."},
+            "offset": {"type": "integer"},
+        }, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "netsuite_record",
+        "description": (
+            "Read, create or change one NetSuite record through NetSuite's REST record API. "
+            "get runs immediately; create and update pause for approval. There is no delete. "
+            "Read the record (or a similar one) first to learn its field names."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["get", "create", "update"]},
+            "record_type": {"type": "string", "description": "REST record name, e.g. customer, vendor, salesOrder, invoice."},
+            "id": {"type": "string", "description": "Internal ID, or eid: plus the external ID. Needed for get and update."},
+            "fields": {"type": "object", "description": (
+                "For create and update: field names and values as NetSuite's REST API expects, "
+                "e.g. {\"entity\": {\"id\": \"42\"}, \"memo\": \"PO 118\"}."
+            )},
+        }, "required": ["action", "record_type"]},
+    }},
+    {"type": "function", "function": {
+        "name": "sap_read",
+        "description": (
+            "Read from the company's SAP S/4HANA through its OData APIs. Runs immediately. path "
+            "is a service (lists its record sets), a record set, or one record, e.g. "
+            "/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner or "
+            ".../A_BusinessPartner('1000'). Put OData options in query, not in path. Always "
+            "use $top and $select on record sets."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "query": {"type": "object", "description": (
+                "OData options, e.g. {\"$filter\": \"BusinessPartnerName eq 'Azure'\", "
+                "\"$select\": \"BusinessPartner,BusinessPartnerName\", \"$top\": \"20\"}."
+            )},
+        }, "required": ["path"]},
+    }},
+    {"type": "function", "function": {
+        "name": "sap_write",
+        "description": (
+            "Create or change one record in SAP S/4HANA through its OData APIs. Always pauses "
+            "for approval. create posts fields to a record set; update changes the named "
+            "fields of one record (path ends in its key, e.g. .../A_SalesOrder('42')). There "
+            "is no delete. Read first to learn the field names."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["create", "update"]},
+            "path": {"type": "string"},
+            "fields": {"type": "object", "description": "Field names and values as the SAP API expects."},
+        }, "required": ["action", "path", "fields"]},
     }},
     {"type": "function", "function": {
         "name": "update_spreadsheet",
@@ -220,6 +283,10 @@ TOOL_CATALOG = """\
 - web_search: public information.  http_request: public APIs and webhooks (writes need approval).
 - track_status, project_status, knowledge_inventory: status and inventory.
 - github_list_repos, github_get_repo, github_get_file: read GitHub.
+- sap_read: read SAP S/4HANA (OData).  sap_write: create or change one SAP record
+  (approval). Only when the person has connected SAP.
+- netsuite_query: read NetSuite with SuiteQL.  netsuite_record: read one record, or create
+  or change one (approval). Only when the person has connected NetSuite.
 - calculate: exact arithmetic.  ask_user: ask the person.
 - hand_off_to_browser: read, click and fill in pages of a website or web app in Chrome.
 - hand_off_to_device: clicks and typing in desktop apps on the person's Mac or Windows PC.
@@ -259,8 +326,12 @@ Rules:
 - Use calculate for every sum or product; copy figures exactly from sources.
 - If a value is missing or a decision is unclear, call ask_user. Never guess names,
   addresses, amounts or dates.
-- send_email, create_meeting and changing http_request calls wait for approval;
-  if one is rejected, adapt or finish.
+- send_email, create_meeting, changing http_request calls, sap_write and netsuite_record
+  create or update wait for approval; if one is rejected, adapt or finish.
+- NetSuite and SAP: prefer netsuite_query, netsuite_record, sap_read and sap_write over
+  the hand-offs. Before creating a record, look for one that already exists (same number,
+  name or external ID). If a create fails with an unclear error, check whether the record
+  was made before trying again.
 - Steps on a website or web app: call hand_off_to_browser with the exact values to
   enter and what to read back in details. Give it one coherent piece of work at a time.
   For the same steps over many records, pass them all in records (one entry each with
@@ -720,6 +791,22 @@ async def _create_meeting(org_id: str, user_id: str, args: dict[str, Any], tz: s
     )
 
 
+async def _netsuite_record(org_id: str, user_id: str, args: dict[str, Any]) -> dict[str, Any]:
+    from weaver import netsuite
+
+    action = str(args.get("action") or "").strip().lower()
+    kind, ident = args.get("record_type"), args.get("id")
+    if action == "create":
+        return await netsuite.create_record(org_id, user_id, kind, args.get("fields"))
+    if action not in {"get", "update"}:
+        return {"error": "action must be get, create or update."}
+    if not ident:
+        return {"error": f"{action} needs the record's id."}
+    if action == "get":
+        return await netsuite.get_record(org_id, user_id, kind, ident)
+    return await netsuite.update_record(org_id, user_id, kind, ident, args.get("fields"))
+
+
 def needs_approval(name: str, args: dict[str, Any], allowed_hosts: set[str] | None = None) -> bool:
     """Outbound actions need the person's approval. A GET is free only to a host the
     approved skill or plan names: anywhere else, a URL could carry data out in its
@@ -727,6 +814,9 @@ def needs_approval(name: str, args: dict[str, Any], allowed_hosts: set[str] | No
 
     if name in APPROVAL_TOOLS:
         return True
+    if name == "netsuite_record":
+        # Anything but a plain read changes the company's books.
+        return str(args.get("action") or "").strip().lower() != "get"
     if name != "http_request":
         return False
     if str(args.get("method") or "GET").upper() not in SAFE_HTTP_METHODS:
@@ -756,6 +846,26 @@ async def execute_tool(run: dict[str, Any], name: str, args: dict[str, Any]) -> 
         return await _http_request(args)
     if name == "update_spreadsheet":
         return await _update_spreadsheet(org_id, user_id, args)
+    if name == "netsuite_query":
+        from weaver import netsuite
+
+        return await netsuite.query(
+            org_id, user_id, args.get("query"), limit=args.get("limit"), offset=args.get("offset"),
+            params=args.get("params") if isinstance(args.get("params"), list) else None)
+    if name == "netsuite_record":
+        return await _netsuite_record(org_id, user_id, args)
+    if name == "sap_read":
+        from weaver import sap
+
+        return await sap.read(org_id, user_id, args.get("path"), args.get("query"))
+    if name == "sap_write":
+        from weaver import sap
+
+        action = str(args.get("action") or "").strip().lower()
+        if action not in {"create", "update"}:
+            return {"error": "action must be create or update."}
+        write = sap.create if action == "create" else sap.update
+        return await write(org_id, user_id, args.get("path"), args.get("fields"))
     if name == "send_email":
         return await _send_email(org_id, user_id, args)
     if name == "create_meeting":

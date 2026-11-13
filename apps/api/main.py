@@ -98,7 +98,9 @@ from api.routes.file_sources import router as file_sources_router
 from api.routes.files import router as files_router
 from api.routes.github import router as github_router
 from api.routes.llm_settings import router as llm_settings_router
+from api.routes.netsuite import router as netsuite_router
 from api.routes.reviews import router as reviews_router
+from api.routes.sap import router as sap_router
 from api.routes.slack import router as slack_router
 from api.routes.status import router as status_router
 from api.routes.whatsapp import router as whatsapp_router
@@ -217,7 +219,9 @@ app.include_router(file_sources_router)
 app.include_router(files_router)
 app.include_router(github_router)
 app.include_router(llm_settings_router)
+app.include_router(netsuite_router)
 app.include_router(reviews_router)
+app.include_router(sap_router)
 app.include_router(slack_router)
 app.include_router(status_router)
 app.include_router(whatsapp_router)

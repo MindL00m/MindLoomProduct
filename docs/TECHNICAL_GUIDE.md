@@ -420,6 +420,28 @@ Legacy .doc, .xls and .ppt, ZIP, and images uploaded directly are not supported.
 - **Decision: webhooks for latency, plus a reconciliation safety net.** Reconciliation intervals: real-time 6 h, hourly 1 h, daily 24 h.
 - **Outbound HTTP** uses `request_with_backoff`: retries 408, 429 and 5xx up to 6 times, honouring `Retry-After` up to 120 s.
 
+### 9.2a ERP connectors for automations: NetSuite and SAP
+
+Both add tools to the automation engine (`shuttle/skill_automation.py`) and ingest nothing. Each person connects their own; rows live in `netsuite_connections` and `sap_connections`, one per (org, user), with secrets encrypted by `core/token_crypto`. **Status: neither has been run against a real system.** Everything below is tested against fakes built from the vendors' documentation (`tests/test_netsuite.py`, `tests/test_sap.py`); the first real connection may show differences.
+
+**NetSuite (`weaver/netsuite.py`, `api/routes/netsuite.py`)**
+- **Sign-in:** OAuth 2.0 client credentials (machine to machine). `POST /integrations/netsuite/setup` makes an RSA 4096 key pair and a self-signed certificate valid 729 days; the private key never leaves the server. The person uploads the certificate in NetSuite and `POST /integrations/netsuite/connect` takes the client ID and certificate ID, then proves them by fetching a token. Each token request is a JWT signed PS256 (`kid` = certificate ID, `scope` = `["rest_webservices"]`, `aud` = the token endpoint, 5 minute life). Tokens last 60 minutes and are cached encrypted; a 401 from the API fetches one new token and retries once.
+- **Decision: client credentials, not the browser sign-in.** The authorization-code flow's refresh token lasts seven days, which would break scheduled automations weekly. The cost: calls run as the one NetSuite entity and role the certificate is mapped to, not as each person.
+- **Address safety:** the only host ever called is `<account>.suitetalk.api.netsuite.com`, built from an account ID that must match `^[A-Z0-9]{3,30}(_[A-Z0-9]{1,10})?$`.
+- **Calls:** `query` (SuiteQL at `/services/rest/query/v1/suiteql`, `Prefer: transient`, one `SELECT`, `limit` up to 1000, `offset` a multiple of `limit`); `get_record`, `create_record` (POST), `update_record` (PATCH) on `/services/rest/record/v1/{type}`. No delete.
+- **Limits:** at most 3 calls per account at a time per process (NetSuite shares one small pool across all integrations). Rows are cut to 10,000 characters with a note saying so.
+
+**SAP S/4HANA (`weaver/sap.py`, `api/routes/sap.py`)**
+- **Sign-in:** Basic, with a technical user (a communication user in S/4HANA Cloud). `POST /integrations/sap/connect` reads one service the person names to check it.
+- **Address safety:** the address is the customer's own, so every call goes through `core.net_safety.resolve_public_url` and is pinned to the checked IP (https only, no private or local addresses, no redirects followed). Paths must sit under `/sap/opu/odata/` or `/sap/opu/odata4/`; `$batch` and `$value` are refused; only OData query options are passed on.
+- **Writes:** a GET with `x-csrf-token: Fetch` first, then the POST or PATCH with that token and the cookies SAP set (kept by hand, because the connection is to an IP). An update sends the record's current `ETag` as `If-Match`; a 412 is reported as "someone changed that record". No delete.
+- **Not covered:** SAP Business One (Service Layer session sign-in), OAuth and client-certificate sign-in, systems only reachable inside a company network (those need SAP API Management or a Cloud Connector in front), and RFC/BAPI.
+
+**Shared rules**
+- Tools: `netsuite_query`, `netsuite_record`, `sap_read`, `sap_write`. Reads run immediately. `netsuite_record` create/update and every `sap_write` go through `needs_approval`.
+- **A create is never retried.** After a timeout or a 5xx the record may already exist, so `request_with_backoff` runs with one attempt for creates; the run prompt tells the model to check before trying again.
+- Results carry a note that the content is data, not instructions.
+
 ### 9.3 Calendar scheduling (`shuttle/calendar_meetings.py`)
 - **Time zone:** the browser's IANA zone, falling back to UTC.
 - **Free/busy:** Google `freeBusy` on `primary` plus the attendees. Unreadable calendars are reported as `unknown_availability`.

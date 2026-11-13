@@ -284,6 +284,16 @@ async def execute(message: dict[str, Any]) -> None:
             count = await backfill_install(str(payload["install_id"]), int(payload.get("days") or 7))
             local[job_id].status = "complete"
             local[job_id].progress = f"Slack backfill complete: {count} thread(s)"
+        elif kind == "erp_import":
+            from weaver.erp_knowledge import run_import
+
+            outcome = await run_import(org_id, str(payload["user_id"]), str(payload["import_id"]))
+            if outcome.get("ok"):
+                local[job_id].status = "complete"
+                local[job_id].progress = f"Imported {outcome['rows']} row(s) into knowledge"
+            else:
+                local[job_id].status = "failed"
+                local[job_id].error = str(outcome.get("error"))
         elif kind == "skill_automation":
             from shuttle.skill_automation import advance
 

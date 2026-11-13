@@ -55,13 +55,19 @@ class Config:
     email: str = ""
     # The person said yes to "let MindLoom operate apps on this PC" (asked on the first task).
     consented: bool = False
+    # The one address inside this network the person let the relay call (see relay.py).
+    # Tied to the sign-in: signing out forgets it.
+    relay_origin: str = ""
+    # This PC's relay key (see relay.py). Kept across sign-outs: it names the PC, not the person.
+    relay_key: str = ""
 
     @property
     def signed_in(self) -> bool:
         return bool(self.access_token.strip())
 
     def signed_out(self) -> "Config":
-        return Config(web_base=self.web_base, api_base=self.api_base, consented=self.consented)
+        return Config(web_base=self.web_base, api_base=self.api_base, consented=self.consented,
+                      relay_key=self.relay_key)
 
 
 # --- DPAPI ------------------------------------------------------------------------------------
@@ -139,6 +145,8 @@ def load() -> Config:
             access_token=unprotect(str(data.get("access_token") or "")),
             org_id=str(data.get("org_id") or ""), user_id=str(data.get("user_id") or ""),
             email=str(data.get("email") or ""), consented=data.get("consented") is True,
+            relay_origin=str(data.get("relay_origin") or ""),
+            relay_key=unprotect(str(data.get("relay_key") or "")),
         )
     except (OSError, ValueError, AttributeError):
         pass
@@ -149,7 +157,7 @@ def load() -> Config:
         site = (env_web, resolve_api_base(os.environ.get("MINDLOOM_API_BASE", "/api"), env_web))
     if site and (site[0] != config.web_base or site[1] != config.api_base):
         # A token from one MindLoom is not valid on another: switching sites signs out.
-        config = Config(web_base=site[0], api_base=site[1], consented=config.consented)
+        config = Config(web_base=site[0], api_base=site[1], consented=config.consented, relay_key=config.relay_key)
     return config
 
 
@@ -158,7 +166,19 @@ def save(config: Config) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     data = asdict(config)
     data["access_token"] = protect(config.access_token)
+    data["relay_key"] = protect(config.relay_key)
     target = directory / "agent.json"
     temporary = directory / "agent.json.tmp"
     temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(temporary, target)
+
+
+def ensure_relay_key(config: Config) -> Config:
+    """Give this PC a relay key the first time one is needed, and save it."""
+
+    if not config.relay_key:
+        import secrets
+
+        config.relay_key = secrets.token_urlsafe(32)
+        save(config)
+    return config

@@ -420,26 +420,47 @@ Legacy .doc, .xls and .ppt, ZIP, and images uploaded directly are not supported.
 - **Decision: webhooks for latency, plus a reconciliation safety net.** Reconciliation intervals: real-time 6 h, hourly 1 h, daily 24 h.
 - **Outbound HTTP** uses `request_with_backoff`: retries 408, 429 and 5xx up to 6 times, honouring `Retry-After` up to 120 s.
 
-### 9.2a ERP connectors for automations: NetSuite and SAP
+### 9.2a ERP connectors: NetSuite and SAP
 
-Both add tools to the automation engine (`shuttle/skill_automation.py`) and ingest nothing. Each person connects their own; rows live in `netsuite_connections` and `sap_connections`, one per (org, user), with secrets encrypted by `core/token_crypto`. **Status: neither has been run against a real system.** Everything below is tested against fakes built from the vendors' documentation (`tests/test_netsuite.py`, `tests/test_sap.py`); the first real connection may show differences.
+Both give Ask and the automation engine (`shuttle/skill_automation.py`) tools to read and change records, and import into knowledge only what the person chooses. Each person connects their own; rows live in `netsuite_connections` and `sap_connections`, one per (org, user), with secrets encrypted by `core/token_crypto`. **Status: neither has been run against a real system**, and the relay's Windows side has not been run on Windows. Everything below is tested against fakes built from the vendors' documentation; the first real connection may show differences.
 
 **NetSuite (`weaver/netsuite.py`, `api/routes/netsuite.py`)**
 - **Sign-in:** OAuth 2.0 client credentials (machine to machine). `POST /integrations/netsuite/setup` makes an RSA 4096 key pair and a self-signed certificate valid 729 days; the private key never leaves the server. The person uploads the certificate in NetSuite and `POST /integrations/netsuite/connect` takes the client ID and certificate ID, then proves them by fetching a token. Each token request is a JWT signed PS256 (`kid` = certificate ID, `scope` = `["rest_webservices"]`, `aud` = the token endpoint, 5 minute life). Tokens last 60 minutes and are cached encrypted; a 401 from the API fetches one new token and retries once.
 - **Decision: client credentials, not the browser sign-in.** The authorization-code flow's refresh token lasts seven days, which would break scheduled automations weekly. The cost: calls run as the one NetSuite entity and role the certificate is mapped to, not as each person.
 - **Address safety:** the only host ever called is `<account>.suitetalk.api.netsuite.com`, built from an account ID that must match `^[A-Z0-9]{3,30}(_[A-Z0-9]{1,10})?$`.
-- **Calls:** `query` (SuiteQL at `/services/rest/query/v1/suiteql`, `Prefer: transient`, one `SELECT`, `limit` up to 1000, `offset` a multiple of `limit`); `get_record`, `create_record` (POST), `update_record` (PATCH) on `/services/rest/record/v1/{type}`. No delete.
+- **Calls:** `query` (SuiteQL at `/services/rest/query/v1/suiteql`, `Prefer: transient`, one `SELECT`, `limit` up to 1000, `offset` a multiple of `limit`); `query_all` (pages for imports); `get_record`, `create_record` (POST), `update_record` (PATCH) on `/services/rest/record/v1/{type}`; `describe_record` (field names from `/metadata-catalog/{type}` with `Accept: application/schema+json`). No delete.
 - **Limits:** at most 3 calls per account at a time per process (NetSuite shares one small pool across all integrations). Rows are cut to 10,000 characters with a note saying so.
 
-**SAP S/4HANA (`weaver/sap.py`, `api/routes/sap.py`)**
-- **Sign-in:** Basic, with a technical user (a communication user in S/4HANA Cloud). `POST /integrations/sap/connect` reads one service the person names to check it.
-- **Address safety:** the address is the customer's own, so every call goes through `core.net_safety.resolve_public_url` and is pinned to the checked IP (https only, no private or local addresses, no redirects followed). Paths must sit under `/sap/opu/odata/` or `/sap/opu/odata4/`; `$batch` and `$value` are refused; only OData query options are passed on.
-- **Writes:** a GET with `x-csrf-token: Fetch` first, then the POST or PATCH with that token and the cookies SAP set (kept by hand, because the connection is to an IP). An update sends the record's current `ETag` as `If-Match`; a 412 is reported as "someone changed that record". No delete.
-- **Not covered:** SAP Business One (Service Layer session sign-in), OAuth and client-certificate sign-in, systems only reachable inside a company network (those need SAP API Management or a Cloud Connector in front), and RFC/BAPI.
+**SAP (`weaver/sap.py`, `api/routes/sap.py`)**
+- **Systems:** `s4hana` (OData v2 under `/sap/opu/odata/`, v4 under `/sap/opu/odata4/`) and `business_one` (Service Layer under `/b1s/v1/` or `/b1s/v2/`; the version is found at connect by trying `Login` on v2, then v1).
+- **Sign-in (S/4HANA):** `basic` (technical user); `oauth` (client credentials against a token URL, client in the `Authorization` header first and in the body if that is refused; the token is cached encrypted and renewed once on a 401); `certificate` (the person's PEM certificate and key, presented in TLS). **Business One:** `POST Login` with company database, user and password; the `B1SESSION` and `ROUTEID` cookies are cached encrypted for the session's lifetime and a 401 signs in again once.
+- **Routes:** `direct` goes through `core.net_safety.resolve_public_url` and is pinned to the checked IP (https only, no private or local addresses, no redirects followed). `relay` goes through the person's relay (below) and skips that check, because the address is inside their network.
+- **Path rules:** paths must sit under the system's API roots; `..`, `//`, `$batch`, `$value` and Business One's `Login`/`Logout` are refused; only OData query options are passed on.
+- **Writes (S/4HANA):** a GET with `x-csrf-token: Fetch` first (on the service root for a record set, on the parent record for a nested one), then the POST or PATCH with that token and the cookies SAP set (kept by hand, never sent to another host). An update sends the record's current `ETag` as `If-Match`; a 412 is reported as "someone changed that record". With OAuth or a certificate a missing write token is tolerated (an API gateway may not use one). **Business One** writes go straight through. No delete.
+- **`$metadata`** is returned as a short list of record sets with keys and field names (`describe_metadata`); a document with a DOCTYPE or entity definition is never parsed.
+- **Not covered:** RFC/BAPI, SAML bearer OAuth, a client certificate through the relay.
+
+**The relay (`weaver/relay.py`, `api/routes/relay.py`, `apps/windows-agent/mindloom_agent/relay.py`)**
+- **What it is for:** a system only reachable inside a customer's network. The server parks a request in `relay_requests`; MindLoom for Windows, signed in as the same person on a PC in that network, polls `GET /relay/requests`, makes the call and posts the answer to `POST /relay/requests/{id}/result`. The server waits up to 45 s.
+- **Pairing:** parked requests carry the system's sign-in, so a web session alone must not be able to collect them. Each relay makes a random key and sends it as `X-MindLoom-Relay-Key`; the first relay to call becomes the person's paired relay (`relay_clients.key_hash`), and other keys get 403. Connecting through the relay requires the 8-character code the relay shows (from the key's hash), which proves the paired relay is the person's own. Disconnecting a relay connection clears the pairing.
+- **What the relay refuses, whatever the server asks:** any address but the one https origin approved on that PC; any path outside SAP's API and token-service paths (checked after decoding, so `%2e%2e` cannot climb out); methods other than GET, POST, PATCH; redirects; proxies; a request with under 3 s left.
+- **Stale requests:** a pending request older than the wait is deleted, never handed out, so a call the server has already reported as failed is not made late. Each request carries `seconds_left`.
+- **At rest:** URL, headers and bodies are encrypted while parked and the row is removed when the answer is read. Answers are size-capped and only well-formed headers are kept.
+- **Headless:** `python -m mindloom_agent --sign-in`, then `--relay https://sap.example.internal:44300`, runs the relay on any system with Python; the address on the command line is the approval.
+
+**In Ask (`loombot/erp_tools.py`)**
+- The four tools are offered only for systems the person connected. Reads run. A create or update is not made: it becomes a `ProposedErpChange` on the response (`proposed_erp_change`), one per reply, and the web card posts it to `POST /integrations/erp/apply` on Approve.
+
+**Knowledge imports (`weaver/erp_knowledge.py`, `api/routes/erp.py`, table `erp_imports`)**
+- An import is a name plus one read (SuiteQL, or an OData record set with options), a row limit (default 500, maximum 5,000) and a visibility (`user:<id>` or `org:<id>`). Up to 20 per person.
+- A run reads every row, renders pages of 50 rows as plain text, and ingests each with `ingest_external_source` under `erp:<import>:<page>`. Unchanged pages are skipped by content hash; pages beyond the new count are removed. The page count is raised before ingesting so a run that fails halfway can still be cleaned up.
+- Runs are queued as `erp_import` durable jobs on create and on request, and `run_due_imports` refreshes every import older than 24 h from the periodic connection check.
 
 **Shared rules**
-- Tools: `netsuite_query`, `netsuite_record`, `sap_read`, `sap_write`. Reads run immediately. `netsuite_record` create/update and every `sap_write` go through `needs_approval`.
-- **A create is never retried.** After a timeout or a 5xx the record may already exist, so `request_with_backoff` runs with one attempt for creates; the run prompt tells the model to check before trying again.
+- Tools: `netsuite_query`, `netsuite_record` (`get`, `fields`, `create`, `update`), `sap_read`, `sap_write`. Reads run immediately. Every change goes through `needs_approval`.
+- **Automatic approval is capped:** with `auto_approve`, a run makes at most `MAX_AUTO_ERP_WRITES` (20) ERP changes on its own; each further one waits for approval.
+- **A create is never retried.** After a timeout or a 5xx the record may already exist, so `request_with_backoff` runs with one attempt for creates, and a 502 or 504 says "the record may have been created anyway".
+- **Change log (`weaver/erp_audit.py`, table `erp_changes`):** every create or update, from an automation or an Ask approval, worked or not, with the target, record ID and field names (never values). `GET /integrations/erp/changes` lists the person's own.
 - Results carry a note that the content is data, not instructions.
 
 ### 9.3 Calendar scheduling (`shuttle/calendar_meetings.py`)

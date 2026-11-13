@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { applyErpChange, type ProposedErpChange } from "@/services/erp";
 import { safeHref } from "@/lib/safeHref";
 import {
   Activity,
@@ -223,6 +224,7 @@ export default function AskView() {
           : undefined,
         recurringState: response.proposed_recurring_email ? "pending" : undefined,
         meetingState: response.proposed_meeting ? "pending" : undefined,
+        erpState: response.proposed_erp_change ? "pending" : undefined,
         workflowState: response.proposed_workflow ? "pending" : undefined,
       });
     } catch (err) {
@@ -1038,6 +1040,16 @@ export function AnswerView({
         />
       )}
 
+      {response.proposed_erp_change && (
+        <ErpChangeCard
+          proposal={response.proposed_erp_change}
+          state={state.erpState}
+          result={state.erpResult}
+          error={state.erpError}
+          onPatch={onProposalPatch}
+        />
+      )}
+
       {response.proposed_recurring_email && (
         <RecurringEmailCard
           proposal={response.proposed_recurring_email}
@@ -1244,6 +1256,109 @@ function splitEmails(value: string): string[] {
     .split(/[\s,;]+/)
     .map((item) => item.trim().replace(/^<|>$/g, ""))
     .filter(Boolean);
+}
+
+/**
+ * A NetSuite or SAP record change Ask drafted. Nothing has changed yet: the values can be
+ * corrected here, and the record is created or changed only on Approve.
+ */
+function ErpChangeCard({
+  proposal,
+  state,
+  result,
+  error,
+  onPatch,
+}: {
+  proposal: ProposedErpChange;
+  state?: Turn["erpState"];
+  result?: Turn["erpResult"];
+  error?: Turn["erpError"];
+  onPatch: (patch: Partial<Turn>) => void;
+}) {
+  const [text, setText] = useState(() => JSON.stringify(proposal.fields, null, 2));
+  const system = proposal.system === "netsuite" ? "NetSuite" : "SAP";
+  const verb = proposal.action === "create" ? "Create" : "Change";
+  const sending = state === "sending";
+  let fields: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
+      fields = parsed as Record<string, unknown>;
+    }
+  } catch {
+    fields = null;
+  }
+
+  async function approve() {
+    if (!fields) return;
+    onPatch({ erpState: "sending", erpError: undefined });
+    try {
+      const made = await applyErpChange({ ...proposal, fields });
+      const where = made.id ? ` (ID ${made.id})` : "";
+      onPatch({
+        erpState: "done",
+        erpError: undefined,
+        erpResult: proposal.action === "create" ? `Created in ${system}${where}.` : `Changed in ${system}.`,
+      });
+    } catch (err) {
+      onPatch({
+        erpState: "pending",
+        erpError: err instanceof Error ? err.message : `Could not make the change in ${system}.`,
+      });
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-card p-3 text-sm">
+      <p className="font-semibold">
+        {verb} a {system} record
+      </p>
+      <p className="mt-1 break-all text-xs text-muted-foreground">
+        {proposal.target}
+        {proposal.record_id ? `, ID ${proposal.record_id}` : ""}
+      </p>
+      {state === "done" ? (
+        <p className="mt-2 text-xs font-medium">{result}</p>
+      ) : state === "cancelled" ? (
+        <p className="mt-2 text-xs text-muted-foreground">Cancelled. Nothing was changed.</p>
+      ) : (
+        <>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Nothing has changed yet. Check the values, correct them if needed, then approve.
+          </p>
+          <textarea
+            rows={Math.min(12, text.split("\n").length + 1)}
+            value={text}
+            disabled={sending}
+            onChange={(e) => setText(e.target.value)}
+            spellCheck={false}
+            className="mt-2 w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
+          />
+          {!fields && <p className="mt-1 text-xs text-destructive">The values must be a JSON object with at least one field.</p>}
+          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={sending || !fields}
+              onClick={() => void approve()}
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+            >
+              {sending && <Loader2 className="size-3.5 animate-spin" />}
+              {sending ? "Sending…" : `Approve and ${verb.toLowerCase()}`}
+            </button>
+            <button
+              type="button"
+              disabled={sending}
+              onClick={() => onPatch({ erpState: "cancelled" })}
+              className="rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function MeetingCard({

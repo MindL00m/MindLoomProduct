@@ -754,6 +754,11 @@ async def run_periodic_connection_checks() -> None:
         try:
             from keeper.review_workflows import schedule_expiry_reviews
             await schedule_expiry_reviews()
+            try:
+                from weaver.erp_knowledge import run_due_imports
+                await run_due_imports()
+            except Exception:  # noqa: BLE001 - must not stop the connection checks below
+                logger.exception("ERP knowledge refresh failed")
             factory = get_session_factory()
             async with factory() as session:
                 rows = list(

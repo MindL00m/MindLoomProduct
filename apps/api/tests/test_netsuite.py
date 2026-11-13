@@ -78,6 +78,12 @@ def fake(monkeypatch):
     monkeypatch.setattr(ns, "_update_row", update_row)
     monkeypatch.setattr(ns, "_delete_row", delete_row)
     monkeypatch.setattr(ns, "make_certificate", lambda: _KEY)
+    from weaver import erp_knowledge
+
+    erp_knowledge.use_memory_store(True)
+    from weaver import erp_audit
+
+    erp_audit.use_memory_store(True)
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(token_crypto, "get_settings", lambda: SimpleNamespace(token_encryption_key=key))
     monkeypatch.setattr(provider_http.asyncio, "sleep", no_sleep)
@@ -347,7 +353,8 @@ def test_tools_are_offered_and_writes_wait_for_approval() -> None:
         expected = str(action or "").strip().lower() != "get"
         assert sa.needs_approval("netsuite_record", {"action": action, "record_type": "customer"}) is expected
     enum = next(t for t in sa.ENGINE_TOOLS if t["function"]["name"] == "netsuite_record")
-    assert enum["function"]["parameters"]["properties"]["action"]["enum"] == ["get", "create", "update"]
+    assert enum["function"]["parameters"]["properties"]["action"]["enum"] == ["get", "fields", "create", "update"]
+    assert not sa.needs_approval("netsuite_record", {"action": "fields", "record_type": "customer"})
 
 
 async def test_tools_call_netsuite_for_the_runs_person(fake) -> None:
@@ -406,3 +413,63 @@ def test_schema_has_the_table() -> None:
     assert "CREATE TABLE IF NOT EXISTS netsuite_connections" in sql
     for column in ns.NetSuiteConnectionRow.__table__.columns:
         assert column.name in sql
+
+
+# --- Review fixes and field look-up -------------------------------------------------------
+
+
+def test_record_ids_cannot_climb_out() -> None:
+    for ident in ("..", "a..b", "eid:.."):
+        with pytest.raises(HTTPException):
+            ns._record_path("customer", ident)
+
+
+async def test_fields_of_a_record_type(fake) -> None:
+    await _connected(fake)
+    fake.replies.append(httpx.Response(200, json={"type": "object", "properties": {
+        "links": {"type": "array"}, "companyName": {"title": "Company Name", "type": "string"},
+        "email": {"title": "Email", "type": "string"}, "balance": {"type": "number", "format": "double", "readOnly": True},
+        "currency": {"$ref": "/services/rest/record/v1/metadata-catalog/currency"}, "odd": "not a spec",
+    }}))
+    described = await ns.describe_record("org-a", "user-a", "customer")
+    assert described["record_type"] == "customer" and described["fields"] == [
+        {"name": "companyName", "type": "string", "label": "Company Name"},
+        {"name": "email", "type": "string"},
+        {"name": "balance", "type": "double", "read_only": True},
+        {"name": "currency", "type": "record"},
+    ]
+    request = fake.api_requests[0]
+    assert request.url.path == "/services/rest/record/v1/metadata-catalog/customer"
+    assert request.headers["accept"] == "application/schema+json"
+    fake.replies.append(httpx.Response(200, text="not json"))
+    assert (await ns.describe_record("org-a", "user-a", "customer"))["fields"] == []
+    with pytest.raises(HTTPException):
+        await ns.describe_record("org-a", "user-a", "../x")
+    # Through the automation tool, without approval.
+    fake.replies.append(httpx.Response(200, json={"properties": {"memo": {"type": "string"}}}))
+    result = await sa.execute_tool({"org_id": "org-a", "user_id": "user-a"}, "netsuite_record",
+                                   {"action": "fields", "record_type": "invoice"})
+    assert result["fields"] == [{"name": "memo", "type": "string"}]
+
+
+async def test_a_create_that_may_have_happened_says_so(fake) -> None:
+    await _connected(fake)
+    fake.replies.append(httpx.Response(504))
+    with pytest.raises(HTTPException) as error:
+        await ns.create_record("org-a", "user-a", "invoice", {"memo": "x"})
+    assert "may have been created" in error.value.detail
+    fake.replies.append(httpx.Response(400, json={"o:errorDetails": [{"detail": "Invalid field"}]}))
+    with pytest.raises(HTTPException) as error:
+        await ns.create_record("org-a", "user-a", "invoice", {"memo": "x"})
+    assert "may have been created" not in error.value.detail
+
+
+async def test_an_odd_token_answer_is_a_clean_error(fake, monkeypatch) -> None:
+    await ns.start_setup("org-a", "user-a", "1234567")
+    for body in (httpx.Response(200, text="<html>"), httpx.Response(200, json={"access_token": "t", "expires_in": "soon"}),
+                 httpx.Response(200, json=["x"])):
+        fake.handler = lambda request, body=body: body
+        monkeypatch.setattr(ns.httpx, "AsyncClient", lambda **kw: _real_client(transport=httpx.MockTransport(fake.handler), **kw))
+        with pytest.raises(HTTPException) as error:
+            await ns.finish_setup("org-a", "user-a", CLIENT_ID, CERT_ID)
+        assert error.value.status_code == 502

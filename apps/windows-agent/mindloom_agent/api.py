@@ -24,9 +24,11 @@ class NotSignedIn(ApiError):
 
 
 class ApiClient:
-    def __init__(self, api_base: str, access_token: str, timeout: float = 90.0) -> None:
+    def __init__(self, api_base: str, access_token: str, timeout: float = 90.0, relay_key: str = "") -> None:
         self.api_base = api_base.rstrip("/")
         self.access_token = access_token.strip()
+        # Identifies this PC's relay on the relay calls (see relay.py). Sent nowhere else.
+        self.relay_key = relay_key.strip()
         # A step waits for the model to choose an action, which can take a while.
         self.timeout = timeout
 
@@ -40,6 +42,8 @@ class ApiClient:
         request = urllib.request.Request(self.api_base + path, method=method)
         request.add_header("Authorization", f"Bearer {self.access_token}")
         request.add_header("Accept", "application/json")
+        if self.relay_key and path.startswith("/relay/"):
+            request.add_header("X-MindLoom-Relay-Key", self.relay_key)
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
@@ -77,6 +81,17 @@ class ApiClient:
         if note:
             body["note"] = note[:2000]
         return self._send("POST", f"/captures/device-tasks/{self._id(task_id)}/reply", body)
+
+    # --- The relay (apps/api/api/routes/relay.py) ---
+
+    def relay_requests(self) -> dict[str, Any]:
+        """Calls waiting for this PC to make inside its network, and when to ask again."""
+
+        waiting = self._send("GET", "/relay/requests")
+        return waiting if isinstance(waiting, dict) else {}
+
+    def relay_result(self, request_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        return self._send("POST", f"/relay/requests/{self._id(request_id)}/result", result)
 
     def stop(self, task_id: str) -> dict[str, Any]:
         return self._send("POST", f"/captures/device-tasks/{self._id(task_id)}/stop")

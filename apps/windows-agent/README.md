@@ -123,3 +123,24 @@ the site. The exe is not signed and there is no installer yet.
 - `open_app` starts an app from a Start menu shortcut with that name, or `<name>.exe`. If
   the app's process goes by a different name, open it first or allow the process name.
 - Classic menus are covered by the self-test; menu strips and ribbons rely on `press`.
+
+## The relay (SAP inside your network)
+
+MindLoom's servers cannot call an SAP system that only exists inside a company network.
+This app can do it for them: `mindloom_agent/relay.py` collects the calls MindLoom has
+parked for the signed-in person, makes them from this PC, and posts the answers back.
+
+- It only calls the **one https address approved on this PC** (asked once in the app
+  window, or given on the command line), only SAP's data-service paths, and only GET,
+  POST and PATCH. It never follows a redirect and writes nothing to disk.
+- It shows a **relay code**. Type it into MindLoom when connecting SAP "through MindLoom
+  for Windows": MindLoom then hands SAP's sign-in only to this PC.
+- Without a window, on any system with Python 3.12:
+
+  ```
+  python -m mindloom_agent --sign-in
+  python -m mindloom_agent --relay https://sap.example.internal:44300
+  ```
+
+Like the rest of this app, the relay **has not been run on Windows**. Its logic is tested
+on macOS (`tests/test_relay.py`); the app-window prompt that asks about an address is not.

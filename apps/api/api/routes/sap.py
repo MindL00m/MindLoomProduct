@@ -1,6 +1,6 @@
 """SAP connection: connect with a technical user, status and disconnect."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -16,10 +16,20 @@ Context = Annotated[tuple[str, str], Depends(require_user_context)]
 
 class SapConnectInput(BaseModel):
     base_url: str = Field(min_length=4, max_length=300)
-    username: str = Field(min_length=1, max_length=80)
-    password: str = Field(min_length=1, max_length=200)
-    test_service: str = Field(min_length=3, max_length=300)
+    system: Literal["s4hana", "business_one"] = "s4hana"
+    auth: Literal["basic", "oauth", "certificate"] = "basic"
+    via: Literal["direct", "relay"] = "direct"
+    username: str | None = Field(default=None, max_length=80)
+    password: str | None = Field(default=None, max_length=200)
+    test_service: str | None = Field(default=None, max_length=300)
     sap_client: str | None = Field(default=None, max_length=3)
+    token_url: str | None = Field(default=None, max_length=400)
+    client_id: str | None = Field(default=None, max_length=300)
+    client_secret: str | None = Field(default=None, max_length=500)
+    certificate_pem: str | None = Field(default=None, max_length=20_000)
+    private_key_pem: str | None = Field(default=None, max_length=20_000)
+    company_db: str | None = Field(default=None, max_length=80)
+    relay_code: str | None = Field(default=None, max_length=20)
 
 
 @router.get("/integrations/sap")
@@ -31,10 +41,9 @@ async def sap_status(ctx: Context) -> dict:
 
 @router.post("/integrations/sap/connect", dependencies=[rate_limit(actions_limit, "actions")])
 async def sap_connect(body: SapConnectInput, ctx: Context) -> dict:
-    """Check the address and user against one allowed service, then save."""
+    """Check the address and sign-in with one real call, then save."""
 
-    return await sap.connect(*ctx, base_url=body.base_url, username=body.username, password=body.password,
-                             test_service=body.test_service, sap_client=body.sap_client)
+    return await sap.connect(*ctx, **body.model_dump())
 
 
 @router.delete("/integrations/sap")

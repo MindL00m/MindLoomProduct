@@ -44,6 +44,9 @@ export interface Turn {
   meetingState?: "pending" | "sending" | "scheduled" | "cancelled";
   meetingResult?: { label: string; html_link?: string | null; meet_link?: string | null; attendees: string[] };
   meetingError?: string;
+  erpState?: "pending" | "sending" | "done" | "cancelled";
+  erpResult?: string;
+  erpError?: string;
   fileChangeState?: Record<
     string,
     {

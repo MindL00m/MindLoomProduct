@@ -246,8 +246,8 @@ Click **Add connector** and choose a provider:
 | **Microsoft 365** | Outlook mail and calendar, Teams channels and chats, SharePoint | An Entra admin may need to grant consent. |
 | **Zoom** | Cloud recording transcripts and chats | New recordings arrive by webhook. |
 | **GitHub** | Repository browsing and pull request drafts | Paste a fine-grained personal access token and choose repos and allowed actions. *Issues and PR status are not imported.* |
-| **NetSuite** | Automations read NetSuite and, after you approve, create or change records | Nothing is imported into knowledge. Setup in two steps, see below. *Not yet tried against a real NetSuite account.* |
-| **SAP** (S/4HANA) | Automations read SAP and, after you approve, create or change records | Nothing is imported into knowledge. Needs a technical user and an address reachable over https, see below. *Not yet tried against a real SAP system.* |
+| **NetSuite** | Ask and automations read NetSuite and, after you approve, create or change records. Chosen data can be added to knowledge | Setup in two steps, see below. *Not yet tried against a real NetSuite account.* |
+| **SAP** (S/4HANA or Business One) | Ask and automations read SAP and, after you approve, create or change records. Chosen data can be added to knowledge | Reached over the internet, or through MindLoom for Windows inside your network, see below. *Not yet tried against a real SAP system.* |
 | **Slack** (admin) | Chosen channels and threads; `@Loombot` answers in Slack | MindLoom generates the Slack app manifest. Needs a public HTTPS API address. |
 
 After you authorize, a setup wizard asks you to choose:
@@ -260,12 +260,22 @@ After you authorize, a setup wizard asks you to choose:
    - **Selected**: specific people or departments.
 5. Preview, then **Confirm**. The first import runs in the background.
 
-**NetSuite** and **SAP** have no wizard: they add tools to automations (section 8.2) and import nothing.
+**NetSuite** and **SAP** have no wizard. They add tools to Ask and to automations (section 8.2), and import only what you choose.
 
-- **NetSuite.** Enter your account ID and choose **Start setup**. MindLoom makes a certificate; download it. A NetSuite administrator then turns on REST Web Services and OAuth 2.0, creates an integration record with the Client Credentials (Machine to Machine) grant, and uploads the certificate under OAuth 2.0 Client Credentials (M2M) Setup against a user and a role. Paste the client ID and certificate ID NetSuite shows and choose **Connect**. Automations can do whatever that NetSuite role allows, so give it only what they need, and not the Administrator role. The certificate lasts two years; connect again before it runs out.
-- **SAP.** Enter the https address of your S/4HANA system, a technical user and its password, and one API that user may use (for example `API_BUSINESS_PARTNER`), which MindLoom reads once to check the sign-in. In S/4HANA Cloud that user is a communication user, with a communication arrangement for each API. Automations can do whatever that SAP user is allowed. SAP systems that can only be reached inside your company network, and SAP Business One, are not supported; for those, use steps in Chrome or in the desktop app.
+- **NetSuite.** Enter your account ID and choose **Start setup**. MindLoom makes a certificate; download it. A NetSuite administrator then turns on REST Web Services and OAuth 2.0, creates an integration record with the Client Credentials (Machine to Machine) grant, and uploads the certificate under OAuth 2.0 Client Credentials (M2M) Setup against a user and a role. Paste the client ID and certificate ID NetSuite shows and choose **Connect**. MindLoom can do whatever that NetSuite role allows, so give it only what is needed, and not the Administrator role. The certificate lasts two years; connect again before it runs out.
+- **SAP.** Choose the system (**S/4HANA** or **Business One**), how MindLoom reaches it, and how it signs in:
+  - **Sign-in for S/4HANA:** a technical user and password (in S/4HANA Cloud, a communication user with a communication arrangement for each API); or OAuth with a token service address, client ID and secret; or a client certificate with its private key. Name one API the sign-in may use (for example `API_BUSINESS_PARTNER`); MindLoom reads it once to check.
+  - **Sign-in for Business One:** the Service Layer address (usually port 50000), the company database, a user and its password.
+  - **Over the internet:** the address must be a public https address.
+  - **Through MindLoom for Windows inside your network:** for a system the internet cannot reach. Open MindLoom for Windows, signed in as you, on a PC that can reach SAP, and type the **relay code** it shows into the connect form. The first time, that PC asks whether it may call the address: approve it there, then press **Connect** again. That PC must stay on for Ask and automations to reach SAP. A client certificate cannot be used this way.
 
-In an automation, reading NetSuite or SAP runs straight away. Creating or changing a record always stops for **Approve** first, showing the record and the values, unless you turned on automatic approval for that automation. There is no delete.
+**In Ask**, questions about customers, vendors, items, orders, invoices or stock are answered from the connected system live. When you ask Ask to create or change a record, nothing changes: the reply carries a card with the record and the values, which you can correct, and the change is made only when you press **Approve**.
+
+**In an automation**, reading runs straight away. Creating or changing a record stops for **Approve** first, unless you turned on automatic approval for that automation; even then a run makes at most 20 changes on its own and asks for each one after that. There is no delete.
+
+**Add to knowledge.** On a connected card, add an import: a name and one read (a SuiteQL query for NetSuite, a record set for SAP), a row limit (up to 5,000), and whether only you or the whole organization can find it. MindLoom keeps those rows in knowledge so Ask can find and cite them, refreshes them once a day, and removes them when you delete the import or disconnect.
+
+**Recent changes.** Each card lists what MindLoom created or changed there for you, from Ask or an automation, with the time and whether it worked. It shows field names, never the values.
 
 Each connector card also has **Manage**, **Pause/Resume** and **Disconnect**. Google also has **Reconnect**, for new permissions.
 

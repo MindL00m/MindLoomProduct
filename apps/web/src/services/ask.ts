@@ -1,6 +1,7 @@
 /** Ask API: query the knowledge graph and receive a cited, routed answer. */
 
 import { apiFetch } from "@/lib/api";
+import type { ProposedErpChange } from "@/services/erp";
 
 export interface Citation {
   chunk_id: string;
@@ -231,6 +232,7 @@ export interface QueryResponse {
   status_tracker?: StatusTrackerCard | null;
   proposed_recurring_email?: ProposedRecurringEmail | null;
   proposed_meeting?: ProposedMeeting | null;
+  proposed_erp_change?: ProposedErpChange | null;
   proposed_workflow?: ProposedWorkflow | null;
   /** True when any part of the answer came from a public web search. */
   web_search_used?: boolean;

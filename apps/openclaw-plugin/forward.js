@@ -73,31 +73,91 @@ export function toMindLoomMessage(event = {}, ctx = {}) {
 }
 
 /**
- * Post one message to MindLoom. Never throws: a MindLoom outage must not break
- * the gateway. Returns true when MindLoom accepted it.
+ * True when the address is safe to send the link token to: https, or this computer
+ * itself during development. Plain http elsewhere would send the token in the clear.
  */
-export async function forward(message, config, { fetchImpl = fetch, log = console } = {}) {
+export function isSafeApiUrl(apiUrl) {
+  try {
+    const url = new URL(String(apiUrl ?? ""));
+    if (url.username || url.password) return false;
+    if (url.protocol === "https:") return true;
+    return url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Post messages to MindLoom (up to 100 in one call). Never throws: a MindLoom outage
+ * must not break the gateway. Returns "sent", "retry" (worth trying again later: an
+ * outage, a timeout, MindLoom busy) or "dropped" (never going to work: not configured,
+ * an unsafe address, a token MindLoom refuses, a message it rejects).
+ */
+export async function post(messages, config, { fetchImpl = fetch, log = console } = {}) {
   const apiUrl = String(config?.apiUrl ?? "").replace(/\/+$/, "");
   const token = String(config?.token ?? "");
   if (!apiUrl || !token) {
     log.warn?.("mindloom-whatsapp: apiUrl and token are not configured; message not forwarded");
-    return false;
+    return "dropped";
+  }
+  if (!isSafeApiUrl(apiUrl)) {
+    log.warn?.("mindloom-whatsapp: apiUrl must be https; message not forwarded");
+    return "dropped";
   }
   try {
     const response = await fetchImpl(`${apiUrl}/integrations/whatsapp/live/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ messages: [message] }),
+      body: JSON.stringify({ messages }),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) {
-      log.warn?.(`mindloom-whatsapp: MindLoom answered HTTP ${response.status}`);
-      return false;
-    }
-    return true;
+    if (response.ok) return "sent";
+    log.warn?.(`mindloom-whatsapp: MindLoom answered HTTP ${response.status}`);
+    return response.status === 408 || response.status === 429 || response.status >= 500 ? "retry" : "dropped";
   } catch (error) {
     log.warn?.(`mindloom-whatsapp: could not reach MindLoom (${error?.name ?? "error"})`);
-    return false;
+    return "retry";
+  }
+}
+
+/** Post one message. Returns true when MindLoom accepted it. */
+export async function forward(message, config, deps = {}) {
+  return (await post([message], config, deps)) === "sent";
+}
+
+export const BATCH_SIZE = 100;
+export const OUTBOX_LIMIT = 500;
+
+/**
+ * Messages waiting to reach MindLoom. While MindLoom is unreachable they are kept in
+ * memory (the newest 500; nothing is written to disk) and sent, oldest first, with the
+ * next message that arrives. MindLoom ignores a message it already has, so sending one
+ * twice is harmless.
+ */
+export class Outbox {
+  constructor(config, deps = {}) {
+    this.config = config;
+    this.deps = deps;
+    this.waiting = [];
+    this.flushing = null;
+  }
+
+  /** Add a message and try to send everything waiting. Resolves when the attempt ends. */
+  add(message) {
+    this.waiting.push(message);
+    if (this.waiting.length > OUTBOX_LIMIT) this.waiting.splice(0, this.waiting.length - OUTBOX_LIMIT);
+    // One attempt at a time, so messages stay in order.
+    this.flushing ??= this.flush().finally(() => { this.flushing = null; });
+    return this.flushing;
+  }
+
+  async flush() {
+    while (this.waiting.length > 0) {
+      const batch = this.waiting.slice(0, BATCH_SIZE);
+      const outcome = await post(batch, this.config(), this.deps);
+      if (outcome === "retry") return; // keep them for the next message
+      this.waiting.splice(0, batch.length); // sent, or never going to be accepted
+    }
   }
 }
 
@@ -105,11 +165,12 @@ export async function forward(message, config, { fetchImpl = fetch, log = consol
 export function register(api, deps = {}) {
   const config = () => api.pluginConfig ?? {};
   const log = api.logger ?? console;
+  const outbox = new Outbox(config, { log, ...deps });
 
   api.on("message_received", async (event, ctx) => {
     if (!isWhatsApp(event, ctx)) return;
     const message = toMindLoomMessage(event, ctx);
-    if (message) await forward(message, config(), { log, ...deps });
+    if (message) await outbox.add(message);
   });
 
   // Read-only: claim WhatsApp turns so the agent never answers a contact.
@@ -117,4 +178,5 @@ export function register(api, deps = {}) {
     if (config().silent === false || !isWhatsApp(event, ctx)) return undefined;
     return { handled: true };
   });
+  return outbox;
 }

@@ -4,6 +4,7 @@ import { PrimaryButton } from "@/components/PrimaryButton";
 import { SecondaryButton } from "@/components/SecondaryButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ErpChanges, ErpImports } from "@/pages/integrations/ErpImports";
 import {
   connectNetSuite,
   disconnectNetSuite,
@@ -72,8 +73,8 @@ export default function NetSuiteConnector({ onChanged }: { onChanged: () => void
             <CardTitle className="text-lg">NetSuite</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
               {connected
-                ? "Automations can read NetSuite, and create or change records after you approve."
-                : "Let automations read NetSuite and, with your approval, create or change records."}
+                ? "Ask and automations can read NetSuite, and create or change records after you approve."
+                : "Let Ask and automations read NetSuite and, with your approval, create or change records."}
             </p>
           </div>
         </div>
@@ -164,10 +165,14 @@ export default function NetSuiteConnector({ onChanged }: { onChanged: () => void
         )}
 
         {connected && (
-          <SecondaryButton disabled={busy} onClick={() => void act(disconnectNetSuite)}>
-            <Unplug className="size-4" />
-            Disconnect
-          </SecondaryButton>
+          <>
+            <SecondaryButton disabled={busy} onClick={() => void act(disconnectNetSuite)}>
+              <Unplug className="size-4" />
+              Disconnect
+            </SecondaryButton>
+            <ErpImports provider="netsuite" />
+            <ErpChanges provider="netsuite" />
+          </>
         )}
       </CardContent>
     </Card>

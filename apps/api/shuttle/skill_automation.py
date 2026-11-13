@@ -74,6 +74,12 @@ ASK_TOOLS = (
 )
 # Tools that reach outside MindLoom: the run pauses for approval first.
 APPROVAL_TOOLS = {"send_email", "create_meeting", "sap_write"}
+# With automatic approval on, a run may still make only this many NetSuite or SAP changes
+# on its own; after that each one waits for the person. A loop gone wrong then stops at a
+# handful of records instead of hundreds.
+MAX_AUTO_ERP_WRITES = 20
+# netsuite_record actions that only read. Anything else is treated as a change.
+NETSUITE_READS = ("get", "fields")
 SAFE_HTTP_METHODS = {"GET", "HEAD"}
 
 _UNTRUSTED = (
@@ -156,11 +162,12 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
         "name": "netsuite_record",
         "description": (
             "Read, create or change one NetSuite record through NetSuite's REST record API. "
-            "get runs immediately; create and update pause for approval. There is no delete. "
-            "Read the record (or a similar one) first to learn its field names."
+            "get (one record) and fields (the field names of a record type) run immediately; "
+            "create and update pause for approval. There is no delete. Call fields, or get a "
+            "similar record, before writing, to learn the field names."
         ),
         "parameters": {"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["get", "create", "update"]},
+            "action": {"type": "string", "enum": ["get", "fields", "create", "update"]},
             "record_type": {"type": "string", "description": "REST record name, e.g. customer, vendor, salesOrder, invoice."},
             "id": {"type": "string", "description": "Internal ID, or eid: plus the external ID. Needed for get and update."},
             "fields": {"type": "object", "description": (
@@ -175,8 +182,10 @@ ENGINE_TOOLS: list[dict[str, Any]] = [
             "Read from the company's SAP S/4HANA through its OData APIs. Runs immediately. path "
             "is a service (lists its record sets), a record set, or one record, e.g. "
             "/sap/opu/odata/sap/API_BUSINESS_PARTNER/A_BusinessPartner or "
-            ".../A_BusinessPartner('1000'). Put OData options in query, not in path. Always "
-            "use $top and $select on record sets."
+            ".../A_BusinessPartner('1000'). A service path ending in /$metadata lists its "
+            "record sets with their keys and field names. For Business One give the record "
+            "set name, e.g. BusinessPartners or Orders(12). Put OData options in query, not "
+            "in path. Always use $top and $select on record sets."
         ),
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
@@ -278,6 +287,9 @@ TOOL_CATALOG = """\
 - list_files, read_file: read Files (any type, PDFs with tables, scans by OCR).
 - write_document (Word, Excel, PDF, PowerPoint, text), write_csv_file, update_spreadsheet,
   create_updated_document, set_file_monitoring: create or change Files.
+- edit_file: change part of an existing file in place and keep its formatting (a slide's
+  title or bullets, add or remove slides, Word paragraphs and tables, Excel cells and rows,
+  CSV rows and columns, PDF text and pages, JSON values, text files, pictures).
 - list_templates, fill_template, make_template, create_shipment_documents: company documents.
 - send_email (approval), create_meeting (approval), find_meeting_times: communication.
 - web_search: public information.  http_request: public APIs and webhooks (writes need approval).
@@ -791,20 +803,53 @@ async def _create_meeting(org_id: str, user_id: str, args: dict[str, Any], tz: s
     )
 
 
-async def _netsuite_record(org_id: str, user_id: str, args: dict[str, Any]) -> dict[str, Any]:
-    from weaver import netsuite
+def is_erp_write(name: str, args: dict[str, Any]) -> bool:
+    """A call that would create or change a NetSuite or SAP record."""
 
+    if name == "sap_write":
+        return True
+    return name == "netsuite_record" and str(args.get("action") or "").strip().lower() not in NETSUITE_READS
+
+
+def _erp_writes(run: dict[str, Any]) -> int:
+    try:
+        return sum(1 for entry in json.loads(run.get("log") or "[]") if entry.get("erp_write"))
+    except (ValueError, AttributeError):
+        return 0
+
+
+async def _erp_write(run: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Make the change and record it, worked or not (``weaver/erp_audit.py``)."""
+
+    from weaver import erp_audit, netsuite, sap
+
+    org_id, user_id = run["org_id"], run["user_id"]
     action = str(args.get("action") or "").strip().lower()
-    kind, ident = args.get("record_type"), args.get("id")
-    if action == "create":
-        return await netsuite.create_record(org_id, user_id, kind, args.get("fields"))
-    if action not in {"get", "update"}:
-        return {"error": "action must be get, create or update."}
-    if not ident:
-        return {"error": f"{action} needs the record's id."}
-    if action == "get":
-        return await netsuite.get_record(org_id, user_id, kind, ident)
-    return await netsuite.update_record(org_id, user_id, kind, ident, args.get("fields"))
+    fields = args.get("fields")
+    if name == "netsuite_record":
+        system, target, record_id = "netsuite", args.get("record_type"), args.get("id")
+    else:
+        system, target, record_id = "sap", args.get("path"), None
+    if action not in {"create", "update"}:
+        return {"error": "action must be create or update." if name == "sap_write" else "action must be get, create or update."}
+    if system == "netsuite" and action == "update" and not record_id:
+        return {"error": "update needs the record's id."}
+    entry = dict(system=system, action=action, target=target, record_id=record_id, fields=fields,
+                 source="automation", run_id=run.get("run_id"))
+    try:
+        if system == "netsuite":
+            result = (await netsuite.create_record(org_id, user_id, target, fields) if action == "create"
+                      else await netsuite.update_record(org_id, user_id, target, record_id, fields))
+        else:
+            result = await (sap.create if action == "create" else sap.update)(org_id, user_id, target, fields)
+    except HTTPException as exc:
+        await erp_audit.record(org_id, user_id, ok=False, detail=exc.detail, **entry)
+        raise
+    except Exception as exc:  # noqa: BLE001 - recorded, then handled like any tool failure
+        await erp_audit.record(org_id, user_id, ok=False, detail=exc.__class__.__name__, **entry)
+        raise
+    await erp_audit.record(org_id, user_id, ok=True, **{**entry, "record_id": record_id or result.get("id")})
+    return result
 
 
 def needs_approval(name: str, args: dict[str, Any], allowed_hosts: set[str] | None = None) -> bool:
@@ -816,7 +861,7 @@ def needs_approval(name: str, args: dict[str, Any], allowed_hosts: set[str] | No
         return True
     if name == "netsuite_record":
         # Anything but a plain read changes the company's books.
-        return str(args.get("action") or "").strip().lower() != "get"
+        return is_erp_write(name, args)
     if name != "http_request":
         return False
     if str(args.get("method") or "GET").upper() not in SAFE_HTTP_METHODS:
@@ -852,20 +897,20 @@ async def execute_tool(run: dict[str, Any], name: str, args: dict[str, Any]) -> 
         return await netsuite.query(
             org_id, user_id, args.get("query"), limit=args.get("limit"), offset=args.get("offset"),
             params=args.get("params") if isinstance(args.get("params"), list) else None)
+    if is_erp_write(name, args):
+        return await _erp_write(run, name, args)
     if name == "netsuite_record":
-        return await _netsuite_record(org_id, user_id, args)
+        from weaver import netsuite
+
+        if str(args.get("action") or "").strip().lower() == "fields":
+            return await netsuite.describe_record(org_id, user_id, args.get("record_type"))
+        if not args.get("id"):
+            return {"error": "get needs the record's id."}
+        return await netsuite.get_record(org_id, user_id, args.get("record_type"), args.get("id"))
     if name == "sap_read":
         from weaver import sap
 
         return await sap.read(org_id, user_id, args.get("path"), args.get("query"))
-    if name == "sap_write":
-        from weaver import sap
-
-        action = str(args.get("action") or "").strip().lower()
-        if action not in {"create", "update"}:
-            return {"error": "action must be create or update."}
-        write = sap.create if action == "create" else sap.update
-        return await write(org_id, user_id, args.get("path"), args.get("fields"))
     if name == "send_email":
         return await _send_email(org_id, user_id, args)
     if name == "create_meeting":
@@ -965,7 +1010,9 @@ async def _drain(
             _log(run, {"kind": "device", "tool": name, "status": "pending", "summary": str(args.get("steps"))[:500]})
             run["messages"] = json.dumps(messages)
             return False
-        if needs_approval(name, args, allowed_hosts) and not auto_approve:
+        erp_write = is_erp_write(name, args)
+        over_limit = erp_write and auto_approve and _erp_writes(run) >= MAX_AUTO_ERP_WRITES
+        if (needs_approval(name, args, allowed_hosts) and not auto_approve) or over_limit:
             run.update(status="needs_approval", pending=json.dumps({"calls": calls, "tool": name, "arguments": args}))
             _log(run, {"kind": "approval", "tool": name, "status": "pending", "summary": _short(args)})
             run["messages"] = json.dumps(messages)
@@ -980,7 +1027,7 @@ async def _drain(
             logger.warning("Automation tool %s failed", name, exc_info=True)
             result, status = {"error": f"{exc.__class__.__name__}: {exc}"[:500]}, "error"
         messages.append(_result_message(call["id"], result))
-        _log(run, {"kind": "tool", "tool": name, "status": status,
+        _log(run, {"kind": "tool", "tool": name, "status": status, **({"erp_write": True} if erp_write else {}),
                    "summary": _short(args, 200), "result": _short(result)})
     run["messages"] = json.dumps(messages)
     run["pending"] = None
@@ -1150,8 +1197,10 @@ async def respond(
             except Exception as exc:  # noqa: BLE001
                 result, outcome = {"error": f"{exc.__class__.__name__}: {exc}"[:500]}, "error"
             messages.append(_result_message(call["id"], {"approved": True, "result": result}))
-            _log(run, {"kind": "approval", "tool": name, "status": outcome, "summary": "Approved",
-                       "result": _short(result)})
+            edited = isinstance(arguments, dict) and arguments != (pending.get("arguments") or {})
+            _log(run, {"kind": "approval", "tool": name, "status": outcome,
+                       "summary": f"Approved with changes: {_short(args, 300)}" if edited else "Approved",
+                       **({"erp_write": True} if is_erp_write(name, args) else {}), "result": _short(result)})
         elif status == "needs_approval" and action == "reject":
             messages.append(_result_message(call["id"], {"approved": False, "reason": reason or "Rejected by the person."}))
             _log(run, {"kind": "approval", "tool": call["function"]["name"], "status": "rejected",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional, get_args
+from typing import Any, Literal, Optional, get_args
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
@@ -1186,6 +1186,16 @@ class MeetingTimeOption(BaseModel):
     label: str = ""
 
 
+class ProposedErpChange(BaseModel):
+    """A NetSuite or SAP record change Ask drafted; nothing changes until the user approves."""
+
+    system: Literal["netsuite", "sap"]
+    action: Literal["create", "update"]
+    target: str = Field(min_length=1, max_length=400, description="NetSuite record type, or SAP OData path.")
+    record_id: Optional[str] = Field(default=None, max_length=130, description="NetSuite record ID for an update.")
+    fields: dict[str, Any] = Field(description="Field names and values to send.")
+
+
 class ProposedMeeting(BaseModel):
     """A Google Calendar meeting Ask drafted; nothing is scheduled until the user approves."""
 
@@ -1257,6 +1267,10 @@ class QueryResponse(BaseModel):
     proposed_meeting: Optional[ProposedMeeting] = Field(
         default=None,
         description="Google Calendar meeting awaiting the user's approval.",
+    )
+    proposed_erp_change: Optional[ProposedErpChange] = Field(
+        default=None,
+        description="NetSuite or SAP record change awaiting the user's approval in Ask.",
     )
     proposed_workflow: Optional[ProposedWorkflow] = Field(
         default=None,

@@ -18,6 +18,11 @@ forwards each inbound text message to MindLoom, where it becomes searchable in A
 - **Group names.** OpenClaw gives plugins a group's id but not its name. A group
   appears in MindLoom as "WhatsApp group 1234" until you name it once under
   Import > Live WhatsApp chats; MindLoom then uses that name everywhere.
+- **Outages.** If MindLoom cannot be reached, the newest 500 messages wait in memory
+  and are sent with the next message that arrives. They are not written to disk, so
+  restarting OpenClaw during an outage loses the ones still waiting.
+- **https only.** The link token is only sent to an `https://` address (or to
+  `localhost` during development).
 - **From now on.** Only messages that arrive after linking are read. For history,
   upload a chat export in MindLoom (Import > Upload files).
 

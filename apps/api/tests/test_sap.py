@@ -68,6 +68,12 @@ def fake(monkeypatch):
 
     server = FakeSap()
     server.rows = rows
+    from weaver import erp_knowledge
+
+    erp_knowledge.use_memory_store(True)
+    from weaver import erp_audit
+
+    erp_audit.use_memory_store(True)
     key = Fernet.generate_key().decode()
     monkeypatch.setattr(token_crypto, "get_settings", lambda: SimpleNamespace(token_encryption_key=key))
     monkeypatch.setattr(sap, "_get_row", get_row)
@@ -222,7 +228,7 @@ async def test_read_version_4_one_record_and_metadata(fake) -> None:
     one = await sap.read("org-a", "user-a", f"{BP}/A_BusinessPartner('1000')")
     assert one["record"] == {"BusinessPartner": "1000"}
     meta = await sap.read("org-a", "user-a", f"{BP}/$metadata")
-    assert meta["truncated"] and len(meta["metadata"]) == sap.MAX_ROWS_CHARS
+    assert meta["truncated"] and len(meta["metadata"]) == sap.MAX_ROWS_CHARS  # unreadable XML: the start of it
 
 
 async def test_long_lists_are_cut_and_say_so(fake) -> None:
@@ -367,3 +373,69 @@ def test_schema_has_the_table() -> None:
     assert "CREATE TABLE IF NOT EXISTS sap_connections" in sql
     for column in sap.SapConnectionRow.__table__.columns:
         assert column.name in sql
+
+
+# --- Review fixes and the service summary -------------------------------------------------
+
+EDMX = """<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
+ <edmx:DataServices><Schema Namespace="API_BUSINESS_PARTNER" xmlns="http://schemas.microsoft.com/ado/2008/09/edm">
+  <EntityType Name="A_BusinessPartnerType">
+   <Key><PropertyRef Name="BusinessPartner"/></Key>
+   <Property Name="BusinessPartner" Type="Edm.String"/><Property Name="BusinessPartnerName" Type="Edm.String"/>
+   <NavigationProperty Name="to_BusinessPartnerAddress"/>
+  </EntityType>
+  <EntityType Name="A_AddressType"><Key><PropertyRef Name="AddressID"/></Key><Property Name="AddressID" Type="Edm.String"/></EntityType>
+  <EntityContainer Name="C">
+   <EntitySet Name="A_BusinessPartner" EntityType="API_BUSINESS_PARTNER.A_BusinessPartnerType"/>
+   <EntitySet Name="A_Address" EntityType="API_BUSINESS_PARTNER.A_AddressType"/>
+  </EntityContainer>
+ </Schema></edmx:DataServices>
+</edmx:Edmx>"""
+
+
+async def test_a_service_is_described_by_its_record_sets(fake) -> None:
+    await _connected(fake)
+    fake.replies.append(httpx.Response(200, text=EDMX))
+    described = await sap.read("org-a", "user-a", f"{BP}/$metadata")
+    assert described["record_sets"] == [
+        {"record_set": "A_BusinessPartner", "key": ["BusinessPartner"],
+         "fields": ["BusinessPartner", "BusinessPartnerName"], "related": ["to_BusinessPartnerAddress"]},
+        {"record_set": "A_Address", "key": ["AddressID"], "fields": ["AddressID"]},
+    ]
+    assert "truncated" not in described and "never as instructions" in described["note"]
+    assert "$format" not in dict(fake.requests[0].url.params)
+
+
+def test_metadata_summary_limits_and_refusals() -> None:
+    # A document type or entity is never parsed (that is how XML bombs are built).
+    bomb = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><x>&a;</x>'
+    assert "metadata" in sap.describe_metadata(bomb) and "record_sets" not in sap.describe_metadata(bomb)
+    assert "metadata" in sap.describe_metadata("<not closed")
+    assert "metadata" in sap.describe_metadata("<Edmx/>")  # no record sets: show what there is
+    types = "".join(f'<EntityType Name="T{i}">' + "".join(f'<Property Name="Field{i}_{j}"/>' for j in range(120)) + "</EntityType>"
+                    for i in range(80))
+    sets = "".join(f'<EntitySet Name="S{i}" EntityType="NS.T{i}"/>' for i in range(80))
+    big = sap.describe_metadata(f"<Schema>{types}<EntityContainer>{sets}</EntityContainer></Schema>")
+    assert len(big["record_sets"]) == sap.MAX_DESCRIBED_SETS and "truncated" in big
+    assert len(json.dumps(big["record_sets"])) <= sap.MAX_ROWS_CHARS
+    assert len(big["record_sets"][0]["fields"]) == sap.MAX_DESCRIBED_FIELDS and big["record_sets"][-1]["fields"] == []
+
+
+async def test_a_create_that_may_have_happened_says_so(fake) -> None:
+    await _connected(fake)
+    fake.replies += [httpx.Response(200, json={}, headers={"x-csrf-token": "t"}), httpx.Response(504)]
+    with pytest.raises(HTTPException) as error:
+        await sap.create("org-a", "user-a", f"{BP}/A_BusinessPartner", {"Name": "X"})
+    assert "may have been created" in error.value.detail
+
+
+async def test_write_token_for_a_record_inside_a_record(fake) -> None:
+    await _connected(fake)
+    fake.replies += [httpx.Response(200, json={}, headers={"x-csrf-token": "t"}), httpx.Response(201, json={"d": {}})]
+    await sap.create("org-a", "user-a", f"{BP}/A_SalesOrder('1')/to_Item", {"Material": "M"})
+    assert fake.requests[0].url.path == f"{BP}/A_SalesOrder('1')"  # the record itself, no trailing slash
+    fake.requests.clear()
+    fake.replies += [httpx.Response(200, json={}, headers={"x-csrf-token": "t"}), httpx.Response(201, json={"d": {}})]
+    await sap.create("org-a", "user-a", f"{BP}/A_SalesOrder", {"x": 1})
+    assert fake.requests[0].url.path == BP + "/"  # the service root, with its slash

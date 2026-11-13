@@ -161,6 +161,7 @@ GitHub rules:
   and choose exactly which repositories and actions MindLoom may use. This applies
   to GitHub only.
 
+{erp_rules}
 Workspace rules:
 - When the user asks to create, make, set up, or spin up a workspace for a project
   or topic, you MUST call propose_workspace.
@@ -1302,6 +1303,7 @@ _WORKSPACE_MEMBERS_TOOL: dict[str, Any] = {
 }
 
 _DATA_TOOLS = {
+    "netsuite_query", "netsuite_record", "sap_read", "sap_write",
     "count_emails", "knowledge_inventory", "project_status", "search_emails", "track_status",
     "read_email_attachment", "find_meeting_times",
 }
@@ -1339,6 +1341,7 @@ class _TurnOutputs:
     """Cards and web results tools produce during one turn."""
 
     meetings: list[ProposedMeeting] = field(default_factory=list)
+    erp_changes: list[Any] = field(default_factory=list)  # ProposedErpChange drafts
     workflows: list[ProposedWorkflow] = field(default_factory=list)
     web_results: list[WebResult] = field(default_factory=list)
     web_queries: list[str] = field(default_factory=list)
@@ -2646,6 +2649,12 @@ async def _run_tool(
     ProposedEmail | None,
 ]:
     outputs = outputs if outputs is not None else _TurnOutputs()
+    if name in {"netsuite_query", "netsuite_record", "sap_read", "sap_write"}:
+        from loombot import erp_tools
+
+        return await erp_tools.run_for_ask(
+            name, arguments, org_id=org_id, user_id=user_id, changes=outputs.erp_changes,
+        ), None, None, None, None
     if name in _MEETING_TOOLS or name in {"web_search", "add_workspace_members", "read_email_attachment"}:
         return await _run_action_tool(
             name, arguments, org_id=org_id, user_id=user_id, people_cache=people_cache,
@@ -3305,6 +3314,9 @@ Decide whether the request needs tools, which act on live data or take actions:
 - propose_recurring_email: schedule an email that repeats at a fixed interval
 - propose_workflow: save a task as a workflow MindLoom can run itself, once or on a schedule
 - find_meeting_times, propose_meeting: schedule meetings on Google Calendar
+- netsuite_query, netsuite_record, sap_read, sap_write: read the company's NetSuite or SAP
+  live (customers, vendors, items, orders, invoices, stock), or draft a record change
+  (only when the user has connected that system)
 {extra_tools}Questions about company knowledge, policies, people, or past discussions need no
 tools: retrieved context answers them. Use tools when the request involves the
 user's mailbox, files, documents to write, messages, meetings, GitHub, workspaces,
@@ -3492,6 +3504,7 @@ def _web_fallback_candidate(response: QueryResponse) -> bool:
         and response.proposed_workspace is None
         and response.proposed_recurring_email is None
         and response.proposed_meeting is None
+        and response.proposed_erp_change is None
         and response.status_tracker is None
         and not response.file_changes
     )
@@ -3763,8 +3776,12 @@ async def _run_agent(
 
     if client is None:
         client = await get_llm_client(org_id)
+    from loombot import erp_tools
+
+    erp_specs = await erp_tools.ask_specs(org_id, user_id)
     tools = [
         *_TOOLS,
+        *erp_specs,
         *([_WEB_SEARCH_TOOL] if web_enabled else []),
         *([_WORKSPACE_MEMBERS_TOOL] if workspace is not None and workspace.kind != "org_wide" else []),
     ]
@@ -3774,6 +3791,7 @@ async def _run_agent(
         {
             "role": "system",
             "content": _AGENT_SYSTEM.format(
+                erp_rules=erp_tools.RULES if erp_specs else "",
                 context_string=context_string,
                 gmail_status=gmail_status,
                 files_status=_files_status(user_files),
@@ -3819,6 +3837,7 @@ async def _run_agent(
             "proposed_recurring_email": recurring_out[-1] if recurring_out else None,
             "proposed_meeting": outputs.meetings[-1] if outputs.meetings else None,
             "proposed_workflow": outputs.workflows[-1] if outputs.workflows else None,
+            "proposed_erp_change": outputs.erp_changes[-1] if outputs.erp_changes else None,
             "web_search_used": bool(outputs.web_results),
             "web_search_query": "; ".join(outputs.web_queries) or None,
             "web_results": list(outputs.web_results),
@@ -3956,7 +3975,7 @@ async def _run_agent(
             )
             if (
                 used_files or used_email or tracker_out or recurring_out or outputs.meetings
-                or outputs.web_results or outputs.workflows
+                or outputs.web_results or outputs.workflows or outputs.erp_changes
             ) and not used_github:
                 sources = _only_cited(answer, sources)
             return QueryResponse(
